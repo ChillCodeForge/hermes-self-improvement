@@ -14,6 +14,7 @@ from .store import ExperimentStore
 
 _SAFE_EXPERIMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _MAX_SKILL_BYTES = 256 * 1024
+_MAX_SOURCE_SESSIONS = 100
 _SKILL_CANDIDATE_TYPES = {
     CandidateType.SKILL_CREATE,
     CandidateType.SKILL_PATCH,
@@ -57,8 +58,18 @@ def create_skill_candidate(
         raise ValueError("skill candidate content contains credential-like material")
     if not isinstance(hypothesis, str) or not hypothesis.strip() or len(hypothesis) > 4000:
         raise ValueError("candidate hypothesis must be non-empty text up to 4000 characters")
+    if contains_secret_material({"hypothesis": hypothesis}):
+        raise ValueError("candidate hypothesis contains credential-like material")
     if not isinstance(candidate_id, str) or not _SAFE_EXPERIMENT.fullmatch(candidate_id):
         raise ValueError("candidate ID must be a safe 1-80 character identifier")
+    source_sessions = tuple(source_sessions)
+    if len(source_sessions) > _MAX_SOURCE_SESSIONS or any(
+        not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 256
+        for session_id in source_sessions
+    ):
+        raise ValueError("source session IDs must be non-empty strings up to 256 characters (maximum 100)")
+    if contains_secret_material({"source_sessions": source_sessions}):
+        raise ValueError("source session IDs contain credential-like material")
 
     repo = Path(repository).resolve()
     base_commit = _git(repo, "rev-parse", "--verify", "refs/heads/main").stdout.decode().strip()
@@ -93,7 +104,8 @@ def create_skill_candidate(
             "GIT_COMMITTER_NAME": "Hermes Improvement Candidate",
             "GIT_COMMITTER_EMAIL": "hermes-improve@localhost",
         }
-        _git(worktree, "commit", "-m", f"Candidate {experiment_id}: {hypothesis[:120]}", env=environment)
+        subject = " ".join(hypothesis.split())[:120]
+        _git(worktree, "commit", "-m", f"Candidate {experiment_id}: {subject}", env=environment)
         commit = _git(worktree, "rev-parse", "HEAD").stdout.decode().strip()
         diff = _git(
             repo, "diff", "--no-ext-diff", "--no-textconv", "--binary", base_commit, commit

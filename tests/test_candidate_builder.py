@@ -124,6 +124,36 @@ def test_skill_candidate_requires_explicit_patch_for_existing_skill(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("hypothesis", "source_sessions", "message"),
+    [
+        ("Use ghp_" + "A" * 24, (), "hypothesis"),
+        ("A safe hypothesis", ("api_key=not-a-real-secret",), "source session"),
+    ],
+)
+def test_candidate_metadata_rejects_credentials(tmp_path, hypothesis, source_sessions, message):
+    repo = repository(tmp_path)
+    base_commit = git(repo, "rev-parse", "main")
+    with pytest.raises(ValueError, match=message):
+        create_skill_candidate(
+            repo,
+            ExperimentStore(tmp_path / "state.sqlite3"),
+            experiment_id="metadata-secret",
+            candidate_id="metadata-candidate",
+            candidate_type=CandidateType.SKILL_CREATE,
+            target="brain/skills/sample",
+            content="A new skill",
+            hypothesis=hypothesis,
+            benchmark_version="bench-v1",
+            source_sessions=source_sessions,
+        )
+    assert git(repo, "rev-parse", "main") == base_commit
+    assert subprocess.run(
+        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet",
+         "refs/heads/candidate/metadata-secret"]
+    ).returncode != 0
+
+
 def test_store_conflict_rolls_back_candidate_record_and_git_branch(tmp_path):
     repo = repository(tmp_path)
     base_commit = git(repo, "rev-parse", "main")
