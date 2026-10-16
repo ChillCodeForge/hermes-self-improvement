@@ -153,6 +153,7 @@ def test_truthy_non_boolean_security_flag_is_rejected():
         ("ground_truth", "confidence", float("nan"), "confidence"),
         ("ground_truth", "confidence", 1.1, "confidence"),
         ("ground_truth", "confidence", -0.1, "confidence"),
+        ("ground_truth", "confidence", 0.79, "at least 0.8"),
         ("eligibility", "replay_verified", "true", "replay_verified"),
         ("eligibility", "reproducibility_score", 0.79, "at least 0.8"),
     ],

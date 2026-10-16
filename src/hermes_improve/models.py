@@ -176,6 +176,8 @@ class Benchmark:
                 raise ValueError("hard benchmarks require reproducibility_score of at least 0.8")
             if replay_verified is not True:
                 raise ValueError("hard benchmarks require a successful replay")
+            if confidence < 0.8:
+                raise ValueError("hard benchmarks require ground-truth confidence of at least 0.8")
             structured_result = data["ground_truth"].get("structured_result")
             if not data["verification"]["deterministic"] and not (
                 isinstance(structured_result, Mapping) and structured_result

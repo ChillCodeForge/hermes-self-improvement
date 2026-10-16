@@ -9,7 +9,8 @@ Artifacts are stored separately by content hash.
 
 Evaluation accepts only `HARD_BENCHMARK` records. They must declare a
 reproducibility score of at least `0.8`, successful replay, and deterministic
-verification or a structured ground-truth result. `SOFT_BENCHMARK`,
+verification or a structured ground-truth result; ground-truth confidence must
+also be at least `0.8`. `SOFT_BENCHMARK`,
 `DREAMING_ONLY`, and `EXCLUDED` records cannot be used as evaluation evidence.
 
 The included `DockerCommandRunner` handles declared command benchmarks in
