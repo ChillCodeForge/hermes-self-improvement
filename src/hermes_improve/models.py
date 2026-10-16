@@ -112,6 +112,10 @@ class Benchmark:
         for section in required - {"schema_version", "id", "version"}:
             if not isinstance(data[section], Mapping):
                 raise ValueError(f"benchmark {section} must be an object")
+        for field_name in ("type", "provenance"):
+            value = data["source"].get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"benchmark source.{field_name} must be a non-empty string")
         bench = data["benchmark"]
         try:
             Split(bench["split"])
@@ -121,7 +125,7 @@ class Benchmark:
         score = data["eligibility"].get("reproducibility_score")
         if (
             isinstance(score, bool) or not isinstance(score, (int, float))
-            or not math.isfinite(score) or not 0 <= score <= 1
+            or not 0 <= score <= 1 or not math.isfinite(score)
         ):
             raise ValueError("reproducibility_score must be between 0 and 1")
         if (
@@ -138,6 +142,32 @@ class Benchmark:
         ):
             if not isinstance(data[section].get(key), list):
                 raise ValueError(f"benchmark {section}.{key} must be an array")
+        difficulty = data["taxonomy"].get("difficulty")
+        if not isinstance(difficulty, str) or not difficulty.strip():
+            raise ValueError("benchmark taxonomy.difficulty must be a non-empty string")
+        for field_name in ("categories", "required_capabilities"):
+            labels = data["taxonomy"][field_name]
+            if (
+                any(
+                    not isinstance(label, str) or not label.strip() or label != label.strip()
+                    or len(label) > 128
+                    for label in labels
+                )
+                or len(set(labels)) != len(labels)
+            ):
+                raise ValueError(
+                    f"benchmark taxonomy.{field_name} must contain unique, non-empty strings "
+                    "of at most 128 characters"
+                )
+        ground_truth_type = data["ground_truth"].get("type")
+        if not isinstance(ground_truth_type, str) or not ground_truth_type.strip():
+            raise ValueError("benchmark ground_truth.type must be a non-empty string")
+        confidence = data["ground_truth"].get("confidence")
+        if (
+            isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+            or not 0 <= confidence <= 1 or not math.isfinite(confidence)
+        ):
+            raise ValueError("benchmark ground_truth.confidence must be between 0 and 1")
         from .ingestion import contains_secret_material
         if contains_secret_material(data):
             raise ValueError("benchmark contains unredacted credential-like material")

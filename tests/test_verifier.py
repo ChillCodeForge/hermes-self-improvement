@@ -15,9 +15,9 @@ def benchmark(checks, *, expected_exit=0) -> Benchmark:
         "schema_version": 1,
         "id": "verifier-task",
         "version": 1,
-        "source": {"type": "manual"},
+        "source": {"type": "manual", "provenance": "unit-test"},
         "task": {"title": "Verifier test", "prompt": "Return a structured result"},
-        "taxonomy": {"categories": [], "required_capabilities": []},
+        "taxonomy": {"categories": [], "difficulty": "easy", "required_capabilities": []},
         "environment": {
             "container_image": "example/image@sha256:" + "a" * 64,
             "network_policy": "disabled",
@@ -25,7 +25,11 @@ def benchmark(checks, *, expected_exit=0) -> Benchmark:
         },
         "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0},
         "verification": {"deterministic": checks, "subjective": []},
-        "ground_truth": {"expected_exit_code": expected_exit},
+        "ground_truth": {
+            "type": "deterministic_test",
+            "confidence": 1.0,
+            "expected_exit_code": expected_exit,
+        },
         "benchmark": {
             "split": "TRAIN", "suites": ["SMOKE"], "cluster_id": "verifier",
             "criticality": "normal",

@@ -17,7 +17,8 @@ from hermes_improve.security import (
 def data(identifier: str, split: str, cluster: str = "shared") -> dict:
     return {
         "schema_version": 1, "id": identifier, "version": 1,
-        "source": {"type": "manual"}, "task": {"title": identifier, "prompt": "Do a test"},
+        "source": {"type": "manual", "provenance": "test-fixture"},
+        "task": {"title": identifier, "prompt": "Do a test"},
         "taxonomy": {"categories": [], "difficulty": "easy", "required_capabilities": []},
         "environment": {"type": "fixture"}, "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 0.9},
         "verification": {"deterministic": ["exit_code"], "subjective": []},
@@ -135,6 +136,27 @@ def test_truthy_non_boolean_security_flag_is_rejected():
     bad["security"]["sanitized"] = "true"
     with pytest.raises(ValueError, match="sanitized"):
         Benchmark.from_dict(bad)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("source", "provenance", "", "source.provenance"),
+        ("taxonomy", "difficulty", "", "taxonomy.difficulty"),
+        ("taxonomy", "categories", ["cli", "cli"], "unique"),
+        ("taxonomy", "required_capabilities", ["local", ""], "unique"),
+        ("ground_truth", "type", "", "ground_truth.type"),
+        ("ground_truth", "confidence", True, "confidence"),
+        ("ground_truth", "confidence", float("nan"), "confidence"),
+        ("ground_truth", "confidence", 1.1, "confidence"),
+        ("ground_truth", "confidence", -0.1, "confidence"),
+    ],
+)
+def test_benchmark_metadata_fields_are_validated(section, field, value, message):
+    invalid = data("invalid-metadata", "TRAIN")
+    invalid[section][field] = value
+    with pytest.raises(ValueError, match=message):
+        Benchmark.from_dict(invalid)
 
 
 def test_manifest_version_changes_with_benchmark_content(tmp_path):

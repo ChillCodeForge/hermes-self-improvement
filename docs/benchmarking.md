@@ -2,8 +2,11 @@
 
 Benchmark JSON records are parsed and validated by `Benchmark.from_dict`.
 `BenchmarkStore.validate()` checks duplicate ID/version pairs, required
-metadata, sanitization flags, separate storage of sealed holdout, and that a
-cluster is assigned to only one split. It also rejects normalized exact
+metadata, non-empty source type/provenance, taxonomy labels and difficulty,
+and a finite ground-truth confidence in `[0, 1]`. These provenance fields are
+descriptive metadata, not a signed or independently attested source claim.
+Validation also checks sanitization flags, separate storage of sealed holdout,
+and that a cluster is assigned to only one split. It rejects normalized exact
 duplicates and likely lexical near duplicates that do not share both a split
 and cluster: prompts with at least eight words and word-set Jaccard similarity
 of at least 0.85. This conservative rule is a deterministic leakage guard, not
