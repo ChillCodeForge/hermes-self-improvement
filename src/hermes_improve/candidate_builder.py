@@ -5,10 +5,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from .ingestion import contains_secret_material
 from .models import Candidate, CandidateType
+from .skill_paths import validate_skill_target
 from .store import ExperimentStore
 
 
@@ -18,10 +19,6 @@ _MAX_SOURCE_SESSIONS = 100
 _SKILL_CANDIDATE_TYPES = {
     CandidateType.SKILL_CREATE,
     CandidateType.SKILL_PATCH,
-}
-_PROTECTED_COMPONENTS = {
-    "evaluator", "verifiers", "benchmarks", "holdout", "security",
-    "promotion", "ci", ".github", "tests",
 }
 
 
@@ -42,14 +39,7 @@ def create_skill_candidate(
         raise ValueError("experiment ID must be a safe 1-80 character identifier")
     if candidate_type not in _SKILL_CANDIDATE_TYPES:
         raise ValueError("CLI candidate creation currently supports skill create/patch only")
-    target_path = PurePosixPath(target)
-    if (
-        target_path.is_absolute()
-        or len(target_path.parts) < 3
-        or target_path.parts[:2] != ("brain", "skills")
-        or any(part in {"", ".", ".."} or part.lower() in _PROTECTED_COMPONENTS for part in target_path.parts)
-    ):
-        raise ValueError("candidate target must be an unprotected path under brain/skills/")
+    target_path = validate_skill_target(target)
     if not isinstance(content, str) or not content.strip():
         raise ValueError("skill candidate content must be non-empty text")
     if len(content.encode("utf-8")) > _MAX_SKILL_BYTES:

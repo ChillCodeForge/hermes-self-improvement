@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
 from .models import CandidateType, ImprovementSignal
+from .skill_paths import validate_skill_target
 
 
 _MAX_MODEL_PAYLOAD_BYTES = 1024 * 1024
@@ -123,20 +123,17 @@ class DreamingEngine:
             candidate_type = item.get("candidate_type")
             target = item.get("target", "")
             hypothesis = item.get("hypothesis")
-            parts = re.split(r"[/\\]+", target) if isinstance(target, str) else []
             if (
-                not parts or target.startswith(("/", "\\"))
-                or len(parts) < 3 or parts[:2] != ["brain", "skills"]
-                or candidate_type not in _SKILL_CANDIDATE_TYPES
+                candidate_type not in _SKILL_CANDIDATE_TYPES
+                or not isinstance(target, str)
                 or not isinstance(summary, str) or not isinstance(hypothesis, str)
                 or not summary.strip() or not hypothesis.strip()
                 or len(summary) > 500 or len(hypothesis) > 2000
-                or any(part in {"", ".", ".."} for part in parts)
-                or any(part.lower() in {
-                    "evaluator", "verifiers", "benchmarks", "holdout", "security",
-                    "promotion", "ci", ".github", "tests",
-                } for part in parts)
             ):
+                continue
+            try:
+                validate_skill_target(target)
+            except ValueError:
                 continue
             safe.append({
                 "summary": summary,

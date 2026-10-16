@@ -18,13 +18,13 @@ from .errors import IntegrityError, PolicyRejected
 from .evaluation_signing import verify_report_signature
 from .models import CandidateType, canonical_json, utc_now
 from .policy import PromotionPolicy
+from .skill_paths import validate_skill_target
 from .store import ExperimentStore
 
 
 _SAFE_NAME = re.compile(r"^brain-v[1-9][0-9]*$")
 _SAFE_EXPERIMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _GIT_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_SKILL_TARGET = re.compile(r"^brain/skills/[A-Za-z0-9._/-]+$")
 
 
 class GitPromoter:
@@ -141,10 +141,13 @@ class GitPromoter:
         if not changed_paths or any(not path.startswith("brain/skills/") for path in changed_paths):
             raise PolicyRejected("automatic promotion is restricted to brain/skills/ paths")
         target = str(candidate["target"])
-        if (
-            not _SKILL_TARGET.fullmatch(target)
-            or ".." in Path(target).parts
-            or any(path != target and not path.startswith(f"{target.rstrip('/')}/") for path in changed_paths)
+        try:
+            target_path = validate_skill_target(target).as_posix()
+        except ValueError as exc:
+            raise PolicyRejected("candidate target is not a safe skills-only directory") from exc
+        if any(
+            path != target_path and not path.startswith(f"{target_path}/")
+            for path in changed_paths
         ):
             raise PolicyRejected("changed paths do not match a safe skills-only candidate target")
         if self._ref_exists(f"refs/tags/{release_name}"):

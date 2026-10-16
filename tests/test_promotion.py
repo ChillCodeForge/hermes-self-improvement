@@ -41,7 +41,7 @@ def _key_pair():
 
 def _add_candidate(
     repository, store, experiment_id, candidate_id, parent, content, *,
-    approved=True, signing_keys=None,
+    approved=True, signing_keys=None, target="brain/skills/demo",
 ):
     git(repository, "checkout", "-b", f"candidate/{experiment_id}", parent)
     skill = repository / "brain" / "skills" / "demo" / "SKILL.md"
@@ -55,13 +55,13 @@ def _add_candidate(
     ).stdout.decode()
     store.create_experiment(
         experiment_id, lineage_id="lineage-1", hypothesis="improve the skill",
-        candidate_type="SKILL_PATCH", target="brain/skills/demo",
+        candidate_type="SKILL_PATCH", target=target,
         risk="LOW", baseline_commit=parent, benchmark_version="bench-v1",
         policy_version="1",
     )
     candidate = Candidate(
         candidate_id, experiment_id, CandidateType.SKILL_PATCH,
-        "brain/skills/demo", parent, commit, diff,
+        target, parent, commit, diff,
     )
     store.add_candidate(candidate)
     outcomes = (
@@ -143,6 +143,24 @@ def test_promoter_supports_sha256_git_object_format(tmp_path):
     )
     assert len(candidate.commit) == 64
     assert result["candidate_commit"] == candidate.commit
+
+
+def test_promoter_rejects_reserved_candidate_target(tmp_path):
+    repository, baseline = _repository(tmp_path)
+    store = ExperimentStore(tmp_path / "db.sqlite3")
+    _, _, public = _add_candidate(
+        repository, store, "exp-unsafe-target", "cand-unsafe-target", baseline, "improved\n",
+        target="brain/skills/.git",
+    )
+    promoter = GitPromoter(
+        store, repository, tmp_path / "releases", tmp_path / "brain-current",
+        PromotionPolicy(), public,
+    )
+
+    with pytest.raises(PolicyRejected, match="candidate target is not a safe"):
+        promoter.promote(
+            "cand-unsafe-target", release_name="brain-v1", manifest_key=b"m" * 32,
+        )
 
 
 def test_unevaluated_or_failed_candidate_cannot_be_promoted(tmp_path):
