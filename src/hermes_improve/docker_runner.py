@@ -17,6 +17,7 @@ from .artifacts import ArtifactStore
 from .errors import IntegrityError
 from .ingestion import redact_text
 from .models import Benchmark, RunObservation, canonical_json
+from .verifier import verify_deterministic_output
 
 
 _PINNED_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
@@ -137,25 +138,30 @@ class DockerCommandRunner:
             latency_ms = (time.monotonic() - started) * 1000
             if exit_code in {125, 126, 127}:
                 raise RuntimeError(f"Docker failed to execute benchmark: {redact_text(output)}")
+            passed, quality, verifier_results = verify_deterministic_output(
+                benchmark, exit_code=exit_code, output=output
+            )
             output = redact_text(output)
             payload = json.dumps({
                 "task_id": benchmark.id,
                 "commit": commit,
                 "seed": seed,
                 "exit_code": exit_code,
+                "deterministic_pass": passed,
+                "quality": quality,
+                "verifier_results": verifier_results,
                 "output": output,
                 "workspace_digest": workspace_digest,
                 "environment_digest": environment_digest,
             }, sort_keys=True).encode()
             artifact_digest, _ = self.artifacts.put(payload)
-        passed = exit_code == expected_exit
         return RunObservation(
             task_id=benchmark.id,
             commit=commit,
             seed=seed,
             environment_digest=environment_digest,
             success=passed,
-            quality=100.0 if passed else 0.0,
+            quality=quality,
             tokens=0,
             latency_ms=latency_ms,
             deterministic_pass=passed,

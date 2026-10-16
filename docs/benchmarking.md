@@ -24,7 +24,26 @@ permissions; the capability alone is not a security boundary.
 The runner requires `environment.container_image` pinned by SHA-256 digest,
 `network_policy: disabled`, an argv-array command, and an expected exit code.
 It exports the selected Git commit, rejects symlinks and oversized source
-trees, and records redacted output as a content-addressed artifact.
+trees, and records redacted output plus per-check results as a
+content-addressed artifact.
+
+`verification.deterministic` supports up to 64 declarative checks:
+
+```json
+[
+  {"type": "exit_code"},
+  {"type": "json_path_equals", "path": ["status"], "expected": "ok"},
+  {"type": "output_contains", "expected": "completed"}
+]
+```
+
+Supported types are `exit_code`, `output_exact`, `output_contains`,
+`output_not_contains`, `json_output_equals`, and `json_path_equals`. The exit
+code check defaults to `ground_truth.expected_exit_code` and is added
+automatically when omitted. JSON equality is type-sensitive (for example,
+`true` does not equal `1`). Unsupported or malformed checks fail closed rather
+than passing on a successful process exit. Quality is the percentage of
+deterministic checks passed; overall task success still requires every check.
 
 ## Still required
 

@@ -12,7 +12,7 @@ method were not carried forward as production-safe mechanisms.
 
 | System | Verified in this work | Status in this repository |
 |---|---|---|
-| Hermes Agent | Local checkout at `/home/dev/.hermes/hermes-agent`, HEAD `e06df9c2eae6901f4c88f464e0ae6e753c0428b8`; `PluginContext.register_hook`, `on_session_finalize`, and `agent.trace_upload.load_session_messages` were inspected | Optional entry-point plugin registers the finalize hook and reads persisted messages; operator opt-in required. Unit tested, but no live Hermes installation test or `batch_runner` integration |
+| Hermes Agent | Local checkout at `/home/dev/.hermes/hermes-agent`, HEAD `e06df9c2eae6901f4c88f464e0ae6e753c0428b8`; `PluginContext.register_hook`, `on_session_finalize`, and `agent.trace_upload.load_session_messages` were inspected | Package installed into the local Hermes venv; its entry point loaded, registered with the real `PluginManager`, and dispatched through `invoke_hook` into the redacted queue using a mocked transcript loader. Hermes `batch_runner` is not integrated. No real CLI session was finalized and the SessionDB loader was not exercised end-to-end. Operator opt-in remains required |
 | Curator | Existing Hermes checkout provides Curator-related modules and skill usage surfaces | Read-only signal adapter contract exists; there is no direct production mutation path here |
 | `hermes-agent-self-evolution` | Not inspected/pinned during this phase | Not integrated |
 | DSPy | Not inspected/pinned during this phase | Not integrated |
@@ -33,9 +33,11 @@ projects or a live Qwen server.
 - Benchmark validation, access checks, hashes, storage, verifiers, and policy
   decisions must work without any LLM dependency.
 
-## Next discovery gate
+## Remaining discovery gate
 
-Before wiring runtime integration, record exact Hermes and Curator commit/API
-details, inspect the self-evolution/GEPA/DSPy revisions proposed for use, and
-exercise the configured Qwen endpoint. Pin tested versions and document
-permission, prompt-injection, data-retention, and API-compatibility risks.
+Before claiming production integration, exercise the adapter with a real
+Hermes SessionDB and finalized CLI session, then verify the configured
+`batch_runner` path. Record Curator API details, inspect the self-evolution/
+GEPA/DSPy revisions proposed for use, and exercise the configured Qwen
+endpoint. Pin tested versions and document permission, prompt-injection,
+data-retention, and API-compatibility risks.

@@ -39,7 +39,10 @@ under `state_dir`. Keep this path private and point
 In multi-profile Hermes installations, configure a distinct state directory
 per profile. The hook is disabled unless `auto_ingest` is explicitly `true`.
 This integration was checked against the API present at the Hermes revision
-recorded in `discovery.md`; it has not been deployed in a live Hermes process.
+recorded in `discovery.md`. The package was installed into the local Hermes
+virtual environment, and an entry-point/PluginManager hook smoke test queued a
+mocked transcript. It has not yet been verified with a real finalized Hermes
+session or SessionDB transcript.
 
 ## Available operator workflows
 
