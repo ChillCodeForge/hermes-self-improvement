@@ -13,6 +13,7 @@ from .artifacts import ArtifactStore
 from .batch_ingestion import load_batch_runner_export
 from .benchmarks import BenchmarkStore
 from .candidate_builder import create_skill_candidate
+from .curator import CuratorAdapter
 from .docker_runner import DockerCommandRunner
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue, contains_secret_material
@@ -30,6 +31,8 @@ from .store import ExperimentStore
 
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MAX_MONITOR_FILE_BYTES = 10 * 1024 * 1024
+_MAX_CURATOR_REPORT_BYTES = 1024 * 1024
+_MAX_CURATOR_REPORT_RECORDS = 10_000
 
 
 def _paths() -> tuple[Path, Path]:
@@ -146,6 +149,29 @@ def _bounded_json_preview(value: object, limit: int) -> dict[str, object]:
     return {"json": serialized[:limit], "truncated": len(serialized) > limit}
 
 
+def _load_curator_usage_report(path: Path) -> list[dict[str, object]]:
+    raw = path.read_bytes()
+    if len(raw) > _MAX_CURATOR_REPORT_BYTES:
+        raise ValueError("Curator usage report exceeds the 1 MiB limit")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Curator usage report must be valid UTF-8 JSON") from exc
+    if not isinstance(data, list) or len(data) > _MAX_CURATOR_REPORT_RECORDS:
+        raise ValueError("Curator usage report must be an array of at most 10,000 rows")
+    allowed = {"name", "use_count", "patch_count", "activity_count"}
+    for index, row in enumerate(data, 1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Curator usage report row {index} must be an object")
+        extra = row.keys() - allowed
+        if extra:
+            raise ValueError(
+                f"Curator usage report row {index} has unsupported fields: "
+                f"{', '.join(sorted(extra))}"
+            )
+    return data
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -159,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     dream.add_argument("--stage", choices=["light", "rem", "deep"], default="light")
     dream.add_argument("--limit", type=int, default=100)
     dream.add_argument("--hypotheses", type=Path)
+    dream.add_argument("--curator-report", type=Path)
     benchmarks = sub.add_parser("benchmarks")
     benchmark_sub = benchmarks.add_subparsers(dest="benchmark_command", required=True)
     benchmark_sub.add_parser("validate")
@@ -242,6 +269,8 @@ def main() -> int:
         }, indent=2))
     elif args.command == "dream":
         if args.stage == "deep":
+            if args.curator_report is not None:
+                raise ValueError("--curator-report is supported only by LIGHT and REM dreaming")
             if args.hypotheses is None:
                 raise ValueError("DEEP dreaming requires --hypotheses JSON input")
             hypotheses = json.loads(args.hypotheses.read_text(encoding="utf-8"))
@@ -250,13 +279,20 @@ def main() -> int:
             result = DreamingEngine(OpenAICompatibleQwen(QwenConfig.from_env())).deep(hypotheses)
             print(json.dumps({"candidates": result}, indent=2))
             return 0
+        curator = (
+            CuratorAdapter(lambda: _load_curator_usage_report(args.curator_report))
+            if args.curator_report is not None else None
+        )
         queue = SessionQueue(database.parent / "sessions.sqlite3")
         session_ids = queue.queued(args.limit)
         sessions = [queue.get(session_id) for session_id in session_ids]
         if args.stage == "light":
-            report = DreamingEngine().light(sessions)
+            report = DreamingEngine(curator=curator).light(sessions)
         else:
-            report = DreamingEngine(OpenAICompatibleQwen(QwenConfig.from_env())).rem(sessions)
+            report = DreamingEngine(
+                OpenAICompatibleQwen(QwenConfig.from_env()),
+                curator=curator,
+            ).rem(sessions)
         for session_id in session_ids:
             queue.set_status(session_id, "processed")
         print(json.dumps({

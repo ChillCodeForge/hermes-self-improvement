@@ -53,8 +53,12 @@ session or SessionDB transcript.
   failure signals. This imports previous run data only—it does not run Hermes
   or produce candidate evaluation results.
 - `dream --stage light|rem` analyzes queued evidence; REM requires a configured
-  loopback Qwen endpoint. `dream --stage deep --hypotheses FILE` produces
-  filtered proposals and also requires Qwen.
+  loopback Qwen endpoint. An optional `--curator-report FILE` supplies a
+  bounded JSON array of read-only skill usage counters to LIGHT/REM:
+  `{"name":"skill-name","use_count":4,"patch_count":1,"activity_count":7}`.
+  This is caller-supplied data, not a live Hermes Curator connector.
+  `dream --stage deep --hypotheses FILE` produces filtered proposals and also
+  requires Qwen.
 - `benchmarks mine SESSION_ID` creates a benchmark proposal; proposals require
   review before they are admitted to a benchmark suite. Use
   `benchmarks inspect-candidate FINGERPRINT` to inspect a bounded preview of
