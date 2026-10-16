@@ -33,17 +33,19 @@ content-addressed artifact.
 [
   {"type": "exit_code"},
   {"type": "json_path_equals", "path": ["status"], "expected": "ok"},
+  {"type": "json_required_keys", "expected": ["status", "result"]},
   {"type": "output_contains", "expected": "completed"}
 ]
 ```
 
 Supported types are `exit_code`, `output_exact`, `output_contains`,
-`output_not_contains`, `json_output_equals`, and `json_path_equals`. The exit
-code check defaults to `ground_truth.expected_exit_code` and is added
-automatically when omitted. JSON equality is type-sensitive (for example,
-`true` does not equal `1`). Unsupported or malformed checks fail closed rather
-than passing on a successful process exit. Quality is the percentage of
-deterministic checks passed; overall task success still requires every check.
+`output_not_contains`, `json_output_equals`, `json_required_keys`,
+`json_path_exists`, and `json_path_equals`. The exit code check defaults to
+`ground_truth.expected_exit_code` and is added automatically when omitted. JSON
+equality is type-sensitive (for example, `true` does not equal `1`).
+Unsupported or malformed checks fail closed rather than passing on a
+successful process exit. Quality is the percentage of deterministic checks
+passed; overall task success still requires every check.
 
 ## Still required
 

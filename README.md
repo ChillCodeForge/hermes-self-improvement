@@ -340,9 +340,9 @@ and exit state. Large trajectories belong in a content-addressed artifact store
 
 Deterministic verifiers take precedence over model judging. The Docker command
 runner currently supports exit-code, exact/contains/not-contains captured
-output, and JSON-output/path equality checks. File-state, regex, unit/build/
-lint/type-check, full JSON-schema, Git-diff, HTTP-response, and MCP-health
-verifiers remain planned.
+output, required JSON keys, and JSON path existence/equality checks.
+File-state, regex, unit/build/lint/type-check, full JSON-schema, Git-diff,
+HTTP-response, and MCP-health verifiers remain planned.
 
 When objective verification is insufficient, an optional local judge can use
 blind pairwise comparison with A/B identity hidden and a second run with order

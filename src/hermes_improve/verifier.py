@@ -54,6 +54,19 @@ def verify_deterministic_output(
         elif check_type == "json_output_equals":
             if not isinstance(raw, Mapping) or "expected" not in raw:
                 raise ValueError("json_output_equals verifier requires an expected value")
+        elif check_type == "json_required_keys":
+            if (
+                not isinstance(expected, list) or not expected
+                or len(expected) > _MAX_CHECKS
+                or not all(isinstance(key, str) and key for key in expected)
+                or len(set(expected)) != len(expected)
+            ):
+                raise ValueError("json_required_keys verifier requires a non-empty array of unique strings")
+        elif check_type == "json_path_exists":
+            if not isinstance(path, list) or not path:
+                raise ValueError("json_path_exists verifier requires a non-empty path array")
+            if any(isinstance(part, bool) or not isinstance(part, (str, int)) for part in path):
+                raise ValueError("json_path_exists path elements must be strings or integers")
         elif check_type == "json_path_equals":
             if not isinstance(path, list) or not path:
                 raise ValueError("json_path_equals verifier requires a non-empty path array")
@@ -94,17 +107,28 @@ def _check(check_type: str, expected: Any, path: Any, exit_code: int, output: st
         return False
     if check_type == "json_output_equals":
         return canonical_json(parsed) == canonical_json(expected)
+    if check_type == "json_required_keys":
+        return isinstance(parsed, Mapping) and all(key in parsed for key in expected)
+    if check_type == "json_path_exists":
+        found, _value = _resolve_path(parsed, path)
+        return found
     if check_type == "json_path_equals":
-        value = parsed
-        for part in path:
-            if isinstance(value, Mapping) and isinstance(part, str) and part in value:
-                value = value[part]
-            elif isinstance(value, list) and isinstance(part, int) and 0 <= part < len(value):
-                value = value[part]
-            else:
-                return False
+        found, value = _resolve_path(parsed, path)
+        if not found:
+            return False
         return canonical_json(value) == canonical_json(expected)
     raise AssertionError(f"unhandled verifier {check_type!r}")
+
+
+def _resolve_path(value: Any, path: list[Any]) -> tuple[bool, Any]:
+    for part in path:
+        if isinstance(value, Mapping) and isinstance(part, str) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and isinstance(part, int) and 0 <= part < len(value):
+            value = value[part]
+        else:
+            return False, None
+    return True, value
 
 
 def _reject_nonstandard_constant(value: str) -> None:

@@ -84,6 +84,28 @@ def test_verifier_does_not_treat_json_boolean_as_integer():
 
 
 @pytest.mark.parametrize(
+    ("check", "output", "expected_pass"),
+    [
+        ({"type": "json_required_keys", "expected": ["answer", "status"]},
+         '{"answer":42,"status":"ok"}', True),
+        ({"type": "json_required_keys", "expected": ["answer", "status"]},
+         '{"answer":42}', False),
+        ({"type": "json_path_exists", "path": ["items", 1, "id"]},
+         '{"items":[{},{"id":"x"}]}', True),
+        ({"type": "json_path_exists", "path": ["items", 2]},
+         '{"items":[{},{"id":"x"}]}', False),
+    ],
+)
+def test_verifier_supports_required_json_keys_and_nested_path(check, output, expected_pass):
+    passed, quality, results = verify_deterministic_output(
+        benchmark([check]), exit_code=0, output=output
+    )
+    assert passed is expected_pass
+    assert results[-1]["passed"] is expected_pass
+    assert quality == (100.0 if expected_pass else 50.0)
+
+
+@pytest.mark.parametrize(
     ("checks", "message"),
     [
         (["unknown-check"], "unsupported deterministic verifier"),
