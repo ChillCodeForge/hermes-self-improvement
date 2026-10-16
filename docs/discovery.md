@@ -12,7 +12,7 @@ method were not carried forward as production-safe mechanisms.
 
 | System | Verified in this work | Status in this repository |
 |---|---|---|
-| Hermes Agent | Local checkout at `/home/dev/.hermes/hermes-agent`; the integration target includes `agent/curator.py` and its usage tracking | No runtime hook is wired yet; a future adapter must be tested against a pinned Hermes revision |
+| Hermes Agent | Local checkout at `/home/dev/.hermes/hermes-agent`, HEAD `e06df9c2eae6901f4c88f464e0ae6e753c0428b8`; `PluginContext.register_hook`, `on_session_finalize`, and `agent.trace_upload.load_session_messages` were inspected | Optional entry-point plugin registers the finalize hook and reads persisted messages; operator opt-in required. Unit tested, but no live Hermes installation test or `batch_runner` integration |
 | Curator | Existing Hermes checkout provides Curator-related modules and skill usage surfaces | Read-only signal adapter contract exists; there is no direct production mutation path here |
 | `hermes-agent-self-evolution` | Not inspected/pinned during this phase | Not integrated |
 | DSPy | Not inspected/pinned during this phase | Not integrated |

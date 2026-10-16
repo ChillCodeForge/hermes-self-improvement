@@ -33,18 +33,23 @@ def test_cluster_split_leakage_is_rejected(tmp_path):
     root = tmp_path / "benchmarks"
     root.mkdir()
     (root / "a.json").write_text(json.dumps(data("task-a", "TRAIN")))
-    (root / "b.json").write_text(json.dumps(data("task-b", "SEALED_HOLDOUT")))
+    holdout = tmp_path / "holdout"
+    holdout.mkdir()
+    (holdout / "b.json").write_text(json.dumps(data("task-b", "SEALED_HOLDOUT")))
     with pytest.raises(ValueError, match="leaks across splits"):
-        BenchmarkStore(root).validate()
+        BenchmarkStore(root, holdout_root=holdout).validate()
 
 
 def test_generator_cannot_read_holdout_but_evaluator_capability_can(tmp_path):
     root = tmp_path / "benchmarks"
     root.mkdir()
-    (root / "secret.json").write_text(json.dumps(data("secret-task", "SEALED_HOLDOUT", "holdout-only")))
+    holdout = tmp_path / "holdout"
+    holdout.mkdir()
+    (holdout / "secret.json").write_text(json.dumps(data("secret-task", "SEALED_HOLDOUT", "holdout-only")))
     access = AccessController()
-    store = BenchmarkStore(root, access)
-    assert store.list(Role.GENERATOR) == []
+    store = BenchmarkStore(root, access, holdout_root=holdout)
+    with pytest.raises(AccessDenied):
+        store.list(Role.GENERATOR)
     with pytest.raises(AccessDenied):
         store.get("secret-task", Role.GENERATOR)
     grant = access.evaluator_holdout_grant(Role.EVALUATOR)
@@ -65,3 +70,28 @@ def test_truthy_non_boolean_security_flag_is_rejected():
     bad["security"]["sanitized"] = "true"
     with pytest.raises(ValueError, match="sanitized"):
         Benchmark.from_dict(bad)
+
+
+def test_manifest_version_changes_with_benchmark_content(tmp_path):
+    root = tmp_path / "benchmarks"
+    root.mkdir()
+    path = root / "task.json"
+    path.write_text(json.dumps(data("task", "TRAIN", "cluster")))
+    first = BenchmarkStore(root).version
+    changed = data("task", "TRAIN", "cluster")
+    changed["task"]["prompt"] = "Different task"
+    path.write_text(json.dumps(changed))
+    assert BenchmarkStore(root).version != first
+
+
+def test_benchmark_secret_scanner_rejects_declared_sanitized_but_secret_data():
+    bad = data("secret-token", "TRAIN")
+    bad["task"]["prompt"] = "Authorization: Bearer abcdefghijklmnop"
+    with pytest.raises(ValueError, match="credential-like"):
+        Benchmark.from_dict(bad)
+
+
+@pytest.mark.parametrize("identifier", ["../outside", "nested/task", ""])
+def test_benchmark_id_is_a_safe_identifier(identifier):
+    with pytest.raises(ValueError, match="safe"):
+        Benchmark.from_dict(data(identifier, "TRAIN"))

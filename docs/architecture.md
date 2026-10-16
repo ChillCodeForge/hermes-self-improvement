@@ -1,47 +1,70 @@
-# Architecture
+# Architecture and implementation status
 
-The initial package implements safety and measurement foundations, not an
-autonomous deployment system.
+This repository implements safety and evaluation components for a future
+Hermes improvement service. It is separate from the Hermes Agent runtime and
+does not yet collect live sessions or deploy changes automatically.
 
 ```text
-Hermes sessions (not wired yet)
-  → sanitized evidence / Curator signals (adapter contract)
-  → generator and immutable candidates (future)
-  → benchmark and evaluator foundations (current)
-  → deterministic policy gate (current)
-  → Git promoter and atomic deployment (future)
-  → provisional monitoring / rollback (future)
+manual JSON export or optional Hermes on_session_finalize plugin
+  → redact and queue
+  → LIGHT/REM/DEEP evidence analysis and benchmark proposals
+  → immutable candidate record referencing a Git commit/diff (created through library API)
+  → paired Docker command evaluation + deterministic policy
+  → signed evaluator report
+  → skills-only Git promotion + atomic release pointer
+  → monitoring API (observations supplied by an external collector)
+  → stable or rollback
 ```
 
-## Role boundaries
+## Implemented components
 
-- Generator: future session analysis and candidate creation; no production,
-  evaluator-policy, verifier, or holdout access.
-- Evaluator: benchmark execution and evidence; current access controller
-  restricts sealed holdout reads to a process-local evaluator capability.
-- Promoter: future Git/deployment authority; not implemented. Evaluation reports
-  are not themselves authorization to deploy.
+- Session-export redaction and durable SQLite queue; an opt-in Hermes
+  finalization plugin backed by the observed SessionDB message-loader API;
+  benchmark eligibility and exact task fingerprint proposals.
+- Benchmark schema checks, split/cluster leakage checks, and separate-root
+  loading for sealed holdout.
+- Experiment, candidate, run, evaluation, artifact, decision, and release
+  persistence; SHA-256 content-addressed artifacts.
+- Deterministic verifier interfaces and hard-gate promotion policy.
+- Paired runner orchestration, confidence intervals, Ed25519 report signatures,
+  and a Docker runner for declared command-based benchmarks.
+- Loopback-first Qwen-compatible API adapter, blind swapped pairwise judgment,
+  and optional model usage/latency metrics.
+- Version-gated strategy interface and iterative optimization API; they do
+  not include a verified external GEPA/DSPy integration or an automated
+  candidate-commit-writing CLI workflow.
+- Git promoter restricted to skill paths, with evidence and diff checks,
+  release manifests, atomic symlink switching, and rollback.
+- Post-promotion monitoring decision API; it is not wired to a live Hermes
+  telemetry collector and has no CLI command to ingest production observations.
 
-The process-local holdout capability prevents accidental API misuse in one
-process; it is **not OS-level isolation** and does not make the repository
-production-ready. Deployment must add separate Unix identities and filesystem
-permissions.
+## Role boundaries and remaining isolation work
 
-## Current components
+- **Generator:** consumes redacted/untrusted evidence and proposes hypotheses.
+  It must not read sealed benchmark files or modify production.
+- **Evaluator:** runs paired tests and signs evidence. The Python holdout
+  capability is process-local, so filesystem permissions and a dedicated
+  evaluator identity are still essential.
+- **Promoter:** verifies and deploys skill-only changes. The CLI checks its
+  effective UID against configuration, but operators must provision and
+  configure the separate user and protected paths.
 
-- Typed benchmark records and validation, including split/cluster leakage
-  detection.
-- Role-aware benchmark visibility and evaluator holdout capability.
-- SQLite experiment, candidate, evaluation, task result, artifact, decision,
-  and release metadata tables.
-- SHA-256 content-addressed artifacts.
-- Deterministic verifier protocol with command, file, regex, and JSON checks.
-- Ordered hard safety/correctness/regression policy checks; no weighted score
-  can override a failed hard gate.
+The Docker runner isolates candidate command execution relative to the host
+using Docker controls, but the Docker daemon itself remains privileged. It is
+not a Hermes runtime runner and does not execute Hermes tasks unless a benchmark
+provides a compatible command and pinned environment.
 
-## Planned next layers
+## Not yet implemented or validated
 
-Paired isolated baseline/candidate runners; broader verifier catalog; approved
-benchmark suite manifests and sealed holdout rotation; candidate branch/worktree
-management; signed promotion manifests; atomic release switching and rollback;
-session hooks, dreaming, optional Qwen judge, and post-promotion monitoring.
+- Live installation/compatibility verification of the optional Hermes
+  finalization plugin and a supported `batch_runner` adapter.
+- Curated and replay-verified 20–50-task starter benchmark corpus and
+  holdout-rotation/spent-generation management.
+- Automatic immutable candidate creation from Dreaming proposals.
+- Pinned and tested Hermes self-evolution, GEPA, or DSPy integrations.
+- Live Qwen endpoint validation, production telemetry ingestion, installation
+  hardening, and a complete end-to-end Hermes skill improvement/deployment
+  workflow.
+
+These are explicit gaps, not completed features. See `security.md` and
+`operations.md` before attempting deployment.

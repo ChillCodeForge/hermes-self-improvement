@@ -44,3 +44,16 @@ def test_evaluation_with_candidate_hash_mismatch_is_rejected(tmp_path):
     report = EvaluationReport("cand-1", "wrong-hash", "bench-v1", "1", (), False, ("bad",))
     with pytest.raises(ValueError, match="hash"):
         store.record_evaluation("eval-1", "cand-1", report)
+
+
+def test_benchmark_candidates_deduplicate_but_retain_all_sources(tmp_path):
+    from hermes_improve.miner import mine_session
+
+    store = ExperimentStore(tmp_path / "state.sqlite3")
+    one = mine_session({"session_id": "s1", "task": {"prompt": "Fix the bug"}})
+    two = mine_session({"session_id": "s2", "task": {"prompt": "fix   the BUG"}})
+    assert store.save_benchmark_candidate(one, "s1") is True
+    assert store.save_benchmark_candidate(two, "s2") is False
+    rows = store.list_benchmark_candidates()
+    assert len(rows) == 1
+    assert rows[0]["source_sessions"] == ["s1", "s2"]

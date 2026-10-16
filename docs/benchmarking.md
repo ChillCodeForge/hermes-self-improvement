@@ -1,18 +1,35 @@
-# Benchmarking foundation
+# Benchmarking
 
-Benchmark JSON records are validated by `Benchmark.from_dict`. Current checks
-cover schema version, required objects, task title/prompt, enumerated split and
-eligibility, reproducibility range, sanitized/no-secrets flags, and cluster
-identity. `BenchmarkStore.validate()` rejects duplicate ID/version pairs and
-any cluster assigned to more than one split.
+Benchmark JSON records are parsed and validated by `Benchmark.from_dict`.
+`BenchmarkStore.validate()` checks duplicate ID/version pairs, required
+metadata, sanitization flags, separate storage of sealed holdout, and that a
+cluster is assigned to only one split. Its manifest version is a deterministic
+hash of the validated records.
 
-`BenchmarkStore` restricts generator reads to TRAIN/VALIDATION and only permits
-SEALED_HOLDOUT access using an evaluator capability. This control is
-process-local; OS-level holdout isolation remains required before running
-untrusted optimizers. The sample under `benchmarks/train/` is a schema fixture,
-not a curated evaluation corpus.
+Generator-facing stores may contain only public benchmark roots. They expose
+TRAIN/VALIDATION while evaluator-only suites remain hidden. Evaluator holdout
+access uses a process-local capability and must be backed by OS filesystem
+permissions; the capability alone is not a security boundary.
 
-Not implemented yet: benchmark mining, redaction, exact/near deduplication,
-semantic clustering, holdout generation rotation/spent persistence, impact-aware
-suite selection, benchmark provenance verification, and the 20–50 real-task
-starter set.
+## Available benchmark tools
+
+- `hermes-improve benchmarks validate` validates the public set.
+- `hermes-improve benchmarks list --role ROLE` lists visible records.
+- `hermes-improve benchmarks mine SESSION_ID` creates a deduplicated proposal
+  from a redacted session. The miner scores reproducibility and ground-truth
+  source; it does not establish truth or automatically admit the proposal.
+- `hermes-improve evaluate` selects declared FULL tasks plus sealed holdout
+  tasks, then uses a digest-pinned Docker command runner.
+
+The runner requires `environment.container_image` pinned by SHA-256 digest,
+`network_policy: disabled`, an argv-array command, and an expected exit code.
+It exports the selected Git commit, rejects symlinks and oversized source
+trees, and records redacted output as a content-addressed artifact.
+
+## Still required
+
+The repository includes only a schema fixture, not the 20–50 curated
+real-session tasks required for meaningful readiness. Manual curation and
+replay verification are still required. Semantic deduplication, human review
+workflow, benchmark provenance attestation, holdout-generation rotation and
+spent-state persistence, and impact-aware suite selection are not implemented.

@@ -1,21 +1,24 @@
-# Evaluation foundation
+# Evaluation
 
-`PairedEvaluator` accepts an injected `BenchmarkRunner` contract and executes
-baseline/candidate runs with matching task IDs, seeds, and environment digest.
-The runner must return commit/task/seed identity with every observation; a
-mismatch fails closed. The evaluator aggregates paired outcomes per task and
-applies `PromotionPolicy` hard gates. The store rejects a report whose candidate
-ID/hash differs from the immutable stored candidate.
+`PairedEvaluator` accepts a `BenchmarkRunner` and executes baseline/candidate
+runs for matching task IDs and seeds. It verifies the runner's commit/task/seed
+identity and equal environment digest, aggregates per-task measurements, and
+applies `PromotionPolicy` hard gates. Persisted evaluations require an
+Ed25519 private key; the signature covers the report and per-run observations.
+Artifacts are stored separately by content hash.
 
-This repository does not yet include a concrete Hermes runtime runner, a
-candidate sandbox, full trajectory persistence, confidence intervals, a
-multi-run statistical analysis, or a subjective Qwen judge. The injected runner
-must not be treated as safe for executing untrusted candidate code until those
-controls exist.
+The included `DockerCommandRunner` handles declared command benchmarks in
+digest-pinned, no-network containers with read-only source input, non-root
+execution, dropped capabilities, resource limits, and bounded temporary
+filesystems. It does not implement a Hermes `batch_runner` or general
+interactive-agent environment.
 
-The policy currently blocks security or deterministic failure, any critical or
-high regression, excess medium regression, missing Full/Holdout evidence,
-inadequate quality improvement, excessive category degradation, excessive
-token increase, latency regression, and final-task failure. Skill types are
-the only default auto-promotable types; a complete Git promoter is not yet
-implemented.
+The policy blocks security/deterministic failure, critical or high regressions,
+excess medium regressions, missing Full/Holdout evidence, insufficient quality
+gain, uncertainty intervals containing regression, category degradation,
+excess token/latency growth, and final-task failure. Skills are the only
+default auto-promotable candidate class.
+
+An evaluation report is not sufficient on its own to establish operational
+safety: benchmark quality, evaluator key custody, filesystem isolation,
+independent role identities, and the runner's environment must also be trusted.

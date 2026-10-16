@@ -10,13 +10,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "ChillCodeForge" }]
-dependencies = []
+dependencies = ["cryptography>=42"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
 
 [project.scripts]
 hermes-improve = "hermes_improve.cli:main"
+
+[project.entry-points."hermes_agent.plugins"]
+hermes-self-improvement = "hermes_improve.hermes_plugin:register"
 
 [tool.setuptools.packages.find]
 where = ["src"]

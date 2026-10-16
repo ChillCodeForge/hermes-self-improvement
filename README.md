@@ -9,18 +9,33 @@ better is never sufficient: every candidate must be immutable, evaluated
 against an unchanged baseline, checked for regressions, and promoted through a
 controlled Git-backed process.
 
-> **Project status:** The repository now contains an early evaluation-foundation
-> package (`0.1.0`): benchmark schema validation and split/cluster leakage
-> checks, process-local role checks for sealed holdout reads, SQLite experiment
-> metadata, SHA-256 content-addressed artifacts, a starter deterministic
-> verifier registry, a configurable hard-gate policy, and a Curator signal
-> adapter contract. This is not yet an autonomous improvement or deployment
-> system. Session hooks, isolated baseline/candidate execution, Qwen, Dreaming,
-> Git promotion, atomic deployment, rollback, and OS-level isolation are not
-> implemented. See `docs/security.md` and `docs/architecture.md` for the
-> boundaries and limitations.
+> **Project status:** Version `0.1.0` now includes redacted session-export
+> ingestion, benchmark mining proposals, LIGHT/REM/DEEP Dreaming APIs, SQLite
+> experiment/evaluation persistence, benchmark split and cluster-leakage
+> checks, deterministic verifiers, paired evaluation, hard-gate policy checks,
+> confidence intervals, Ed25519-signed reports, and a digest-pinned Docker
+> command runner (`--network=none`, read-only input/root, non-root user and
+> resource limits). A Git promoter verifies signed Full+Holdout evidence and
+> the exact skills-only diff, creates a signed release manifest, switches a
+> deployment symlink atomically, and supports rollback. A monitoring API can
+> recommend rollback or mark a release stable after enough observations. The
+> package also exports an opt-in Hermes plugin for `on_session_finalize`
+> ingestion; its hook API was checked against a local Hermes revision, but the
+> plugin has not been exercised inside a live Hermes runtime.
+>
+> This is **not yet a complete autonomous Hermes self-improvement service**.
+> The optional Hermes finalize hook is version-sensitive and no Hermes
+> `batch_runner` adapter is wired; the Docker runner handles declared command
+> benchmarks only.
+> The repository still lacks the curated 20–50 real-task benchmark corpus,
+> tested external GEPA/DSPy/self-evolution integrations, a live Qwen service,
+> a managed Unix-user/filesystem-isolation setup, a production monitoring
+> collector, and a verified end-to-end Hermes skill improvement deployment.
+> Process-local holdout capabilities and UID checks do not themselves provide
+> OS isolation. See `docs/security.md`, `docs/operations.md`, and
+> `docs/architecture.md` for the exact boundaries.
 
-### Current foundation quick start
+### Quick start
 
 Install the package and optional test dependency:
 
@@ -36,6 +51,33 @@ The default benchmark directory is `benchmarks/`; the database defaults to
 `HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The included sample task
 is a schema fixture, not one of the 20–50 curated real-task benchmarks required
 for evaluation readiness.
+
+### Implemented in this repository
+
+- Python APIs and CLI for manual redacted session-export ingestion, queued
+  LIGHT/REM/DEEP evidence analysis, benchmark proposals, and candidate records.
+- An opt-in Hermes entry-point plugin that reads finalized transcript messages
+  from SessionDB and queues redacted exports under the active Hermes home.
+- JSON benchmark validation, split/cluster leakage checks, separate holdout
+  roots, SQLite experiment/evaluation/release metadata, and content-addressed
+  artifacts.
+- Paired baseline/candidate evaluation, deterministic hard gates, confidence
+  intervals, Ed25519-signed reports, and a Docker runner for explicit
+  digest-pinned command benchmarks.
+- A skills-only Git promoter with signed manifests, atomic release-pointer
+  switching, rollback, and a monitoring decision API.
+
+Hermes hook ingestion is disabled by default and requires explicit plugin
+enablement/settings. Candidate proposals are not automatically converted
+into Git commits. The
+`evaluate` CLI accepts only command-based benchmark environments; it is not a
+Hermes runtime or `batch_runner`. Production ingestion and monitoring need
+external callers. The end-to-end flow has been exercised with a temporary Git
+repository and local Docker image, but not against a real Hermes task corpus
+or independently provisioned generator/evaluator/promoter identities.
+
+The sections below describe the target design where not explicitly marked as
+implemented. A target requirement is not evidence that the feature exists.
 
 ## Why this project
 
@@ -200,8 +242,8 @@ to prevent train/holdout leakage.
 
 ### Benchmark record
 
-The schema should use validated JSON or YAML (for example, Pydantic models) and
-include at least:
+The target schema includes at least the following fields. The current package
+accepts validated JSON via Python dataclasses (not Pydantic or YAML):
 
 ```yaml
 schema_version: 1
@@ -266,8 +308,14 @@ before split assignment, and cluster identity must prevent cross-split leakage.
 
 ## Evaluation and measurement
 
-Baseline and candidate runs are paired on the same task, environment, model
-configuration, limits, and seeds. The immutable evaluation identity includes:
+The current `PairedEvaluator` and Docker command runner pair baseline and
+candidate runs on identical task IDs and seeds and require matching
+environment digests. The broader target evaluation identity should also include
+model configuration and limits. Current CLI evaluation only handles
+digest-pinned Docker command benchmarks; no Hermes runner or Qwen-in-the-loop
+evaluation is wired.
+
+The immutable evaluation identity includes:
 baseline and candidate commits, candidate hash, benchmark version, suite, model
 configuration digest, environment digest, seeds, and policy version.
 
@@ -290,10 +338,10 @@ latency, retries, final output, filesystem changes, Git diff, verifier outcomes,
 and exit state. Large trajectories belong in a content-addressed artifact store
 (SHA-256 plus path), not SQLite blobs.
 
-Deterministic verifiers take precedence over model judging. The planned plugin
-catalog includes command/exit-code, unit/integration test, build, lint,
-type-check, file-exists/content, unchanged-path, JSON-schema, regex, Git-diff,
-HTTP-response, and MCP-health verifiers.
+Deterministic verifiers take precedence over model judging. The verifier interfaces currently include command/exit-code, file
+exists/content, required JSON keys, and regex checks. The planned plugin
+catalog adds unit/integration test, build, lint, type-check, unchanged-path,
+full JSON-schema, Git-diff, HTTP-response, and MCP-health verifiers.
 
 When objective verification is insufficient, an optional local judge can use
 blind pairwise comparison with A/B identity hidden and a second run with order
@@ -356,32 +404,43 @@ promotes.
 
 ## Session ingestion and Dreaming
 
-Session collection should run after completion, outside the normal
-user-request critical path. The ingestion pipeline is: export → redact secrets
-and credentials → normalize → extract metadata/metrics → queue. Heavy model
-analysis is deferred.
+The current `ingest EXPORT.json` CLI accepts a manual session export, redacts
+common credential fields and token formats, tags the result as untrusted, and
+stores it in a local queue (up to 10 MiB). An optional package entry point
+registers an `on_session_finalize` callback with Hermes; when explicitly
+enabled, it uses Hermes' persisted-message loader and writes to a private
+per-profile state directory. This adapter is based on the API observed at
+Hermes commit `e06df9c2eae6901f4c88f464e0ae6e753c0428b8`; runtime installation
+and compatibility across Hermes versions remain unverified. It does not
+normalize every Hermes SessionDB field or extract all target metrics.
+Collection should remain outside the normal user-request critical path.
 
 Dreaming has three stages:
 
-- **LIGHT (no LLM):** redaction checks, normalization, fingerprints, error and
-  task extraction, usage/token/tool metrics, deduplication, clustering, and
-  Curator signals.
-- **REM (optional local Qwen):** analyze cross-session patterns such as
+- **LIGHT (implemented, no LLM):** count recurring error strings and observed
+  tool names from queued session exports. It does not yet calculate the full
+  metric set, cluster semantic issues, or incorporate live Curator signals.
+- **REM (implemented proposal API, optional local Qwen):** analyze bounded,
+  explicitly untrusted session projections and validate hypotheses. It can be
+  used to analyze cross-session patterns such as
   recurring errors/successes, missing or redundant skills, poor tool selection,
   unnecessary calls/tokens, deterministic reasoning that could become a tool,
   and routing issues.
-- **DEEP (optional local Qwen):** turn supported hypotheses into bounded
-  candidates; no direct writes or promotion; maximum five candidates per run.
+- **DEEP (implemented proposal API, optional local Qwen):** turn supplied
+  hypotheses into at most five path-filtered proposals. It does not write
+  candidate commits or promote changes.
 
 All archived sessions, user and assistant text, tool output, repositories,
 websites, logs, and errors are **untrusted evidence**, never instructions.
-Prompt-injection content must not alter system behavior or protected policy.
-Explicit injection tests are required.
+Prompt-injection content must not alter system behavior or protected policy. Current
+prompt-injection safeguards are bounded projections and path filtering, not a
+complete defense.
 
 ## Local model configuration
 
-The optional Qwen integration uses a configurable OpenAI-compatible endpoint;
-model versions must not be hardcoded:
+The optional Qwen adapter uses a configurable OpenAI-compatible endpoint with
+loopback-only defaults and an explicit remote opt-in. `QWEN_JUDGE_MODEL` may
+select a separate judge model:
 
 ```text
 QWEN_BASE_URL
@@ -393,16 +452,17 @@ QWEN_MAX_CONCURRENCY
 ```
 
 Logical roles—`qwen_solver`, `qwen_optimizer`, `qwen_dreamer`, and
-`qwen_judge`—may share a server but require separate prompts, configuration,
-logs, and responsibilities. Record requests, tokens, latency, GPU runtime when
-available, and judge uncertainty. Deterministic-first evaluation, blind A/B
-swaps, calibration, and abstention mitigate same-model optimizer/judge bias.
+`qwen_judge`—use role-specific prompts. The adapter exposes in-memory request,
+token, and latency counters; it does not persist them or capture GPU runtime.
+Blind A/B swaps and abstention are implemented as a helper but are not part of
+the deterministic promotion gate. No live endpoint has been validated.
 
 ## Experiment, artifact, and decision history
 
-SQLite is the initial experiment store. At minimum it should represent
+SQLite is the current experiment store. It persists
 experiments, candidates, evaluation runs, task results, regressions, artifacts,
-decisions, releases, and (for future Laya work) structured decision history.
+and releases. A decisions table is present but has no public recording API.
+Structured decision history is future work, not an active Laya integration.
 An experiment records IDs and lineage; hypothesis and source sessions;
 candidate type, target, and risk; baseline/candidate commits and hash;
 benchmark and policy versions; model/environment digests and seeds; per-task
@@ -419,10 +479,11 @@ initial requirement and must never replace promotion gates.
 
 ## Promotion, deployment, and rollback
 
-V1 promotion is a CLI, not an HTTP service. Before promotion, create and hash a
-manifest containing the experiment ID, candidate and baseline commits, hash,
-benchmark and policy versions, Full and holdout results, regression and
-security summaries, artifact type, release target, and timestamp.
+Skills-only V1 promotion is available through the CLI, not an HTTP service.
+The promoter creates and hashes an HMAC-signed manifest containing the
+experiment ID, candidate and baseline commits, candidate hash, benchmark and
+policy versions, Full and holdout evidence, summaries, artifact type, release
+target, and timestamp.
 
 The promoter must independently verify that the experiment is complete, the
 candidate hash and evaluated/deployed diff match, all required suites and
@@ -430,9 +491,10 @@ security gates pass, no blocking regressions exist, and the artifact type is
 eligible under the exact policy version. Promotion of an unevaluated candidate
 or hash mismatch must be impossible.
 
-After merge and release tagging, deploy atomically. Mark the release
-`PROVISIONAL`; monitor relevant real tasks using read-only shadow replay,
-historical replay, observation, or a controlled canary. Track success rate,
+After Git ref update and release tagging, the promoter switches the configured
+deployment symlink atomically and marks the release `PROVISIONAL`. The
+monitoring Python API can compare supplied observations; it is not wired to
+Hermes or a production collector. Track success rate,
 tool errors, tokens and calls per success, latency, retries, user corrections,
 and regression signals. Move to `STABLE` only with adequate evidence; otherwise
 roll back atomically and record the decision. Avoid simultaneous write agents
@@ -457,7 +519,7 @@ by application-level role names.
 
 ## CLI target
 
-The planned command surface is:
+The current command surface is:
 
 ```text
 hermes-improve status
@@ -465,22 +527,21 @@ hermes-improve ingest
 hermes-improve dream
 hermes-improve candidates list
 hermes-improve evaluate <candidate-id>
-hermes-improve evolve <candidate-id>
 hermes-improve experiments list
 hermes-improve experiments show <id>
-hermes-improve benchmarks list
+hermes-improve benchmarks list --role <role>
 hermes-improve benchmarks validate
-hermes-improve benchmarks replay
-hermes-improve curator status
+hermes-improve benchmarks mine <session-id>
+hermes-improve benchmarks candidates
 hermes-improve releases list
-hermes-improve promote <experiment-id>
+hermes-improve promote <candidate-id> --release brain-vN
 hermes-improve rollback <release>
 ```
 
-Purely deterministic operations—ingestion, hashing, redaction validation,
-deduplication, suite construction, benchmark validation, orchestration,
-verifiers, scoring, regression and promotion rules, Git handling, release,
-rollback, artifact management, and reports—must not require an LLM.
+Some workflows require optional Qwen (REM/DEEP) or Docker (command evaluation).
+Candidate Git commit creation, experiment evolution CLI, replay management,
+Hermes/Curator integrations, production observation collection, and identity
+provisioning are not implemented.
 
 ## Phased delivery
 
