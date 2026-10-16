@@ -9,11 +9,33 @@ better is never sufficient: every candidate must be immutable, evaluated
 against an unchanged baseline, checked for regressions, and promoted through a
 controlled Git-backed process.
 
-> **Project status:** This repository currently contains the project README and
-> design intent. The pipeline, CLI, benchmark store, evaluator, promotion
-> mechanism, and integrations described below are goals, not claims of shipped
-> functionality. Implementation should proceed in verified phases, beginning
-> with the evaluation foundation.
+> **Project status:** The repository now contains an early evaluation-foundation
+> package (`0.1.0`): benchmark schema validation and split/cluster leakage
+> checks, process-local role checks for sealed holdout reads, SQLite experiment
+> metadata, SHA-256 content-addressed artifacts, a starter deterministic
+> verifier registry, a configurable hard-gate policy, and a Curator signal
+> adapter contract. This is not yet an autonomous improvement or deployment
+> system. Session hooks, isolated baseline/candidate execution, Qwen, Dreaming,
+> Git promotion, atomic deployment, rollback, and OS-level isolation are not
+> implemented. See `docs/security.md` and `docs/architecture.md` for the
+> boundaries and limitations.
+
+### Current foundation quick start
+
+Install the package and optional test dependency:
+
+```bash
+python -m pip install -e '.[test]'
+hermes-improve status
+hermes-improve benchmarks validate
+pytest
+```
+
+The default benchmark directory is `benchmarks/`; the database defaults to
+`~/.hermes-improve/experiments.sqlite3`. Override them with
+`HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The included sample task
+is a schema fixture, not one of the 20–50 curated real-task benchmarks required
+for evaluation readiness.
 
 ## Why this project
 

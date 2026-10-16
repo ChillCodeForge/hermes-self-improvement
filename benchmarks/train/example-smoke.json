@@ -1,0 +1,44 @@
+{
+  "benchmark": {
+    "cluster_id": "example-cli-status",
+    "criticality": "normal",
+    "split": "TRAIN",
+    "suites": ["SMOKE"]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "network_policy": "disabled",
+    "type": "local-fixture"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "type": "deterministic_contract"
+  },
+  "id": "example-cli-status",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "project-fixture",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "Report the configured CLI version without contacting an external service.",
+    "title": "CLI version is locally available"
+  },
+  "taxonomy": {
+    "categories": ["cli"],
+    "difficulty": "easy",
+    "required_capabilities": ["local-command"]
+  },
+  "verification": {
+    "deterministic": ["exit-code", "version-output"],
+    "subjective": []
+  },
+  "version": 1
+}
