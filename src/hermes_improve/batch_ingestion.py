@@ -10,6 +10,8 @@ from .models import canonical_json
 
 _MAX_BATCH_FILE_BYTES = 10 * 1024 * 1024
 _MAX_BATCH_RECORDS = 10_000
+_MAX_TOOL_STATS = 512
+_MAX_COUNTER = (1 << 63) - 1
 _TURN_ROLES = {"system": "system", "human": "user", "gpt": "assistant", "tool": "tool"}
 
 
@@ -83,6 +85,25 @@ def load_batch_runner_export(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"batch trajectory line {line_number} has an invalid timestamp")
         if model is not None and not isinstance(model, str):
             raise ValueError(f"batch trajectory line {line_number} has an invalid model")
+        raw_tool_stats = record.get("tool_stats", {})
+        if not isinstance(raw_tool_stats, dict) or len(raw_tool_stats) > _MAX_TOOL_STATS:
+            raise ValueError(f"batch trajectory line {line_number} has invalid tool statistics")
+        tool_stats = {}
+        for name, counts in raw_tool_stats.items():
+            if not isinstance(name, str) or not name.strip() or len(name) > 200 or not isinstance(counts, dict):
+                raise ValueError(f"batch trajectory line {line_number} has invalid tool statistics")
+            normalized = {}
+            for key in ("count", "success", "failure"):
+                value = counts.get(key)
+                if (
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0 or value > _MAX_COUNTER
+                ):
+                    raise ValueError(f"batch trajectory line {line_number} has invalid tool counters")
+                normalized[key] = value
+            if normalized["success"] + normalized["failure"] > normalized["count"]:
+                raise ValueError(f"batch trajectory line {line_number} has inconsistent tool counters")
+            tool_stats[name] = normalized
         identity = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
         session_id = f"hermes-batch-{identity}"
         if session_id in seen_ids:
@@ -99,6 +120,7 @@ def load_batch_runner_export(path: Path) -> list[dict[str, Any]]:
             },
             "task": {"prompt": prompt, "input_available": True},
             "messages": messages,
+            "tool_stats": tool_stats,
             "final_status": "partial" if partial else "completed" if completed else "incomplete",
             "security": {"sanitized": True, "contains_secrets": False},
         })

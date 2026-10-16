@@ -43,9 +43,21 @@ class DreamingEngine:
             for error in session.get("errors", []) if isinstance(session.get("errors", []), list) else []:
                 if isinstance(error, str):
                     errors[error.strip().casefold()[:180]] += 1
-            for tool in session.get("tool_calls", []) if isinstance(session.get("tool_calls", []), list) else []:
-                if isinstance(tool, Mapping) and isinstance(tool.get("name"), str):
-                    tools[tool["name"]] += 1
+            tool_stats = session.get("tool_stats")
+            if isinstance(tool_stats, Mapping):
+                for name, stats in tool_stats.items():
+                    if not isinstance(name, str) or not isinstance(stats, Mapping):
+                        continue
+                    count = stats.get("count", 0)
+                    failures = stats.get("failure", 0)
+                    if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                        tools[name] += count
+                    if isinstance(failures, int) and not isinstance(failures, bool) and failures > 0:
+                        errors[f"tool {name} failed"] += failures
+            else:
+                for tool in session.get("tool_calls", []) if isinstance(session.get("tool_calls", []), list) else []:
+                    if isinstance(tool, Mapping) and isinstance(tool.get("name"), str):
+                        tools[tool["name"]] += 1
         signals = []
         for error, count in errors.most_common(10):
             if count > 1:
@@ -137,7 +149,10 @@ class DreamingEngine:
 
 def _untrusted_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     """Only pass bounded data fields; all content remains explicitly evidence."""
-    allowed = {"session_id", "task", "errors", "tool_calls", "final_status", "hypothesis", "summary", "issue"}
+    allowed = {
+        "session_id", "task", "errors", "tool_calls", "tool_stats", "final_status",
+        "hypothesis", "summary", "issue",
+    }
     projected = {key: value[key] for key in allowed if key in value}
     return {"untrusted_evidence": projected}
 

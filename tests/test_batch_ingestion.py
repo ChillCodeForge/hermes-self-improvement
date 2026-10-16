@@ -7,6 +7,7 @@ import pytest
 
 from hermes_improve.batch_ingestion import load_batch_runner_export
 from hermes_improve.cli import main
+from hermes_improve.dreaming import DreamingEngine
 from hermes_improve.ingestion import SessionQueue
 from hermes_improve.miner import mine_session
 from hermes_improve.models import Eligibility
@@ -57,6 +58,39 @@ def test_batch_runner_import_skips_discard_tombstones_and_is_idempotent(tmp_path
     queue.ingest_many(exports)
     queue.ingest_many(exports)
     assert queue.queued() == [exports[0]["session_id"]]
+
+
+def test_batch_runner_tool_failures_feed_dreaming_failure_signals(tmp_path):
+    record = trajectory_record()
+    record["tool_stats"] = {
+        "terminal": {"count": 3, "success": 1, "failure": 2},
+    }
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    export = load_batch_runner_export(source)[0]
+
+    report = DreamingEngine().light([export])
+
+    assert report.clusters == {"errors": 1, "tools": 1}
+    assert report.signals[0].issue == "tool terminal failed"
+    assert report.signals[0].evidence["occurrences"] == 2
+
+
+@pytest.mark.parametrize(
+    "tool_stats",
+    [
+        {"terminal": {"count": True, "success": 0, "failure": 0}},
+        {"terminal": {"count": 1, "success": 1, "failure": 1}},
+    ],
+)
+def test_batch_runner_import_rejects_invalid_tool_counters(tmp_path, tool_stats):
+    record = trajectory_record()
+    record["tool_stats"] = tool_stats
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="tool counters"):
+        load_batch_runner_export(source)
 
 
 def test_batch_runner_import_rejects_malformed_file_before_cli_ingest(tmp_path, monkeypatch, capsys):
