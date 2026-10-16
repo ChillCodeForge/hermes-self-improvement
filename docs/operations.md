@@ -56,7 +56,12 @@ session or SessionDB transcript.
   loopback Qwen endpoint. `dream --stage deep --hypotheses FILE` produces
   filtered proposals and also requires Qwen.
 - `benchmarks mine SESSION_ID` creates a benchmark proposal; proposals require
-  review before they are admitted to a benchmark suite.
+  review before they are admitted to a benchmark suite. Use
+  `benchmarks inspect-candidate FINGERPRINT` to inspect a bounded preview of
+  its redacted sources, then `benchmarks review-candidate FINGERPRINT
+  --decision accept|reject --reviewer NAME --rationale TEXT` to record an
+  immutable triage decision. Acceptance does not admit the proposal; operators
+  must author and validate a benchmark separately.
 - `candidate create --repository REPO --experiment-id ID --candidate-id ID
   --type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --content FILE
   --hypothesis TEXT` creates an immutable candidate commit in a separate

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import IntegrityError
+from .ingestion import contains_secret_material
 from .models import Candidate, EvaluationReport, candidate_digest, canonical_json, utc_now
 
 
@@ -114,7 +116,11 @@ class ExperimentStore:
                     ground_truth_type TEXT NOT NULL,
                     reasons_json TEXT NOT NULL,
                     source_sessions_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    review_status TEXT NOT NULL DEFAULT 'PENDING',
+                    reviewer TEXT,
+                    review_rationale TEXT,
+                    reviewed_at TEXT
                 );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(evaluation_runs)")}
@@ -122,6 +128,17 @@ class ExperimentStore:
                 db.execute("ALTER TABLE evaluation_runs ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'")
             if "signature" not in columns:
                 db.execute("ALTER TABLE evaluation_runs ADD COLUMN signature TEXT")
+            benchmark_candidate_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(benchmark_candidates)")
+            }
+            for column, definition in (
+                ("review_status", "TEXT NOT NULL DEFAULT 'PENDING'"),
+                ("reviewer", "TEXT"),
+                ("review_rationale", "TEXT"),
+                ("reviewed_at", "TEXT"),
+            ):
+                if column not in benchmark_candidate_columns:
+                    db.execute(f"ALTER TABLE benchmark_candidates ADD COLUMN {column} {definition}")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30)
@@ -287,6 +304,13 @@ class ExperimentStore:
             )
             return True
 
+    @staticmethod
+    def _benchmark_candidate_record(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["reasons"] = json.loads(item.pop("reasons_json"))
+        item["source_sessions"] = json.loads(item.pop("source_sessions_json"))
+        return item
+
     def list_benchmark_candidates(self, limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
@@ -294,13 +318,64 @@ class ExperimentStore:
             rows = db.execute(
                 "SELECT * FROM benchmark_candidates ORDER BY created_at DESC LIMIT ?", (limit,)
             )
-            result = []
-            for row in rows:
-                item = dict(row)
-                item["reasons"] = json.loads(item.pop("reasons_json"))
-                item["source_sessions"] = json.loads(item.pop("source_sessions_json"))
-                result.append(item)
-            return result
+            return [self._benchmark_candidate_record(row) for row in rows]
+
+    def get_benchmark_candidate(self, task_fingerprint: str) -> dict[str, Any]:
+        if not isinstance(task_fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", task_fingerprint):
+            raise ValueError("task fingerprint must be a lowercase SHA-256 digest")
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM benchmark_candidates WHERE task_fingerprint=?",
+                (task_fingerprint,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(task_fingerprint)
+        return self._benchmark_candidate_record(row)
+
+    def review_benchmark_candidate(
+        self, task_fingerprint: str, *, decision: str, reviewer: str, rationale: str,
+    ) -> dict[str, Any]:
+        if not isinstance(task_fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", task_fingerprint):
+            raise ValueError("task fingerprint must be a lowercase SHA-256 digest")
+        if not isinstance(decision, str) or decision not in {"ACCEPTED", "REJECTED"}:
+            raise ValueError("benchmark proposal review decision must be ACCEPTED or REJECTED")
+        if (
+            not isinstance(reviewer, str) or not reviewer.strip() or len(reviewer) > 128
+            or not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 2048
+            or "\x00" in reviewer or "\x00" in rationale
+        ):
+            raise ValueError("benchmark proposal reviews require a reviewer and rationale within the size limits")
+        if contains_secret_material(reviewer) or contains_secret_material(rationale):
+            raise ValueError("benchmark proposal review metadata must not contain credential-like material")
+
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM benchmark_candidates WHERE task_fingerprint=?",
+                (task_fingerprint,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_fingerprint)
+            if row["review_status"] != "PENDING":
+                if (
+                    row["review_status"] == decision
+                    and row["reviewer"] == reviewer.strip()
+                    and row["review_rationale"] == rationale.strip()
+                ):
+                    return self._benchmark_candidate_record(row)
+                raise ValueError("benchmark proposal already has an immutable review decision")
+            reviewed_at = utc_now()
+            db.execute(
+                """UPDATE benchmark_candidates
+                   SET review_status=?, reviewer=?, review_rationale=?, reviewed_at=?
+                   WHERE task_fingerprint=? AND review_status='PENDING'""",
+                (decision, reviewer.strip(), rationale.strip(), reviewed_at, task_fingerprint),
+            )
+            reviewed = db.execute(
+                "SELECT * FROM benchmark_candidates WHERE task_fingerprint=?",
+                (task_fingerprint,),
+            ).fetchone()
+            return self._benchmark_candidate_record(reviewed)
 
     def promotion_evidence(self, candidate_id: str) -> dict[str, Any]:
         with self._connect() as db:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from hermes_improve.artifacts import ArtifactStore
@@ -57,3 +59,76 @@ def test_benchmark_candidates_deduplicate_but_retain_all_sources(tmp_path):
     rows = store.list_benchmark_candidates()
     assert len(rows) == 1
     assert rows[0]["source_sessions"] == ["s1", "s2"]
+
+
+def test_benchmark_candidate_review_is_persistent_immutable_and_secret_checked(tmp_path):
+    from hermes_improve.miner import mine_session
+
+    store = ExperimentStore(tmp_path / "state.sqlite3")
+    candidate = mine_session({"session_id": "s1", "task": {"prompt": "Review this task"}})
+    store.save_benchmark_candidate(candidate, "s1")
+
+    pending = store.get_benchmark_candidate(candidate.task_fingerprint)
+    assert pending["review_status"] == "PENDING"
+    assert pending["reviewer"] is None
+
+    reviewed = store.review_benchmark_candidate(
+        candidate.task_fingerprint,
+        decision="ACCEPTED",
+        reviewer="operator@example.invalid",
+        rationale="Task is reproducible and has a reviewable source.",
+    )
+    assert reviewed["review_status"] == "ACCEPTED"
+    assert reviewed["reviewed_at"]
+
+    repeated = store.review_benchmark_candidate(
+        candidate.task_fingerprint,
+        decision="ACCEPTED",
+        reviewer="operator@example.invalid",
+        rationale="Task is reproducible and has a reviewable source.",
+    )
+    assert repeated["reviewed_at"] == reviewed["reviewed_at"]
+    with pytest.raises(ValueError, match="immutable"):
+        store.review_benchmark_candidate(
+            candidate.task_fingerprint,
+            decision="REJECTED",
+            reviewer="operator@example.invalid",
+            rationale="Changed opinion",
+        )
+    with pytest.raises(ValueError, match="credential-like"):
+        store.review_benchmark_candidate(
+            "0" * 64,
+            decision="REJECTED",
+            reviewer="operator",
+            rationale="api_key=not-a-real-secret",
+        )
+
+
+def test_existing_benchmark_candidates_migrate_to_pending_review(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    fingerprint = "a" * 64
+    with sqlite3.connect(path) as db:
+        db.execute("""
+            CREATE TABLE benchmark_candidates (
+                task_fingerprint TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                eligibility TEXT NOT NULL,
+                reproducibility_score REAL NOT NULL,
+                ground_truth_type TEXT NOT NULL,
+                reasons_json TEXT NOT NULL,
+                source_sessions_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        db.execute(
+            """INSERT INTO benchmark_candidates
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (fingerprint, "candidate-1", fingerprint, "SOFT_BENCHMARK", 0.5,
+             "structured", "[]", '["session-1"]', "2025-01-01T00:00:00Z"),
+        )
+
+    candidate = ExperimentStore(path).get_benchmark_candidate(fingerprint)
+    assert candidate["review_status"] == "PENDING"
+    assert candidate["reviewer"] is None
+    assert candidate["reviewed_at"] is None

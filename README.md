@@ -58,6 +58,9 @@ for evaluation readiness.
 
 - Python APIs and CLI for manual redacted session-export ingestion, queued
   LIGHT/REM/DEEP evidence analysis, benchmark proposals, and candidate records.
+- Bounded source previews and persistent one-time operator triage decisions for
+  mined benchmark proposals; acceptance does not automatically admit a task to
+  the benchmark suite.
 - Bounded import of Hermes `batch_runner` `trajectories.jsonl` as redacted,
   untrusted session evidence, including validated tool counters for recurring
   failure signals; importing never executes an agent or counts as evaluation

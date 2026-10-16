@@ -18,6 +18,11 @@ permissions; the capability alone is not a security boundary.
 - `hermes-improve benchmarks mine SESSION_ID` creates a deduplicated proposal
   from a redacted session. The miner scores reproducibility and ground-truth
   source; it does not establish truth or automatically admit the proposal.
+- `hermes-improve benchmarks inspect-candidate FINGERPRINT` shows a bounded
+  preview of up to three redacted source sessions. `review-candidate` records
+  one immutable operator accept/reject decision with reviewer and rationale.
+  Acceptance is triage only: it does not create or admit an executable
+  benchmark; benchmark authoring and validation remain separate.
 - `hermes-improve evaluate` selects declared FULL tasks plus sealed holdout
   tasks, then uses a digest-pinned Docker command runner.
 
@@ -51,9 +56,10 @@ passed; overall task success still requires every check.
 
 The repository includes only a schema fixture, not the 20–50 curated
 real-session tasks required for meaningful readiness. Manual curation and
-replay verification are still required. Semantic deduplication, human review
-workflow, benchmark provenance attestation, automatic holdout-generation
-rotation, and impact-aware suite selection are not implemented. Evaluation
+replay verification are still required. The human proposal-review record does
+not replace benchmark authoring or admission controls. Semantic deduplication,
+benchmark provenance attestation, automatic holdout-generation rotation, and
+impact-aware suite selection are not implemented. Evaluation
 records a durable spent marker keyed by the sealed benchmark manifest and
 candidate evolution lineage before consuming holdout feedback; failed attempts
 also consume that generation, so operators must rotate the holdout before

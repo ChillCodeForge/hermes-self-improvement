@@ -15,7 +15,7 @@ from .benchmarks import BenchmarkStore
 from .candidate_builder import create_skill_candidate
 from .docker_runner import DockerCommandRunner
 from .dreaming import DreamingEngine
-from .ingestion import SessionQueue
+from .ingestion import SessionQueue, contains_secret_material
 from .miner import mine_session
 from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
@@ -141,6 +141,11 @@ def _load_observations(path: Path) -> list[ProductionObservation]:
     return observations
 
 
+def _bounded_json_preview(value: object, limit: int) -> dict[str, object]:
+    serialized = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    return {"json": serialized[:limit], "truncated": len(serialized) > limit}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -160,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     mine = benchmark_sub.add_parser("mine")
     mine.add_argument("session_id")
     benchmark_sub.add_parser("candidates")
+    inspect_candidate = benchmark_sub.add_parser("inspect-candidate")
+    inspect_candidate.add_argument("task_fingerprint")
+    review_candidate = benchmark_sub.add_parser("review-candidate")
+    review_candidate.add_argument("task_fingerprint")
+    review_candidate.add_argument("--decision", choices=["accept", "reject"], required=True)
+    review_candidate.add_argument("--reviewer", required=True)
+    review_candidate.add_argument("--rationale", required=True)
     listing = benchmark_sub.add_parser("list")
     listing.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
     evaluate = sub.add_parser("evaluate")
@@ -268,6 +280,56 @@ def main() -> int:
             }, indent=2))
         elif args.benchmark_command == "candidates":
             print(json.dumps(ExperimentStore(database).list_benchmark_candidates(), indent=2))
+        elif args.benchmark_command == "inspect-candidate":
+            experiment_store = ExperimentStore(database)
+            proposal = experiment_store.get_benchmark_candidate(args.task_fingerprint)
+            source_sessions = proposal.pop("source_sessions")
+            if (
+                not isinstance(source_sessions, list)
+                or not all(isinstance(session_id, str) for session_id in source_sessions)
+            ):
+                raise ValueError("benchmark proposal has invalid source-session metadata")
+            if not source_sessions:
+                raise ValueError("benchmark proposal has no source sessions to inspect")
+            preview = []
+            session_queue = SessionQueue(database.parent / "sessions.sqlite3")
+            for session_id in source_sessions[:3]:
+                session = session_queue.get(session_id)
+                if contains_secret_material(session):
+                    raise ValueError(
+                        f"source session {session_id!r} contains credential-like material; "
+                        "refusing to display it"
+                    )
+                preview.append({
+                    "session_id": session_id,
+                    "task": _bounded_json_preview(session.get("task", {}), 8192),
+                    "environment": _bounded_json_preview(session.get("environment", {}), 2048),
+                    "verification": _bounded_json_preview(session.get("verification", {}), 4096),
+                    "ground_truth": _bounded_json_preview(session.get("ground_truth", {}), 2048),
+                    "security": _bounded_json_preview(session.get("security", {}), 2048),
+                    "replay_verified": session.get("replay_verified"),
+                })
+            print(json.dumps({
+                "proposal": proposal,
+                "source_session_count": len(source_sessions),
+                "source_preview_truncated": len(source_sessions) > len(preview),
+                "source_previews": preview,
+            }, indent=2))
+        elif args.benchmark_command == "review-candidate":
+            result = ExperimentStore(database).review_benchmark_candidate(
+                args.task_fingerprint,
+                decision={"accept": "ACCEPTED", "reject": "REJECTED"}[args.decision],
+                reviewer=args.reviewer,
+                rationale=args.rationale,
+            )
+            print(json.dumps({
+                "task_fingerprint": result["task_fingerprint"],
+                "review_status": result["review_status"],
+                "reviewer": result["reviewer"],
+                "review_rationale": result["review_rationale"],
+                "reviewed_at": result["reviewed_at"],
+                "benchmark_admitted": False,
+            }, indent=2))
         else:
             print(json.dumps(store.list(Role(args.role)), indent=2))
     elif args.command == "experiments":
