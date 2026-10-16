@@ -24,8 +24,11 @@ checks, not privilege separation.
 - Dreaming uses a bounded projection of session data as untrusted evidence.
   DEEP proposals targeting known protected areas are filtered; this is not a
   general prompt-injection defense.
-- Candidates are content-hashed and store writes verify candidate/evaluation
-  identity. Run artifacts are content-addressed and hash-checked on read.
+- Candidate targets must be canonical POSIX skill-directory paths under
+  `brain/skills/`; traversal, Windows separators, reserved components, and
+  `SKILL.md` file targets are rejected. Candidates are content-hashed and
+  store writes verify candidate/evaluation identity. Run artifacts are
+  content-addressed and hash-checked on read.
 - Evaluation pairs baseline and candidate by benchmark and seed, checks commit,
   task, seed, and environment identity, applies deterministic hard gates, and
   can sign the full report and run-level evidence with Ed25519.

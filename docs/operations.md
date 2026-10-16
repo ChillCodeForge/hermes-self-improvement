@@ -61,9 +61,10 @@ session or SessionDB transcript.
   --type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --content FILE
   --hypothesis TEXT` creates an immutable candidate commit in a separate
   `candidate/<experiment-id>` branch/worktree. Candidate content must be supplied
-  explicitly; the command validates the path, size, and credential-like
-  strings, and does not write production. Only `SKILL.md` candidates are
-  currently supported.
+  explicitly; the target must be a canonical directory path under
+  `brain/skills/` (not a `SKILL.md` file path). The command validates the
+  target, content size, and credential-like strings, and does not write
+  production. Only `SKILL.md` candidates are currently supported.
 - `evaluate CANDIDATE_ID` runs paired command benchmarks and signs persisted
   evidence. It requires a digest-pinned Docker-compatible benchmark, separate
   holdout root, evaluator private key, and execution under the configured
