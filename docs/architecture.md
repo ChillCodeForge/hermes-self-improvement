@@ -35,8 +35,8 @@ manual JSON export or optional Hermes on_session_finalize plugin
   candidate-commit-writing CLI workflow.
 - Git promoter restricted to skill paths, with evidence and diff checks,
   release manifests, atomic symlink switching, and rollback.
-- Post-promotion monitoring decision API; it is not wired to a live Hermes
-  telemetry collector and has no CLI command to ingest production observations.
+- Post-promotion monitoring decision API plus bounded JSONL CLI ingestion for
+  trusted collector observations; no live Hermes telemetry collector is wired.
 
 ## Role boundaries and remaining isolation work
 

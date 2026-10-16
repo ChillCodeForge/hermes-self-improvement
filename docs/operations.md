@@ -69,11 +69,30 @@ production rollout.
 
 ## Monitoring and deployment limits
 
-`ReleaseMonitor` is a Python API. A trusted external collector must supply
-observations; no daemon or Hermes hook currently does so. It recommends
-rollback on observed regressions and changes a release to `STABLE` only after
-the configured sample count passes its policy. Recommendation does not itself
-perform rollback.
+`ReleaseMonitor` accepts observations through both its Python API and a
+bounded JSONL import for trusted external collectors:
+
+```bash
+hermes-improve monitor ingest observations.jsonl
+```
+
+Example record:
+
+```json
+{"observation_id":"gateway-event-123","release_id":"brain-v7","task_id":"task-42","success":true,"tool_errors":0,"tokens":820,"tool_calls":3,"latency_ms":1420.5,"user_corrections":0,"retries":0,"critical_regression":false}
+```
+
+Each row requires an `observation_id`, `release_id`, `task_id`, `success`,
+`tool_errors`, `tokens`, `tool_calls`, and `latency_ms`; corrections, retries,
+and critical-regression status are optional. IDs are idempotent: replaying the
+same ID and same content does not increase the sample count, while reusing an
+ID for different content is rejected. The import validates the entire file
+before recording any row and is limited to 10 MiB / 10,000 records. No
+production collector or Hermes hook is connected automatically.
+
+The monitor recommends rollback on observed regressions and changes a release
+to `STABLE` only after the configured sample count passes its policy.
+Recommendation does not itself perform rollback.
 
 The Docker command runner is not a general Hermes runner. Full project
 acceptance requires real benchmark tasks, a Hermes runtime adapter, independent

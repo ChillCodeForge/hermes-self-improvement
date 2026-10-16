@@ -24,6 +24,7 @@ class ProductionObservation:
     user_corrections: int = 0
     retries: int = 0
     critical_regression: bool = False
+    observation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class MonitoringDecision:
     status: str
     sample_count: int
     reasons: tuple[str, ...]
+    duplicate: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,31 +89,70 @@ class ReleaseMonitor:
             observation.tool_errors, observation.tokens, observation.tool_calls,
             observation.user_corrections, observation.retries,
         )
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            or value < 0 or value > (1 << 63) - 1
+            for value in counters
+        ):
             raise ValueError("monitoring counters must be non-negative integers")
-        if not isinstance(observation.task_id, str) or not observation.task_id.strip():
-            raise ValueError("monitoring task_id must be a non-empty string")
+        if (
+            not isinstance(observation.release_id, str) or not observation.release_id.strip()
+            or not isinstance(observation.task_id, str) or not observation.task_id.strip()
+        ):
+            raise ValueError("monitoring release_id and task_id must be non-empty strings")
         if not isinstance(observation.success, bool) or not isinstance(observation.critical_regression, bool):
             raise ValueError("monitoring status fields must be boolean")
         if (
-            isinstance(observation.latency_ms, bool)
-            or not isinstance(observation.latency_ms, (int, float))
-            or not math.isfinite(observation.latency_ms)
-            or observation.latency_ms < 0
+            not isinstance(observation.observation_id, str)
+            or len(observation.observation_id) > 200
+            or (observation.observation_id and not observation.observation_id.strip())
         ):
+            raise ValueError("observation_id must be empty or a non-blank string of at most 200 characters")
+        try:
+            valid_latency = (
+                not isinstance(observation.latency_ms, bool)
+                and isinstance(observation.latency_ms, (int, float))
+                and math.isfinite(observation.latency_ms)
+                and observation.latency_ms >= 0
+            )
+        except OverflowError:
+            valid_latency = False
+        if not valid_latency:
             raise ValueError("latency must be a finite non-negative number")
-        release = self.store.get_release(observation.release_id)
-        if release["status"] != "PROVISIONAL":
-            raise ValueError("post-promotion observations are accepted only for provisional releases")
-        baseline = release["manifest"].get("baseline_metrics")
-        if not isinstance(baseline, dict):
-            raise ValueError("release manifest does not include comparable baseline metrics")
-        with sqlite3.connect(self.path) as db:
+        record_id = observation.observation_id or uuid.uuid4().hex
+        with sqlite3.connect(self.path, timeout=30) as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                """SELECT release_id,task_id,success,tool_errors,tokens,tool_calls,latency_ms,
+                          user_corrections,retries,critical_regression
+                   FROM production_observations WHERE id=?""",
+                (record_id,),
+            ).fetchone()
+            if existing:
+                supplied = (
+                    observation.release_id, observation.task_id, int(observation.success),
+                    observation.tool_errors, observation.tokens, observation.tool_calls,
+                    float(observation.latency_ms), observation.user_corrections,
+                    observation.retries, int(observation.critical_regression),
+                )
+                if tuple(existing) != supplied:
+                    raise ValueError("observation_id was already recorded with different content")
+                count = db.execute(
+                    "SELECT COUNT(*) FROM production_observations WHERE release_id=?",
+                    (observation.release_id,),
+                ).fetchone()[0]
+                return MonitoringDecision("DUPLICATE", count, ("observation was already recorded",), True)
+            release = self.store.get_release(observation.release_id)
+            if release["status"] != "PROVISIONAL":
+                raise ValueError("post-promotion observations are accepted only for provisional releases")
+            baseline = release["manifest"].get("baseline_metrics")
+            if not isinstance(baseline, dict):
+                raise ValueError("release manifest does not include comparable baseline metrics")
             db.execute(
                 """INSERT INTO production_observations
                 (id,release_id,task_id,success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,retries,critical_regression,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uuid.uuid4().hex, observation.release_id, observation.task_id, int(observation.success),
+                (record_id, observation.release_id, observation.task_id, int(observation.success),
                  observation.tool_errors, observation.tokens, observation.tool_calls, observation.latency_ms,
                  observation.user_corrections, observation.retries, int(observation.critical_regression), utc_now()),
             )

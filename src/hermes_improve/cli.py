@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -14,6 +15,7 @@ from .docker_runner import DockerCommandRunner
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue
 from .miner import mine_session
+from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
 from .models import Candidate, CandidateType, Role, Split
@@ -21,6 +23,10 @@ from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
 from .store import ExperimentStore
+
+
+_MAX_SQLITE_INTEGER = (1 << 63) - 1
+_MAX_MONITOR_FILE_BYTES = 10 * 1024 * 1024
 
 
 def _paths() -> tuple[Path, Path]:
@@ -44,6 +50,92 @@ def _require_role_uid(role: str) -> None:
             raise PermissionError("evaluator and promoter must use distinct Unix UIDs")
     if os.geteuid() != int(expected):
         raise PermissionError(f"{role} commands must run as {variable}")
+
+
+def _load_observations(path: Path) -> list[ProductionObservation]:
+    with path.open("rb") as source:
+        raw = source.read(_MAX_MONITOR_FILE_BYTES + 1)
+    if len(raw) > _MAX_MONITOR_FILE_BYTES:
+        raise ValueError("monitoring observation file exceeds the 10 MiB limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("monitoring observation file must be UTF-8") from exc
+    allowed = {
+        "observation_id", "release_id", "task_id", "success", "tool_errors", "tokens",
+        "tool_calls", "latency_ms", "user_corrections", "retries", "critical_regression",
+    }
+    required = {
+        "observation_id", "release_id", "task_id", "success", "tool_errors",
+        "tokens", "tool_calls", "latency_ms",
+    }
+    observations = []
+    seen_ids = set()
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        if len(observations) >= 10000:
+            raise ValueError("monitoring observation file exceeds the 10,000-record limit")
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"monitoring observation line {line_number} is invalid JSON: {exc}") from exc
+        if not isinstance(item, dict):
+            raise ValueError(f"monitoring observation line {line_number} must be a JSON object")
+        missing = required - item.keys()
+        extra = item.keys() - allowed
+        if missing or extra:
+            detail = []
+            if missing:
+                detail.append(f"missing {', '.join(sorted(missing))}")
+            if extra:
+                detail.append(f"unknown {', '.join(sorted(extra))}")
+            raise ValueError(f"monitoring observation line {line_number}: {'; '.join(detail)}")
+        if any(not isinstance(item[key], str) or not item[key].strip() for key in (
+            "observation_id", "release_id", "task_id",
+        )):
+            raise ValueError(f"monitoring observation line {line_number} requires non-empty string identifiers")
+        if item["observation_id"] in seen_ids:
+            raise ValueError(f"duplicate observation_id on monitoring line {line_number}")
+        seen_ids.add(item["observation_id"])
+        if not isinstance(item["success"], bool):
+            raise ValueError(f"monitoring observation line {line_number}: success must be boolean")
+        for key in ("tool_errors", "tokens", "tool_calls", "user_corrections", "retries"):
+            value = item.get(key, 0)
+            if (
+                isinstance(value, bool) or not isinstance(value, int)
+                or value < 0 or value > _MAX_SQLITE_INTEGER
+            ):
+                raise ValueError(f"monitoring observation line {line_number}: {key} must be a non-negative integer")
+        latency = item["latency_ms"]
+        try:
+            valid_latency = (
+                not isinstance(latency, bool) and isinstance(latency, (int, float))
+                and math.isfinite(latency) and latency >= 0
+            )
+        except OverflowError:
+            valid_latency = False
+        if not valid_latency:
+            raise ValueError(f"monitoring observation line {line_number}: latency_ms must be finite and non-negative")
+        critical = item.get("critical_regression", False)
+        if not isinstance(critical, bool):
+            raise ValueError(f"monitoring observation line {line_number}: critical_regression must be boolean")
+        observations.append(ProductionObservation(
+            release_id=item["release_id"],
+            task_id=item["task_id"],
+            success=item["success"],
+            tool_errors=item["tool_errors"],
+            tokens=item["tokens"],
+            tool_calls=item["tool_calls"],
+            latency_ms=latency,
+            user_corrections=item.get("user_corrections", 0),
+            retries=item.get("retries", 0),
+            critical_regression=critical,
+            observation_id=item["observation_id"],
+        ))
+    if not observations:
+        raise ValueError("monitoring observation file contains no records")
+    return observations
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--limit", type=int, default=100)
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list"])
+    monitor = sub.add_parser("monitor")
+    monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
+    observe = monitor_sub.add_parser("ingest")
+    observe.add_argument("observations", type=Path)
     promote = sub.add_parser("promote")
     promote.add_argument("candidate_id")
     promote.add_argument("--release", required=True)
@@ -160,6 +256,22 @@ def main() -> int:
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
     elif args.command == "releases":
         print(json.dumps(ExperimentStore(database).list_releases(), indent=2))
+    elif args.command == "monitor":
+        observations = _load_observations(args.observations)
+        monitor = ReleaseMonitor(database.parent / "monitoring.sqlite3", ExperimentStore(database))
+        results = []
+        for observation in observations:
+            decision = monitor.observe(observation)
+            results.append({
+                "observation_id": observation.observation_id,
+                "release_id": observation.release_id,
+                "task_id": observation.task_id,
+                "decision": decision.status,
+                "sample_count": decision.sample_count,
+                "reasons": decision.reasons,
+                "duplicate": decision.duplicate,
+            })
+        print(json.dumps({"observations": results}, indent=2))
     elif args.command == "evaluate":
         _require_role_uid("evaluator")
         private_key_path = os.environ.get("HERMES_EVALUATOR_PRIVATE_KEY")

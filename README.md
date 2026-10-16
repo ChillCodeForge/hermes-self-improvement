@@ -494,12 +494,13 @@ or hash mismatch must be impossible.
 
 After Git ref update and release tagging, the promoter switches the configured
 deployment symlink atomically and marks the release `PROVISIONAL`. The
-monitoring Python API can compare supplied observations; it is not wired to
-Hermes or a production collector. Track success rate,
-tool errors, tokens and calls per success, latency, retries, user corrections,
-and regression signals. Move to `STABLE` only with adequate evidence; otherwise
-roll back atomically and record the decision. Avoid simultaneous write agents
-on the same task.
+monitoring API and `hermes-improve monitor ingest observations.jsonl` accept
+trusted collector observations; stable observation IDs make retries
+idempotent. There is not yet an automatic Hermes/production collector. Track
+success rate, tool errors, tokens and calls per success, latency, retries,
+user corrections, and regression signals. Move to `STABLE` only with adequate
+evidence; otherwise roll back atomically and record the decision. Avoid
+simultaneous write agents on the same task.
 
 ## Operating-system and sandbox isolation
 

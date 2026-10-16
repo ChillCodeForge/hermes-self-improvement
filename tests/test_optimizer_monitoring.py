@@ -113,3 +113,92 @@ def test_monitoring_rejects_non_finite_policy_and_observation_metrics(tmp_path):
     )
     with pytest.raises(ValueError, match="finite"):
         monitor.observe(observation)
+
+
+def test_monitor_observation_ids_are_idempotent_and_release_scoped(tmp_path):
+    store = ExperimentStore(tmp_path / "state.sqlite3")
+    _add_provisional_release(store)
+    monitor = ReleaseMonitor(tmp_path / "monitor.sqlite3", store)
+    observation = ProductionObservation(
+        "brain-v1", "task", True, 0, 100, 1, 100, observation_id="collector-event-1",
+    )
+    first = monitor.observe(observation)
+    replay = monitor.observe(observation)
+    assert first.sample_count == 1
+    assert replay.status == "DUPLICATE"
+    assert replay.sample_count == 1
+    assert replay.duplicate
+    with pytest.raises(ValueError, match="different content"):
+        monitor.observe(ProductionObservation(
+            "brain-v2", "task", True, 0, 100, 1, 100,
+            observation_id="collector-event-1",
+        ))
+    with pytest.raises(ValueError, match="different content"):
+        monitor.observe(ProductionObservation(
+            "brain-v1", "task", False, 0, 100, 1, 100,
+            observation_id="collector-event-1",
+        ))
+
+
+def test_cli_monitor_ingestion_is_bounded_validated_and_idempotent(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from hermes_improve.cli import main
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    store = ExperimentStore(home / "experiments.sqlite3")
+    _add_provisional_release(store)
+    observations = tmp_path / "observations.jsonl"
+    row = {
+        "observation_id": "collector-event-1",
+        "release_id": "brain-v1",
+        "task_id": "task-a",
+        "success": True,
+        "tool_errors": 0,
+        "tokens": 100,
+        "tool_calls": 2,
+        "latency_ms": 80.5,
+    }
+    observations.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "monitor", "ingest", str(observations)])
+    assert main() == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["observations"][0]["decision"] == "PROVISIONAL"
+    assert not first["observations"][0]["duplicate"]
+
+    assert main() == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["observations"][0]["decision"] == "DUPLICATE"
+    assert replay["observations"][0]["duplicate"]
+
+
+def test_cli_monitor_ingestion_validates_entire_file_before_recording(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    store = ExperimentStore(home / "experiments.sqlite3")
+    _add_provisional_release(store)
+    observations = tmp_path / "invalid-observations.jsonl"
+    good = {
+        "observation_id": "collector-event-1",
+        "release_id": "brain-v1",
+        "task_id": "task-a",
+        "success": True,
+        "tool_errors": 0,
+        "tokens": 100,
+        "tool_calls": 2,
+        "latency_ms": 80,
+    }
+    bad = good | {"observation_id": "collector-event-2", "success": "true"}
+    observations.write_text(
+        json.dumps(good) + "\n" + json.dumps(bad) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "monitor", "ingest", str(observations)])
+    with pytest.raises(ValueError, match="success must be boolean"):
+        main()
+    assert not (home / "monitoring.sqlite3").exists()
