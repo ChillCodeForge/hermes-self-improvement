@@ -5,7 +5,7 @@ Hermes improvement service. It is separate from the Hermes Agent runtime and
 does not yet collect live sessions or deploy changes automatically.
 
 ```text
-manual JSON export or optional Hermes on_session_finalize plugin
+manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_session_finalize plugin
   → redact and queue
   → LIGHT/REM/DEEP evidence analysis and benchmark proposals
   → immutable candidate record referencing a Git commit/diff (created through

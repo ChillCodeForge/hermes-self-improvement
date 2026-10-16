@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .models import canonical_json, utc_now
 
@@ -27,6 +27,8 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@"),
 )
 _MAX_SESSION_BYTES = 10 * 1024 * 1024
+_MAX_INGEST_BATCH_RECORDS = 10_000
+_MAX_INGEST_BATCH_BYTES = 10 * 1024 * 1024
 
 
 def redact_text(value: str) -> str:
@@ -83,28 +85,49 @@ class SessionQueue:
             """)
 
     def ingest(self, export: Mapping[str, Any]) -> str:
-        session_id = export.get("session_id")
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ValueError("session export requires a non-empty session_id")
-        safe_export = redact(export)
-        safe_export["_evidence_trust"] = "untrusted"
-        payload = canonical_json(safe_export)
-        if len(payload.encode("utf-8")) > _MAX_SESSION_BYTES:
-            raise ValueError("redacted session export exceeds the 10 MiB ingestion limit")
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return self.ingest_many([export])[0]
+
+    def ingest_many(self, exports: Iterable[Mapping[str, Any]]) -> list[str]:
+        prepared: list[tuple[str, str, str]] = []
+        seen: dict[str, str] = {}
+        total_bytes = 0
+        for export in exports:
+            if len(prepared) >= _MAX_INGEST_BATCH_RECORDS:
+                raise ValueError("session export batch exceeds the 10,000-record limit")
+            session_id = export.get("session_id")
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ValueError("session export requires a non-empty session_id")
+            safe_export = redact(export)
+            safe_export["_evidence_trust"] = "untrusted"
+            payload = canonical_json(safe_export)
+            payload_bytes = len(payload.encode("utf-8"))
+            if payload_bytes > _MAX_SESSION_BYTES:
+                raise ValueError("redacted session export exceeds the 10 MiB ingestion limit")
+            total_bytes += payload_bytes
+            if total_bytes > _MAX_INGEST_BATCH_BYTES:
+                raise ValueError("redacted session export batch exceeds the 10 MiB limit")
+            digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            if session_id in seen and seen[session_id] != digest:
+                raise ValueError(f"session {session_id!r} was supplied with different content")
+            seen[session_id] = digest
+            prepared.append((session_id, digest, payload))
+        if not prepared:
+            raise ValueError("session export batch contains no records")
+
         with sqlite3.connect(self.path) as db:
-            existing = db.execute(
-                "SELECT content_hash FROM sessions WHERE session_id=?", (session_id,)
-            ).fetchone()
-            if existing and existing[0] != digest:
-                raise ValueError(f"session {session_id!r} was already ingested with different content")
-            if existing:
-                return digest
-            db.execute(
-                "INSERT INTO sessions (session_id,content_hash,payload_json,ingested_at) VALUES (?,?,?,?)",
-                (session_id, digest, payload, utc_now()),
-            )
-        return digest
+            db.execute("BEGIN IMMEDIATE")
+            for session_id, digest, payload in prepared:
+                existing = db.execute(
+                    "SELECT content_hash FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                if existing and existing[0] != digest:
+                    raise ValueError(f"session {session_id!r} was already ingested with different content")
+                if not existing:
+                    db.execute(
+                        "INSERT INTO sessions (session_id,content_hash,payload_json,ingested_at) VALUES (?,?,?,?)",
+                        (session_id, digest, payload, utc_now()),
+                    )
+        return [digest for _session_id, digest, _payload in prepared]
 
     def get(self, session_id: str) -> dict[str, Any]:
         with sqlite3.connect(self.path) as db:

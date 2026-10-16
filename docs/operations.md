@@ -47,6 +47,10 @@ session or SessionDB transcript.
 ## Available operator workflows
 
 - `ingest EXPORT.json` redacts and queues a session export.
+- `ingest-batch RUN/trajectories.jsonl` imports Hermes `batch_runner` output;
+  discarded tombstones are skipped, and all imported conversations remain
+  redacted, untrusted evidence. This imports previous run data only—it does
+  not run Hermes or produce candidate evaluation results.
 - `dream --stage light|rem` analyzes queued evidence; REM requires a configured
   loopback Qwen endpoint. `dream --stage deep --hypotheses FILE` produces
   filtered proposals and also requires Qwen.

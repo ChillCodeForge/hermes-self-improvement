@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .artifacts import ArtifactStore
+from .batch_ingestion import load_batch_runner_export
 from .benchmarks import BenchmarkStore
 from .candidate_builder import create_skill_candidate
 from .docker_runner import DockerCommandRunner
@@ -146,6 +147,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     ingest = sub.add_parser("ingest")
     ingest.add_argument("export", type=Path)
+    batch_ingest = sub.add_parser("ingest-batch")
+    batch_ingest.add_argument("trajectories", type=Path)
     dream = sub.add_parser("dream")
     dream.add_argument("--stage", choices=["light", "rem", "deep"], default="light")
     dream.add_argument("--limit", type=int, default=100)
@@ -216,6 +219,14 @@ def main() -> int:
             raise ValueError("session export must be a JSON object")
         digest = SessionQueue(database.parent / "sessions.sqlite3").ingest(export)
         print(json.dumps({"session_id": export["session_id"], "sha256": digest, "status": "queued"}, indent=2))
+    elif args.command == "ingest-batch":
+        exports = load_batch_runner_export(args.trajectories)
+        SessionQueue(database.parent / "sessions.sqlite3").ingest_many(exports)
+        print(json.dumps({
+            "imported": len(exports),
+            "session_ids": [item["session_id"] for item in exports],
+            "status": "queued_as_untrusted_evidence",
+        }, indent=2))
     elif args.command == "dream":
         if args.stage == "deep":
             if args.hypotheses is None:
