@@ -6,6 +6,7 @@ import pytest
 
 from hermes_improve.candidates import Generator
 from hermes_improve.curator import CuratorAdapter, ImprovementSignal
+from hermes_improve.dreaming import DreamingEngine
 from hermes_improve.models import CandidateType
 from hermes_improve.store import ExperimentStore
 from hermes_improve.verifiers import (
@@ -47,6 +48,36 @@ def test_curator_adapter_emits_signals_without_mutation():
     assert len(signals) == 1
     assert signals[0].source == "curator"
     assert signals[0].evidence["name"] == "used"
+
+
+def test_light_dreaming_includes_caller_supplied_read_only_curator_signals():
+    adapter = CuratorAdapter(lambda: [
+        {"name": "sample-skill", "use_count": 5, "patch_count": 1, "activity_count": 3},
+    ])
+
+    report = DreamingEngine(curator=adapter).light([])
+
+    assert report.sessions_processed == 0
+    assert report.clusters["curator"] == 1
+    assert report.signals[0].source == "curator"
+    assert report.signals[0].evidence["name"] == "sample-skill"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"name": "sample", "use_count": True},
+        {"name": "sample", "use_count": -1},
+        {"name": "sample", "use_count": 1.5},
+        {"name": "sample", "use_count": 1 << 64},
+        {"name": "  ", "use_count": 1},
+        {"name": "Bearer abcd1234", "use_count": 1},
+        None,
+    ],
+)
+def test_curator_adapter_rejects_malformed_or_unsafe_rows(row):
+    with pytest.raises(ValueError):
+        CuratorAdapter(lambda: [row]).signals()
 
 
 def test_file_verifiers_reject_path_escape(tmp_path):

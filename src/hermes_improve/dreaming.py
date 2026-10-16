@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
+from .curator import CuratorAdapter
 from .models import CandidateType, ImprovementSignal
 from .skill_paths import validate_skill_target
 
@@ -33,8 +34,11 @@ class DreamingReport:
 class DreamingEngine:
     """LIGHT works without an LLM; model-backed stages only produce proposals."""
 
-    def __init__(self, model: DreamingModel | None = None) -> None:
+    def __init__(
+        self, model: DreamingModel | None = None, curator: CuratorAdapter | None = None,
+    ) -> None:
         self.model = model
+        self.curator = curator
 
     def light(self, sessions: Sequence[Mapping[str, Any]]) -> DreamingReport:
         errors: Counter[str] = Counter()
@@ -66,9 +70,14 @@ class DreamingEngine:
                     issue=error, impact_score=min(1.0, count / max(1, len(sessions))),
                     evidence={"occurrences": count},
                 ))
+        curator_signals = self.curator.signals() if self.curator is not None else []
+        signals.extend(curator_signals)
+        clusters = {"errors": len(errors), "tools": len(tools)}
+        if self.curator is not None:
+            clusters["curator"] = len(curator_signals)
         return DreamingReport(
             sessions_processed=len(sessions),
-            clusters={"errors": len(errors), "tools": len(tools)},
+            clusters=clusters,
             signals=tuple(signals),
         )
 

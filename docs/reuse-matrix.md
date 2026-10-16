@@ -4,7 +4,7 @@
 |---|---|---|---|
 | Hermes runtime/session lifecycle | Hermes Agent | Keep as external runtime; use lifecycle hook and persisted-message API | Optional `on_session_finalize` entry-point plugin exists; version compatibility and live installation remain unverified |
 | Hermes batch-run evidence | Hermes `batch_runner` | Import existing trajectories only; never execute agent tasks during ingestion | Bounded `trajectories.jsonl` importer queues redacted untrusted evidence; no runtime execution/evaluation adapter exists |
-| Curator usage/lifecycle evidence | Hermes Curator / skill usage | Consume as read-only signals; never mutate production directly | Generic adapter contract present |
+| Curator usage/lifecycle evidence | Hermes Curator / skill usage | Consume as read-only signals; never mutate production directly | Validated caller-supplied usage report can feed LIGHT Dreaming; no live Hermes API adapter |
 | Curator backup/audit/rollback | Hermes Curator | Reuse only after exact behavior and APIs are verified | Not called |
 | Candidate evolution | `hermes-agent-self-evolution` | Encapsulate behind pinned `SelfEvolutionAdapter` | Version-gated interface and generic optimizer API exist; external package not integrated |
 | Prompt/optimizer evolution | GEPA, optionally DSPy | Optional strategy adapters; never trusted as evaluator or promotion authority | Not integrated |

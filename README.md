@@ -65,6 +65,9 @@ for evaluation readiness.
   untrusted session evidence, including validated tool counters for recurring
   failure signals; importing never executes an agent or counts as evaluation
   evidence.
+- A read-only Curator usage adapter that can contribute validated caller-
+  supplied skill signals to LIGHT Dreaming; no live Hermes Curator connector is
+  included.
 - An opt-in Hermes entry-point plugin that reads finalized transcript messages
   from SessionDB and queues redacted exports under the active Hermes home.
 - JSON benchmark validation, split/cluster leakage checks, separate holdout

@@ -21,7 +21,9 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
 
 - Session-export redaction and durable SQLite queue; an opt-in Hermes
   finalization plugin backed by the observed SessionDB message-loader API;
-  benchmark eligibility and exact task fingerprint proposals.
+  benchmark eligibility and exact task fingerprint proposals. Caller-supplied
+  read-only Curator usage signals can be injected into LIGHT Dreaming; no live
+  Hermes Curator API adapter is wired.
 - Benchmark schema checks, split/cluster leakage checks including a
   conservative lexical near-duplicate guard, and separate-root loading for
   sealed holdout. Semantic task clustering is not implemented.
