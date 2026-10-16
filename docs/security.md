@@ -12,7 +12,8 @@ checks, not privilege separation.
   stored in a distinct root; the evaluator CLI rejects overlapping roots.
 - Generator-facing benchmark APIs deny regression and holdout reads. Holdout
   access requires an evaluator capability, but this is an in-process guard
-  only.
+  only. The evaluator durably marks the sealed-manifest generation spent for
+  a candidate lineage before evaluation; a failed attempt consumes it too.
 - Session exports are redacted for common credential fields and token formats
   before persistence, tagged as untrusted evidence, and rejected if a session
   ID is reused with different content.
@@ -59,5 +60,7 @@ Do not treat the process-local holdout capability as protection from another
 process or direct filesystem reads. Do not place real sealed tasks on a
 generator-readable filesystem. Session content and model output remain
 untrusted; redaction is best-effort and cannot guarantee removal of every
-secret or prompt injection. No curated real-task benchmark corpus or full
-Hermes deployment workflow has yet been validated.
+secret or prompt injection. Spent-state persistence prevents repeated
+evaluation within the same lineage/generation; it does not replace filesystem
+isolation or automatic holdout rotation. No curated real-task benchmark corpus
+or full Hermes deployment workflow has yet been validated.

@@ -52,5 +52,9 @@ passed; overall task success still requires every check.
 The repository includes only a schema fixture, not the 20–50 curated
 real-session tasks required for meaningful readiness. Manual curation and
 replay verification are still required. Semantic deduplication, human review
-workflow, benchmark provenance attestation, holdout-generation rotation and
-spent-state persistence, and impact-aware suite selection are not implemented.
+workflow, benchmark provenance attestation, automatic holdout-generation
+rotation, and impact-aware suite selection are not implemented. Evaluation
+records a durable spent marker keyed by the sealed benchmark manifest and
+candidate evolution lineage before consuming holdout feedback; failed attempts
+also consume that generation, so operators must rotate the holdout before
+retrying that lineage.

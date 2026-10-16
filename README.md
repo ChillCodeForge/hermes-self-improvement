@@ -12,7 +12,8 @@ controlled Git-backed process.
 > **Project status:** Version `0.1.0` now includes redacted session-export
 > ingestion, benchmark mining proposals, LIGHT/REM/DEEP Dreaming APIs, SQLite
 > experiment/evaluation persistence, benchmark split and cluster-leakage
-> checks, deterministic verifiers, paired evaluation, hard-gate policy checks,
+> checks, durable per-lineage holdout-spent tracking, deterministic verifiers,
+> paired evaluation, hard-gate policy checks,
 > confidence intervals, Ed25519-signed reports, and a digest-pinned Docker
 > command runner (`--network=none`, read-only input/root, non-root user and
 > resource limits). A Git promoter verifies signed Full+Holdout evidence and
@@ -25,14 +26,15 @@ controlled Git-backed process.
 >
 > This is **not yet a complete autonomous Hermes self-improvement service**.
 > The optional Hermes finalize hook is version-sensitive and no Hermes
-> `batch_runner` adapter is wired; the Docker runner handles declared command
-> benchmarks only.
+> `batch_runner` execution adapter is wired; existing
+> `trajectories.jsonl` output can be imported as untrusted evidence, while the
+> Docker runner handles declared command benchmarks only.
 > The repository still lacks the curated 20–50 real-task benchmark corpus,
 > tested external GEPA/DSPy/self-evolution integrations, a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
 > collector, and a verified end-to-end Hermes skill improvement deployment.
-> Process-local holdout capabilities and UID checks do not themselves provide
-> OS isolation. See `docs/security.md`, `docs/operations.md`, and
+> Holdout access capabilities, the spent-state ledger, and UID checks do not
+> themselves provide OS isolation. See `docs/security.md`, `docs/operations.md`, and
 > `docs/architecture.md` for the exact boundaries.
 
 ### Quick start
@@ -533,7 +535,9 @@ The current command surface is:
 ```text
 hermes-improve status
 hermes-improve ingest
+hermes-improve ingest-batch RUN/trajectories.jsonl
 hermes-improve dream
+hermes-improve candidate create --help
 hermes-improve candidates list
 hermes-improve evaluate <candidate-id>
 hermes-improve experiments list
@@ -548,9 +552,10 @@ hermes-improve rollback <release>
 ```
 
 Some workflows require optional Qwen (REM/DEEP) or Docker (command evaluation).
-Candidate Git commit creation, experiment evolution CLI, replay management,
-Hermes/Curator integrations, production observation collection, and identity
-provisioning are not implemented.
+Candidate Git creation is available for operator-supplied skill text; automatic
+skill generation, a Hermes `batch_runner` execution/evaluation adapter,
+experiment evolution CLI, replay management, Curator integration, production
+observation collection, and identity provisioning are not implemented.
 
 ## Phased delivery
 

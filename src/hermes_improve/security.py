@@ -7,9 +7,10 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
+from typing import Iterable
 
 from .errors import AccessDenied
-from .models import Role, Split
+from .models import Benchmark, Role, Split
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class AccessController:
 
 
 class SpentHoldoutRegistry:
-    """Tracks consumed holdout generations in memory or durable SQLite."""
+    """Tracks consumed holdout generations by candidate/evolution lineage."""
 
     def __init__(self, path: str | None = None) -> None:
         self._path = path
@@ -67,10 +68,14 @@ class SpentHoldoutRegistry:
                             key,
                         )
                 except sqlite3.IntegrityError as exc:
-                    raise AccessDenied("holdout feedback for this candidate was already consumed") from exc
+                    raise AccessDenied(
+                        "holdout feedback for this candidate/evolution lineage was already consumed"
+                    ) from exc
                 return
             if key in self._spent:
-                raise AccessDenied("holdout feedback for this candidate was already consumed")
+                raise AccessDenied(
+                    "holdout feedback for this candidate/evolution lineage was already consumed"
+                )
             self._spent.add(key)
 
     def is_spent(self, generation: str, candidate_id: str) -> bool:
@@ -83,6 +88,28 @@ class SpentHoldoutRegistry:
                     ).fetchone()
                 return row is not None
             return (generation, candidate_id) in self._spent
+
+
+def consume_holdout_generation(
+    registry: SpentHoldoutRegistry,
+    holdout_benchmarks: Iterable[Benchmark],
+    lineage_id: str,
+) -> str:
+    if not isinstance(lineage_id, str) or not lineage_id.strip():
+        raise ValueError("candidate evolution lineage must be non-empty")
+    manifest = sorted(
+        (
+            {"id": benchmark.id, "version": benchmark.version, "digest": benchmark.digest}
+            for benchmark in holdout_benchmarks
+            if benchmark.split is Split.SEALED_HOLDOUT
+        ),
+        key=lambda item: (item["id"], item["version"]),
+    )
+    if not manifest:
+        raise ValueError("at least one sealed holdout benchmark is required")
+    generation = manifest_digest({"sealed_holdout": manifest})
+    registry.mark_spent(generation, f"lineage:{lineage_id}")
+    return generation
 
 
 def manifest_digest(manifest: dict) -> str:

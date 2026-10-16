@@ -66,7 +66,9 @@ session or SessionDB transcript.
 - `evaluate CANDIDATE_ID` runs paired command benchmarks and signs persisted
   evidence. It requires a digest-pinned Docker-compatible benchmark, separate
   holdout root, evaluator private key, and execution under the configured
-  evaluator effective UID.
+  evaluator effective UID. It consumes the current sealed-manifest generation
+  once per candidate evolution lineage before starting; even a failed attempt
+  requires a rotated holdout generation before retrying that lineage.
 - `promote CANDIDATE_ID --release brain-vN` verifies evidence and deploys a
   skills-only Git candidate. `rollback brain-vN` restores a prior release.
   Both require a configured promoter UID, evaluator public key, manifest key,

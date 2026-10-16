@@ -24,6 +24,7 @@ from .models import Candidate, CandidateType, Role, Split
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
+from .security import SpentHoldoutRegistry, consume_holdout_generation
 from .store import ExperimentStore
 
 
@@ -398,6 +399,12 @@ def main() -> int:
             experiment_store=store,
             evaluator_signing_key=Path(private_key_path).read_bytes(),
             artifact_store=artifact_store,
+        )
+        experiment = store.show_experiment(stored_candidate["experiment_id"])
+        consume_holdout_generation(
+            SpentHoldoutRegistry(str(database)),
+            [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT],
+            experiment["lineage_id"],
         )
         report = evaluator.evaluate(
             candidate,

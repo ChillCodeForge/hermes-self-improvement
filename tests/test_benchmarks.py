@@ -7,7 +7,11 @@ import pytest
 from hermes_improve.benchmarks import BenchmarkStore
 from hermes_improve.errors import AccessDenied
 from hermes_improve.models import Benchmark, Role, Split
-from hermes_improve.security import AccessController
+from hermes_improve.security import (
+    AccessController,
+    SpentHoldoutRegistry,
+    consume_holdout_generation,
+)
 
 
 def data(identifier: str, split: str, cluster: str = "shared") -> dict:
@@ -89,6 +93,28 @@ def test_benchmark_secret_scanner_rejects_declared_sanitized_but_secret_data():
     bad["task"]["prompt"] = "Authorization: Bearer abcdefghijklmnop"
     with pytest.raises(ValueError, match="credential-like"):
         Benchmark.from_dict(bad)
+
+
+def test_holdout_generation_is_durable_per_lineage_and_changes_on_rotation(tmp_path):
+    registry = SpentHoldoutRegistry(str(tmp_path / "experiments.sqlite3"))
+    holdout = Benchmark.from_dict(data("holdout-a", "SEALED_HOLDOUT", "holdout-cluster"))
+    public = Benchmark.from_dict(data("train-a", "TRAIN", "train-cluster"))
+
+    generation = consume_holdout_generation(registry, [holdout], "lineage-a")
+    assert registry.is_spent(generation, "lineage:lineage-a")
+    with pytest.raises(AccessDenied, match="lineage"):
+        consume_holdout_generation(
+            SpentHoldoutRegistry(str(tmp_path / "experiments.sqlite3")),
+            [public, holdout],
+            "lineage-a",
+        )
+
+    changed = data("holdout-a", "SEALED_HOLDOUT", "holdout-cluster")
+    changed["task"]["prompt"] = "A rotated holdout task"
+    next_generation = consume_holdout_generation(
+        registry, [public, Benchmark.from_dict(changed)], "lineage-a"
+    )
+    assert next_generation != generation
 
 
 @pytest.mark.parametrize("identifier", ["../outside", "nested/task", ""])
