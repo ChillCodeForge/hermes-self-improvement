@@ -104,6 +104,26 @@ def test_benchmark_candidate_review_is_persistent_immutable_and_secret_checked(t
         )
 
 
+def test_reviewed_benchmark_candidate_sources_are_frozen(tmp_path):
+    from hermes_improve.miner import mine_session
+
+    store = ExperimentStore(tmp_path / "state.sqlite3")
+    first = mine_session({"session_id": "s1", "task": {"prompt": "Review this stable task"}})
+    second = mine_session({"session_id": "s2", "task": {"prompt": "review THIS stable task"}})
+    store.save_benchmark_candidate(first, "s1")
+    store.review_benchmark_candidate(
+        first.task_fingerprint,
+        decision="ACCEPTED",
+        reviewer="operator",
+        rationale="Reviewed source evidence.",
+    )
+
+    assert store.save_benchmark_candidate(second, "s2") is False
+    reviewed = store.get_benchmark_candidate(first.task_fingerprint)
+    assert reviewed["source_sessions"] == ["s1"]
+    assert reviewed["review_status"] == "ACCEPTED"
+
+
 def test_existing_benchmark_candidates_migrate_to_pending_review(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     fingerprint = "a" * 64

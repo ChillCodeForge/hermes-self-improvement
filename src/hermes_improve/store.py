@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from .errors import IntegrityError
 from .ingestion import contains_secret_material
+from .miner import BenchmarkCandidate
 from .models import Candidate, EvaluationReport, candidate_digest, canonical_json, utc_now
 
 
@@ -278,13 +279,16 @@ class ExperimentStore:
                 (digest,path,media_type,utc_now()),
             )
 
-    def save_benchmark_candidate(self, candidate: Any, session_id: str) -> bool:
+    def save_benchmark_candidate(self, candidate: BenchmarkCandidate, session_id: str) -> bool:
         with self._lock, self._connect() as db:
             existing = db.execute(
-                "SELECT source_sessions_json FROM benchmark_candidates WHERE task_fingerprint=?",
+                """SELECT source_sessions_json, review_status FROM benchmark_candidates
+                   WHERE task_fingerprint=?""",
                 (candidate.task_fingerprint,),
             ).fetchone()
             if existing:
+                if existing["review_status"] != "PENDING":
+                    return False
                 sources = json.loads(existing["source_sessions_json"])
                 if session_id not in sources:
                     sources.append(session_id)

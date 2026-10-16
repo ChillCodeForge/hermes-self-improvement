@@ -27,9 +27,10 @@ permissions; the capability alone is not a security boundary.
   source; it does not establish truth or automatically admit the proposal.
 - `hermes-improve benchmarks inspect-candidate FINGERPRINT` shows a bounded
   preview of up to three redacted source sessions. `review-candidate` records
-  one immutable operator accept/reject decision with reviewer and rationale.
-  Acceptance is triage only: it does not create or admit an executable
-  benchmark; benchmark authoring and validation remain separate.
+  one immutable operator accept/reject decision with reviewer and rationale;
+  the source-session set is frozen at that point. Acceptance is triage only: it
+  does not create or admit an executable benchmark; benchmark authoring and
+  validation remain separate.
 - `hermes-improve evaluate` selects declared FULL tasks plus sealed holdout
   tasks, then uses a digest-pinned Docker command runner.
 
