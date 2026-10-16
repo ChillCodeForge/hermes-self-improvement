@@ -8,7 +8,8 @@ does not yet collect live sessions or deploy changes automatically.
 manual JSON export or optional Hermes on_session_finalize plugin
   → redact and queue
   → LIGHT/REM/DEEP evidence analysis and benchmark proposals
-  → immutable candidate record referencing a Git commit/diff (created through library API)
+  → immutable candidate record referencing a Git commit/diff (created through
+    the API or from operator-supplied content by `candidate create`)
   → paired Docker command evaluation + deterministic policy
   → signed evaluator report
   → skills-only Git promotion + atomic release pointer
@@ -31,8 +32,8 @@ manual JSON export or optional Hermes on_session_finalize plugin
 - Loopback-first Qwen-compatible API adapter, blind swapped pairwise judgment,
   and optional model usage/latency metrics.
 - Version-gated strategy interface and iterative optimization API; they do
-  not include a verified external GEPA/DSPy integration or an automated
-  candidate-commit-writing CLI workflow.
+  not include a verified external GEPA/DSPy integration or automatic skill
+  generation. The candidate CLI only commits content supplied by an operator.
 - Git promoter restricted to skill paths, with evidence and diff checks,
   release manifests, atomic symlink switching, and rollback.
 - Post-promotion monitoring decision API plus bounded JSONL CLI ingestion for

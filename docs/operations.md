@@ -52,6 +52,13 @@ session or SessionDB transcript.
   filtered proposals and also requires Qwen.
 - `benchmarks mine SESSION_ID` creates a benchmark proposal; proposals require
   review before they are admitted to a benchmark suite.
+- `candidate create --repository REPO --experiment-id ID --candidate-id ID
+  --type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --content FILE
+  --hypothesis TEXT` creates an immutable candidate commit in a separate
+  `candidate/<experiment-id>` branch/worktree. Candidate content must be supplied
+  explicitly; the command validates the path, size, and credential-like
+  strings, and does not write production. Only `SKILL.md` candidates are
+  currently supported.
 - `evaluate CANDIDATE_ID` runs paired command benchmarks and signs persisted
   evidence. It requires a digest-pinned Docker-compatible benchmark, separate
   holdout root, evaluator private key, and execution under the configured
@@ -61,7 +68,7 @@ session or SessionDB transcript.
   Both require a configured promoter UID, evaluator public key, manifest key,
   and repository/release/deployment paths.
 
-The CLI does not create candidate commits or users, establish filesystem
+The CLI does not generate skill text, create users, establish filesystem
 permissions, rotate holdout generations, or connect a Hermes session/telemetry
 service. Read `security.md` before configuring keys, Docker, or deployment
 paths. Never run generator/evaluator/promoter roles as one shared UID for a

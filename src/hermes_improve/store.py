@@ -158,6 +158,44 @@ class ExperimentStore:
                  candidate.content_hash,candidate.created_at),
             )
 
+    def create_experiment_with_candidate(
+        self,
+        candidate: Candidate,
+        *,
+        lineage_id: str,
+        hypothesis: str,
+        risk: str,
+        benchmark_version: str,
+        policy_version: str,
+        source_sessions: Iterable[str] = (),
+    ) -> None:
+        if not all(isinstance(value, str) and value.strip() for value in (
+            lineage_id, hypothesis, risk, benchmark_version, policy_version,
+        )):
+            raise ValueError("experiment metadata fields must be non-empty strings")
+        if not candidate.diff or not candidate.commit or not candidate.base_commit:
+            raise ValueError("candidate requires commit IDs and a non-empty diff")
+        import hashlib
+        diff_hash = hashlib.sha256(candidate.diff.encode()).hexdigest()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO experiments
+                (id,parent_id,lineage_id,hypothesis,source_sessions,candidate_type,target,risk,
+                 baseline_commit,benchmark_version,policy_version,created_at)
+                VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?)""",
+                (candidate.experiment_id, lineage_id, hypothesis, canonical_json(list(source_sessions)),
+                 candidate.candidate_type.value, candidate.target, risk, candidate.base_commit,
+                 benchmark_version, policy_version, utc_now()),
+            )
+            db.execute(
+                """INSERT INTO candidates
+                (id,experiment_id,candidate_type,target,base_commit,commit_id,diff_hash,content_hash,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (candidate.candidate_id, candidate.experiment_id, candidate.candidate_type.value,
+                 candidate.target, candidate.base_commit, candidate.commit, diff_hash,
+                 candidate.content_hash, candidate.created_at),
+            )
+
     def record_evaluation(
         self, evaluation_id: str, candidate_id: str, report: EvaluationReport,
         signature: str | None = None,

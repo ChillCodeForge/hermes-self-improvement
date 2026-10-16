@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__
 from .artifacts import ArtifactStore
 from .benchmarks import BenchmarkStore
+from .candidate_builder import create_skill_candidate
 from .docker_runner import DockerCommandRunner
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue
@@ -171,6 +172,17 @@ def build_parser() -> argparse.ArgumentParser:
     candidates = sub.add_parser("candidates")
     candidates.add_argument("candidate_command", choices=["list"])
     candidates.add_argument("--limit", type=int, default=100)
+    candidate = sub.add_parser("candidate")
+    candidate_sub = candidate.add_subparsers(dest="candidate_command", required=True)
+    create = candidate_sub.add_parser("create")
+    create.add_argument("--repository", type=Path, required=True)
+    create.add_argument("--experiment-id", required=True)
+    create.add_argument("--candidate-id", required=True)
+    create.add_argument("--type", choices=["SKILL_CREATE", "SKILL_PATCH"], required=True)
+    create.add_argument("--target", required=True, help="skill directory under brain/skills/")
+    create.add_argument("--content", type=Path, required=True, help="file containing the new SKILL.md text")
+    create.add_argument("--hypothesis", required=True)
+    create.add_argument("--source-session", action="append", default=[])
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list"])
     monitor = sub.add_parser("monitor")
@@ -254,6 +266,37 @@ def main() -> int:
             print(json.dumps(store.show_experiment(args.experiment_id), indent=2))
     elif args.command == "candidates":
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
+    elif args.command == "candidate":
+        with args.content.open("rb") as source:
+            content_bytes = source.read(256 * 1024 + 1)
+        if len(content_bytes) > 256 * 1024:
+            raise ValueError("skill candidate content exceeds the 256 KiB limit")
+        try:
+            content = content_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("skill candidate content must be UTF-8") from exc
+        benchmark_version = BenchmarkStore(benchmark_root).version
+        result = create_skill_candidate(
+            args.repository,
+            ExperimentStore(database),
+            experiment_id=args.experiment_id,
+            candidate_id=args.candidate_id,
+            candidate_type=CandidateType(args.type),
+            target=args.target,
+            content=content,
+            hypothesis=args.hypothesis,
+            benchmark_version=benchmark_version,
+            source_sessions=tuple(args.source_session),
+        )
+        print(json.dumps({
+            "candidate_id": result.candidate_id,
+            "experiment_id": result.experiment_id,
+            "candidate_hash": result.content_hash,
+            "base_commit": result.base_commit,
+            "commit": result.commit,
+            "target": result.target,
+            "status": "awaiting_evaluation",
+        }, indent=2))
     elif args.command == "releases":
         print(json.dumps(ExperimentStore(database).list_releases(), indent=2))
     elif args.command == "monitor":

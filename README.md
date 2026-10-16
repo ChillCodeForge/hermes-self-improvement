@@ -66,10 +66,14 @@ for evaluation readiness.
   digest-pinned command benchmarks.
 - A skills-only Git promoter with signed manifests, atomic release-pointer
   switching, rollback, and a monitoring decision API.
+- CLI creation of immutable skill candidates in isolated Git worktrees/branches
+  from operator-supplied `SKILL.md` content, with secret/path checks and atomic
+  experiment persistence.
 
 Hermes hook ingestion is disabled by default and requires explicit plugin
 enablement/settings. Candidate proposals are not automatically converted
-into Git commits. The
+into Git content; candidate creation requires explicit operator-supplied skill
+text. The
 `evaluate` CLI accepts only command-based benchmark environments; it is not a
 Hermes runtime or `batch_runner`. Production ingestion and monitoring need
 external callers. The end-to-end flow has been exercised with a temporary Git
