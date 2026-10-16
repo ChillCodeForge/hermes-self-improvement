@@ -9,6 +9,7 @@ from typing import Iterable
 from .errors import AccessDenied
 from .models import Benchmark, Role, Split
 from .security import AccessController, HoldoutGrant
+from .task_similarity import are_near_duplicate_tasks
 
 
 class BenchmarkStore:
@@ -54,7 +55,7 @@ class BenchmarkStore:
         benchmarks = self.load_all()
         ids: set[tuple[str, int]] = set()
         cluster_splits: dict[str, Split] = {}
-        for benchmark in benchmarks:
+        for index, benchmark in enumerate(benchmarks):
             identity = (benchmark.id, benchmark.version)
             if identity in ids:
                 raise ValueError(f"duplicate benchmark id/version: {identity}")
@@ -65,6 +66,17 @@ class BenchmarkStore:
                     f"cluster {benchmark.cluster_id!r} leaks across splits "
                     f"({existing.value}, {benchmark.split.value})"
                 )
+            for previous in benchmarks[:index]:
+                if (
+                    benchmark.split is not previous.split
+                    or benchmark.cluster_id != previous.cluster_id
+                ) and are_near_duplicate_tasks(
+                    str(benchmark.task["prompt"]), str(previous.task["prompt"]),
+                ):
+                    raise ValueError(
+                        f"near-duplicate benchmarks {previous.id!r} and {benchmark.id!r} "
+                        "must share the same split and cluster_id"
+                    )
         return benchmarks
 
     @property

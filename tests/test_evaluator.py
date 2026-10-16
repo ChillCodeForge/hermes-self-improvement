@@ -19,7 +19,7 @@ from hermes_improve.store import ExperimentStore
 def benchmark(identifier, split, cluster, suites):
     return {
         "schema_version": 1, "id": identifier, "version": 1,
-        "source": {"type": "test"}, "task": {"title": identifier, "prompt": "Complete task"},
+        "source": {"type": "test"}, "task": {"title": identifier, "prompt": f"Complete task {identifier}"},
         "taxonomy": {"categories": ["test"], "difficulty": "easy", "required_capabilities": []},
         "environment": {"type": "fixture"}, "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0},
         "verification": {"deterministic": ["unit-test"], "subjective": []},

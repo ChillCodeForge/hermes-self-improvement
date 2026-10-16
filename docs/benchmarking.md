@@ -3,8 +3,12 @@
 Benchmark JSON records are parsed and validated by `Benchmark.from_dict`.
 `BenchmarkStore.validate()` checks duplicate ID/version pairs, required
 metadata, sanitization flags, separate storage of sealed holdout, and that a
-cluster is assigned to only one split. Its manifest version is a deterministic
-hash of the validated records.
+cluster is assigned to only one split. It also rejects normalized exact
+duplicates and likely lexical near duplicates that do not share both a split
+and cluster: prompts with at least eight words and word-set Jaccard similarity
+of at least 0.85. This conservative rule is a deterministic leakage guard, not
+semantic clustering. Its manifest version is a deterministic hash of the
+validated records.
 
 Generator-facing stores may contain only public benchmark roots. They expose
 TRAIN/VALIDATION while evaluator-only suites remain hidden. Evaluator holdout
@@ -57,9 +61,11 @@ passed; overall task success still requires every check.
 The repository includes only a schema fixture, not the 20–50 curated
 real-session tasks required for meaningful readiness. Manual curation and
 replay verification are still required. The human proposal-review record does
-not replace benchmark authoring or admission controls. Semantic deduplication,
-benchmark provenance attestation, automatic holdout-generation rotation, and
-impact-aware suite selection are not implemented. Evaluation
+not replace benchmark authoring or admission controls. Semantic deduplication
+and clustering, benchmark provenance attestation, automatic holdout-generation
+rotation, and impact-aware suite selection are not implemented. The lexical
+near-duplicate guard can miss paraphrases and can require manual cluster
+assignment for similar prompts. Evaluation
 records a durable spent marker keyed by the sealed benchmark manifest and
 candidate evolution lineage before consuming holdout feedback; failed attempts
 also consume that generation, so operators must rotate the holdout before

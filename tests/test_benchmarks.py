@@ -44,6 +44,67 @@ def test_cluster_split_leakage_is_rejected(tmp_path):
         BenchmarkStore(root, holdout_root=holdout).validate()
 
 
+def test_near_duplicate_tasks_cannot_cross_benchmark_splits(tmp_path):
+    root = tmp_path / "benchmarks"
+    root.mkdir()
+    train = data("task-train", "TRAIN", "cluster-train")
+    train["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and validates malformed rows "
+        "with clear useful error messages for users."
+    )
+    (root / "train.json").write_text(json.dumps(train))
+    holdout = tmp_path / "holdout"
+    holdout.mkdir()
+    sealed = data("task-holdout", "SEALED_HOLDOUT", "cluster-holdout")
+    sealed["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and reports malformed rows "
+        "with clear useful error messages for users."
+    )
+    (holdout / "holdout.json").write_text(json.dumps(sealed))
+
+    with pytest.raises(ValueError, match="near-duplicate benchmarks"):
+        BenchmarkStore(root, holdout_root=holdout).validate()
+
+
+def test_near_duplicate_tasks_must_share_cluster_even_within_one_split(tmp_path):
+    root = tmp_path / "benchmarks"
+    root.mkdir()
+    first = data("task-a", "TRAIN", "cluster-a")
+    first["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and validates malformed rows "
+        "with clear useful error messages for users."
+    )
+    second = data("task-b", "TRAIN", "cluster-b")
+    second["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and reports malformed rows "
+        "with clear useful error messages for users."
+    )
+    (root / "a.json").write_text(json.dumps(first))
+    (root / "b.json").write_text(json.dumps(second))
+
+    with pytest.raises(ValueError, match="same split and cluster_id"):
+        BenchmarkStore(root).validate()
+
+
+def test_near_duplicate_tasks_share_cluster_and_split(tmp_path):
+    root = tmp_path / "benchmarks"
+    root.mkdir()
+    first = data("task-a", "TRAIN", "shared-cluster")
+    first["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and validates malformed rows "
+        "with clear useful error messages for users."
+    )
+    second = data("task-b", "TRAIN", "shared-cluster")
+    second["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and reports malformed rows "
+        "with clear useful error messages for users."
+    )
+    (root / "a.json").write_text(json.dumps(first))
+    (root / "b.json").write_text(json.dumps(second))
+
+    assert len(BenchmarkStore(root).validate()) == 2
+
+
 def test_generator_cannot_read_holdout_but_evaluator_capability_can(tmp_path):
     root = tmp_path / "benchmarks"
     root.mkdir()

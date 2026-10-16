@@ -22,8 +22,9 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
 - Session-export redaction and durable SQLite queue; an opt-in Hermes
   finalization plugin backed by the observed SessionDB message-loader API;
   benchmark eligibility and exact task fingerprint proposals.
-- Benchmark schema checks, split/cluster leakage checks, and separate-root
-  loading for sealed holdout.
+- Benchmark schema checks, split/cluster leakage checks including a
+  conservative lexical near-duplicate guard, and separate-root loading for
+  sealed holdout. Semantic task clustering is not implemented.
 - Experiment, candidate, run, evaluation, artifact, decision, and release
   persistence; SHA-256 content-addressed artifacts.
 - Deterministic verifier interfaces and hard-gate promotion policy.

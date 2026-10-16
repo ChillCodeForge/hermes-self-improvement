@@ -68,8 +68,8 @@ for evaluation readiness.
 - An opt-in Hermes entry-point plugin that reads finalized transcript messages
   from SessionDB and queues redacted exports under the active Hermes home.
 - JSON benchmark validation, split/cluster leakage checks, separate holdout
-  roots, SQLite experiment/evaluation/release metadata, and content-addressed
-  artifacts.
+  roots, conservative lexical near-duplicate split checks, SQLite
+  experiment/evaluation/release metadata, and content-addressed artifacts.
 - Paired baseline/candidate evaluation, deterministic hard gates, confidence
   intervals, Ed25519-signed reports, and a Docker runner for explicit
   digest-pinned command benchmarks.
