@@ -20,6 +20,7 @@ def validate_skill_target(target: str) -> PurePosixPath:
         or path.as_posix() != target
         or len(path.parts) < 3
         or path.parts[:2] != ("brain", "skills")
+        or path.parts[-1].casefold() == "skill.md"
         or any(not _SAFE_SKILL_COMPONENT.fullmatch(part) for part in path.parts[2:])
         or any(part.casefold() in _PROTECTED_COMPONENTS for part in path.parts[2:])
     ):

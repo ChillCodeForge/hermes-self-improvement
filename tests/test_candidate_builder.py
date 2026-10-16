@@ -83,6 +83,7 @@ def test_skill_candidate_patch_changes_existing_skill(tmp_path):
         (CandidateType.SKILL_CREATE, "brain/skills/../evaluator", "safe", "unprotected"),
         (CandidateType.SKILL_CREATE, r"brain/skills/sample\..\security", "safe", "unprotected"),
         (CandidateType.SKILL_CREATE, "brain/skills/.git", "safe", "unprotected"),
+        (CandidateType.SKILL_CREATE, "brain/skills/SKILL.md", "safe", "unprotected"),
         (CandidateType.SKILL_CREATE, "brain//skills/sample", "safe", "unprotected"),
         (CandidateType.SKILL_CREATE, "brain/skills/sample", "api_key=not-a-real-secret-value", "credential"),
         (CandidateType.SKILL_PATCH, "brain/skills/sample", "content", "does not exist"),
