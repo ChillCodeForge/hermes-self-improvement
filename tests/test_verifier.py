@@ -63,6 +63,16 @@ def test_verifier_rejects_wrong_output_even_when_command_exits_successfully():
     assert results[0]["passed"] and results[1]["passed"] and not results[2]["passed"]
 
 
+def test_verifier_rejects_nonstandard_json_numbers():
+    task = benchmark([
+        {"type": "json_path_equals", "path": ["answer"], "expected": 1},
+    ])
+    passed, _, _ = verify_deterministic_output(
+        task, exit_code=0, output='{"answer":NaN}'
+    )
+    assert not passed
+
+
 def test_verifier_does_not_treat_json_boolean_as_integer():
     task = benchmark([
         {"type": "json_path_equals", "path": ["answer"], "expected": 1},
@@ -79,6 +89,7 @@ def test_verifier_does_not_treat_json_boolean_as_integer():
         (["unknown-check"], "unsupported deterministic verifier"),
         ([{"type": "output_contains"}], "expected value must be a string"),
         ([{"type": "json_path_equals", "path": ["missing"]}], "requires an expected value"),
+        ([{"type": "exit_code", "expected": 1}], "must match ground_truth"),
     ],
 )
 def test_verifier_fails_closed_on_invalid_specs(checks, message):

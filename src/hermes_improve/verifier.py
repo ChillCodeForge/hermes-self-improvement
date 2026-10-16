@@ -46,6 +46,8 @@ def verify_deterministic_output(
                 expected = expected_exit
             if isinstance(expected, bool) or not isinstance(expected, int):
                 raise ValueError("exit_code verifier expected value must be an integer")
+            if expected != expected_exit:
+                raise ValueError("exit_code verifier must match ground_truth.expected_exit_code")
         elif check_type in {"output_exact", "output_contains", "output_not_contains"}:
             if not isinstance(expected, str):
                 raise ValueError(f"{check_type} verifier expected value must be a string")
@@ -87,7 +89,7 @@ def _check(check_type: str, expected: Any, path: Any, exit_code: int, output: st
         return expected not in output
 
     try:
-        parsed = json.loads(output)
+        parsed = json.loads(output, parse_constant=_reject_nonstandard_constant)
     except (ValueError, TypeError):
         return False
     if check_type == "json_output_equals":
@@ -103,3 +105,7 @@ def _check(check_type: str, expected: Any, path: Any, exit_code: int, output: st
                 return False
         return canonical_json(value) == canonical_json(expected)
     raise AssertionError(f"unhandled verifier {check_type!r}")
+
+
+def _reject_nonstandard_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
