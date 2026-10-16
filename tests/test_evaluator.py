@@ -22,7 +22,10 @@ def benchmark(identifier, split, cluster, suites):
         "source": {"type": "test", "provenance": "unit-test"},
         "task": {"title": identifier, "prompt": f"Complete task {identifier}"},
         "taxonomy": {"categories": ["test"], "difficulty": "easy", "required_capabilities": []},
-        "environment": {"type": "fixture"}, "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0},
+        "environment": {"type": "fixture"},
+        "eligibility": {
+            "class": "HARD_BENCHMARK", "reproducibility_score": 1.0, "replay_verified": True,
+        },
         "verification": {"deterministic": ["unit-test"], "subjective": []},
         "ground_truth": {"type": "test", "confidence": 1.0},
         "benchmark": {"split": split, "suites": suites, "cluster_id": cluster, "criticality": "normal"},
@@ -94,6 +97,27 @@ def test_holdout_cannot_be_evaluated_without_grant(tmp_path):
             candidate(), baseline_commit="base", benchmark_ids=["holdout-task"], seeds=[1],
             suite="SEALED_HOLDOUT", benchmark_version=store.version,
         )
+
+
+def test_evaluator_rejects_soft_benchmarks_before_running_tasks(tmp_path):
+    store, _ = setup_store(tmp_path)
+    full_benchmark = tmp_path / "benchmarks" / "full.json"
+    record = json.loads(full_benchmark.read_text())
+    record["eligibility"] = {
+        "class": "SOFT_BENCHMARK",
+        "reproducibility_score": 0.6,
+        "replay_verified": False,
+    }
+    full_benchmark.write_text(json.dumps(record))
+    runner = FixtureRunner()
+    evaluator = PairedEvaluator(store, runner, PromotionPolicy())
+
+    with pytest.raises(ValueError, match="requires HARD_BENCHMARK"):
+        evaluator.evaluate(
+            candidate(), baseline_commit="base", benchmark_ids=["full-task"], seeds=[1],
+            suite="FULL", benchmark_version=store.version,
+        )
+    assert runner.calls == []
 
 
 def test_candidate_must_be_based_on_requested_baseline(tmp_path):

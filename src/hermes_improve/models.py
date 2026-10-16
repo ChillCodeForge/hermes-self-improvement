@@ -128,6 +128,9 @@ class Benchmark:
             or not 0 <= score <= 1 or not math.isfinite(score)
         ):
             raise ValueError("reproducibility_score must be between 0 and 1")
+        replay_verified = data["eligibility"].get("replay_verified")
+        if not isinstance(replay_verified, bool):
+            raise ValueError("benchmark eligibility.replay_verified must be a boolean")
         if (
             data["security"].get("sanitized") is not True
             or data["security"].get("contains_secrets") is not False
@@ -168,6 +171,18 @@ class Benchmark:
             or not 0 <= confidence <= 1 or not math.isfinite(confidence)
         ):
             raise ValueError("benchmark ground_truth.confidence must be between 0 and 1")
+        if Eligibility(data["eligibility"]["class"]) is Eligibility.HARD_BENCHMARK:
+            if score < 0.8:
+                raise ValueError("hard benchmarks require reproducibility_score of at least 0.8")
+            if replay_verified is not True:
+                raise ValueError("hard benchmarks require a successful replay")
+            structured_result = data["ground_truth"].get("structured_result")
+            if not data["verification"]["deterministic"] and not (
+                isinstance(structured_result, Mapping) and structured_result
+            ):
+                raise ValueError(
+                    "hard benchmarks require deterministic verification or structured ground truth"
+                )
         from .ingestion import contains_secret_material
         if contains_secret_material(data):
             raise ValueError("benchmark contains unredacted credential-like material")

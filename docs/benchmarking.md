@@ -31,8 +31,10 @@ permissions; the capability alone is not a security boundary.
   the source-session set is frozen at that point. Acceptance is triage only: it
   does not create or admit an executable benchmark; benchmark authoring and
   validation remain separate.
-- `hermes-improve evaluate` selects declared FULL tasks plus sealed holdout
-  tasks, then uses a digest-pinned Docker command runner.
+- `hermes-improve evaluate` accepts only hard benchmarks with successful replay,
+  score of at least `0.8`, and deterministic or structured ground truth. It
+  selects declared FULL tasks plus sealed holdout tasks, then uses a
+  digest-pinned Docker command runner.
 
 The runner requires `environment.container_image` pinned by SHA-256 digest,
 `network_policy: disabled`, an argv-array command, and an expected exit code.

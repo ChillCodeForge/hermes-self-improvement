@@ -21,7 +21,7 @@ from .miner import mine_session
 from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
-from .models import Candidate, CandidateType, Role, Split
+from .models import Candidate, CandidateType, Eligibility, Role, Split
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
@@ -475,9 +475,14 @@ def main() -> int:
         full_ids = [
             item.id for item in benchmarks
             if item.split is not Split.SEALED_HOLDOUT
+            and Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK
             and "FULL" in {str(suite).upper() for suite in item.benchmark.get("suites", [])}
         ]
-        holdout_ids = [item.id for item in benchmarks if item.split is Split.SEALED_HOLDOUT]
+        holdout_ids = [
+            item.id for item in benchmarks
+            if item.split is Split.SEALED_HOLDOUT
+            and Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK
+        ]
         if not full_ids or not holdout_ids:
             raise ValueError("promotion evaluation requires at least one FULL and one sealed holdout benchmark")
         try:

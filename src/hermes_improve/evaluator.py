@@ -12,6 +12,7 @@ from .evaluation_signing import sign_report
 from .models import (
     Benchmark,
     Candidate,
+    Eligibility,
     EvaluationReport,
     Role,
     RunObservation,
@@ -87,6 +88,15 @@ class PairedEvaluator:
         ]
         if not benchmarks:
             raise ValueError("at least one benchmark is required")
+        ineligible = [
+            benchmark.id for benchmark in benchmarks
+            if Eligibility(benchmark.eligibility["class"]) is not Eligibility.HARD_BENCHMARK
+        ]
+        if ineligible:
+            raise ValueError(
+                "evaluation requires HARD_BENCHMARK tasks; ineligible tasks: "
+                + ", ".join(ineligible)
+            )
 
         observations: dict[tuple[str, str], list[RunObservation]] = defaultdict(list)
         all_observations: list[RunObservation] = []

@@ -53,7 +53,10 @@ def mine_session(session: Mapping[str, Any]) -> BenchmarkCandidate:
         "ground_truth_strong": (
             isinstance(verification.get("deterministic"), list)
             and bool(verification.get("deterministic"))
-        ) or isinstance(verification.get("structured_result"), Mapping),
+        ) or (
+            isinstance(verification.get("structured_result"), Mapping)
+            and bool(verification.get("structured_result"))
+        ),
         "secret_free": security.get("sanitized") is True and security.get("contains_secrets") is False,
         "replay_verified": session.get("replay_verified") is True,
     }

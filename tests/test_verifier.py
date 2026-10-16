@@ -23,7 +23,9 @@ def benchmark(checks, *, expected_exit=0) -> Benchmark:
             "network_policy": "disabled",
             "command": ["python", "candidate.py"],
         },
-        "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0},
+        "eligibility": {
+            "class": "HARD_BENCHMARK", "reproducibility_score": 1.0, "replay_verified": True,
+        },
         "verification": {"deterministic": checks, "subjective": []},
         "ground_truth": {
             "type": "deterministic_test",

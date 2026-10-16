@@ -287,10 +287,11 @@ environment:
   input_data: null
 eligibility:
   class: HARD_BENCHMARK
-  reproducibility_score: 0.0
-  replay_verified: false
+  reproducibility_score: 0.9
+  replay_verified: true
 verification:
-  deterministic: []
+  deterministic:
+    - type: exit_code
   subjective: []
 ground_truth:
   type: deterministic_test

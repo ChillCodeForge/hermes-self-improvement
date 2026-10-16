@@ -20,7 +20,10 @@ def data(identifier: str, split: str, cluster: str = "shared") -> dict:
         "source": {"type": "manual", "provenance": "test-fixture"},
         "task": {"title": identifier, "prompt": "Do a test"},
         "taxonomy": {"categories": [], "difficulty": "easy", "required_capabilities": []},
-        "environment": {"type": "fixture"}, "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 0.9},
+        "environment": {"type": "fixture"},
+        "eligibility": {
+            "class": "HARD_BENCHMARK", "reproducibility_score": 0.9, "replay_verified": True,
+        },
         "verification": {"deterministic": ["exit_code"], "subjective": []},
         "ground_truth": {"type": "deterministic_test", "confidence": 1.0},
         "benchmark": {"split": split, "suites": ["SMOKE"], "cluster_id": cluster, "criticality": "normal"},
@@ -150,12 +153,21 @@ def test_truthy_non_boolean_security_flag_is_rejected():
         ("ground_truth", "confidence", float("nan"), "confidence"),
         ("ground_truth", "confidence", 1.1, "confidence"),
         ("ground_truth", "confidence", -0.1, "confidence"),
+        ("eligibility", "replay_verified", "true", "replay_verified"),
+        ("eligibility", "reproducibility_score", 0.79, "at least 0.8"),
     ],
 )
 def test_benchmark_metadata_fields_are_validated(section, field, value, message):
     invalid = data("invalid-metadata", "TRAIN")
     invalid[section][field] = value
     with pytest.raises(ValueError, match=message):
+        Benchmark.from_dict(invalid)
+
+
+def test_hard_benchmark_requires_strong_ground_truth():
+    invalid = data("weak-hard-benchmark", "TRAIN")
+    invalid["verification"]["deterministic"] = []
+    with pytest.raises(ValueError, match="deterministic verification or structured ground truth"):
         Benchmark.from_dict(invalid)
 
 
