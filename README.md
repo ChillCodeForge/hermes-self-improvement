@@ -582,7 +582,7 @@ phase begins.
 | **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact/lexical leakage checks and spent markers are implemented; semantic clustering and holdout rotation remain absent | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
 | **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Validated caller-supplied read-only signals are implemented; a live Curator connector is absent | No Curator bypass around candidate evaluation and Git |
-| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Monitoring decisions and bounded JSONL ingestion are implemented; a production collector and live observation flow are absent | Regression triggers an auditable rollback decision |
+| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Monitoring API recommends stability or rollback but does not execute rollback; bounded JSONL ingestion exists, while production collection remains absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous
 learning. Later candidate types, observability expansion, and Laya are gated on
