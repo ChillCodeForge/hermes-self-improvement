@@ -571,18 +571,18 @@ Every phase must finish with tests, acceptance review, and a record of what
 works, what does not, relevant measurements, and residual risks before the next
 phase begins.
 
-| Phase | Deliverable | Exit criteria |
-|---|---|---|
-| **0 — Discovery** | Inspect actual Hermes, Curator, Self-Evolution, DSPy/GEPA, and Qwen versions/APIs; document reuse, risks, and adapters | Evidence-backed discovery and reuse matrix; no assumption treated as an integration |
-| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
-| **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
-| **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
-| **4 — Session ingestion** | Post-session hook/export, redaction, metadata extraction, ingestion queue | Completed sessions enter the queue without heavy analysis in the user path |
-| **5 — Benchmark miner** | Eligibility classes and reproducibility scoring | Reproducible tasks are distinguished from Dreaming-only evidence |
-| **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Related tasks cannot leak across splits |
-| **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | Hypotheses/candidates are bounded and cannot directly change production |
-| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | No Curator bypass around candidate evaluation and Git |
-| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Regression triggers an auditable rollback decision |
+| Phase | Deliverable | Current repository status | Exit criteria |
+|---|---|---|---|
+| **0 — Discovery** | Inspect actual Hermes, Curator, Self-Evolution, DSPy/GEPA, and Qwen versions/APIs; document reuse, risks, and adapters | Initial findings are documented; several external APIs and endpoints remain unverified | Evidence-backed discovery and reuse matrix; no assumption treated as an integration |
+| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components are implemented; the curated 20–50-task corpus and repeated real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
+| **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Skills-only promotion and rollback are implemented; separate OS identities, filesystem protection, and a verified production deployment remain | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
+| **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | Strategy and optimization APIs exist; external adapters and automatic skill generation are not integrated | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
+| **4 — Session ingestion** | Post-session hook/export, redaction, metadata extraction, ingestion queue | JSON and trajectory ingestion plus an opt-in finalize plugin are implemented; live Hermes session finalization remains unverified | Completed sessions enter the queue without heavy analysis in the user path |
+| **5 — Benchmark miner** | Eligibility classes and reproducibility scoring | Mining proposals and operator review are implemented; proposals still require separate benchmark authoring and admission | Reproducible tasks are distinguished from Dreaming-only evidence |
+| **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact/lexical leakage checks and spent markers are implemented; semantic clustering and holdout rotation remain absent | Related tasks cannot leak across splits |
+| **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
+| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Validated caller-supplied read-only signals are implemented; a live Curator connector is absent | No Curator bypass around candidate evaluation and Git |
+| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Monitoring decisions and bounded JSONL ingestion are implemented; a production collector and live observation flow are absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous
 learning. Later candidate types, observability expansion, and Laya are gated on
