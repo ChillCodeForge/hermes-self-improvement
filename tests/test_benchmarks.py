@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Barrier
+import time
 
 import pytest
 
@@ -230,7 +233,10 @@ def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
     source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
     root = tmp_path / "public"
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     assert main() == 0
 
@@ -251,7 +257,10 @@ def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypa
     )
     root = tmp_path / "public"
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     with pytest.raises(ValueError, match="sealed holdout"):
         main()
@@ -280,7 +289,10 @@ def test_cli_rejects_corpus_leakage_without_admitting_record(tmp_path, monkeypat
     source = tmp_path / "authored.json"
     source.write_text(json.dumps(authored), encoding="utf-8")
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     with pytest.raises(ValueError, match="same split and cluster_id"):
         main()
@@ -305,7 +317,10 @@ def test_cli_rejects_duplicate_id_version_without_overwriting_existing_record(
     source = tmp_path / "replacement.json"
     source.write_text(json.dumps(changed), encoding="utf-8")
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     with pytest.raises(ValueError, match="duplicate benchmark id/version"):
         main()
@@ -330,7 +345,10 @@ def test_cli_does_not_overwrite_existing_destination_with_different_record(
     source = tmp_path / "authored.json"
     source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     with pytest.raises(ValueError, match="destination already exists"):
         main()
@@ -352,9 +370,78 @@ def test_cli_rejects_public_split_symlink_outside_root(tmp_path, monkeypatch):
     source = tmp_path / "authored.json"
     source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
-    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(tmp_path / "holdout"),
+    ])
 
     with pytest.raises(ValueError, match="inside its configured root"):
         main()
 
     assert list(holdout.iterdir()) == []
+
+
+def test_cli_rejects_near_duplicate_of_sealed_holdout(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    public = tmp_path / "public"
+    holdout = tmp_path / "holdout"
+    holdout.mkdir()
+    sealed = data("sealed-task", "SEALED_HOLDOUT", "sealed-cluster")
+    sealed["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and validates malformed rows "
+        "with clear useful error messages for users."
+    )
+    (holdout / "sealed.json").write_text(json.dumps(sealed), encoding="utf-8")
+    authored = data("authored-task", "TRAIN", "public-cluster")
+    authored["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and reports malformed rows "
+        "with clear useful error messages for users."
+    )
+    source = tmp_path / "authored.json"
+    source.write_text(json.dumps(authored), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(public))
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "benchmarks", "add", str(source),
+        "--holdout-root", str(holdout),
+    ])
+
+    with pytest.raises(ValueError, match="near-duplicate benchmarks"):
+        main()
+
+    assert not list(public.rglob("*.json"))
+
+
+def test_concurrent_admissions_revalidate_after_acquiring_the_store_lock(tmp_path, monkeypatch):
+    root = tmp_path / "public"
+    store = BenchmarkStore(root, holdout_root=tmp_path / "holdout")
+    first = Benchmark.from_dict(data("train-task", "TRAIN", "shared-cluster"))
+    second = Benchmark.from_dict(data("validation-task", "VALIDATION", "shared-cluster"))
+    start = Barrier(3)
+    load_all = store.load_all
+
+    def delayed_load_all():
+        rows = load_all()
+        time.sleep(0.05)
+        return rows
+
+    monkeypatch.setattr(store, "load_all", delayed_load_all)
+
+    def admit(benchmark):
+        start.wait()
+        try:
+            store.admit_public(benchmark)
+        except ValueError as exc:
+            return exc
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(admit, benchmark) for benchmark in (first, second)]
+        start.wait()
+        results = [future.result() for future in futures]
+
+    assert sum(result is None for result in results) == 1
+    assert sum(isinstance(result, ValueError) for result in results) == 1
+    assert len(list(root.rglob("*.json"))) == 1

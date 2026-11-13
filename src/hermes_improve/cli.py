@@ -243,6 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
     add_benchmark = benchmark_sub.add_parser("add")
     add_benchmark.add_argument("file", type=Path, help="operator-authored public benchmark JSON")
+    add_benchmark.add_argument(
+        "--holdout-root", type=Path, required=True,
+        help="sealed holdout benchmark directory used for leakage validation",
+    )
     evaluate = sub.add_parser("evaluate")
     evaluate.add_argument("candidate_id")
     evaluate.add_argument("--repository", type=Path, required=True)
@@ -352,7 +356,11 @@ def main() -> int:
             "hypotheses": report.hypotheses,
         }, indent=2))
     elif args.command == "benchmarks":
-        store = BenchmarkStore(benchmark_root)
+        store = (
+            BenchmarkStore(benchmark_root, holdout_root=args.holdout_root)
+            if args.benchmark_command == "add"
+            else BenchmarkStore(benchmark_root)
+        )
         if args.benchmark_command == "validate":
             rows = store.validate()
             print(json.dumps({"valid_benchmarks": len(rows), "version": store.version}))

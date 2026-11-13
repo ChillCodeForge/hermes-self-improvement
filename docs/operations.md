@@ -65,10 +65,10 @@ session or SessionDB transcript.
   its redacted sources, then `benchmarks review-candidate FINGERPRINT
   --decision accept|reject --reviewer NAME --rationale TEXT` to record an
   immutable triage decision. Acceptance does not admit the proposal; operators
-  must author a benchmark separately. `benchmarks add FILE` admits an
-  operator-authored public record only after schema and complete-corpus
-  validation; it rejects sealed holdout records and will not overwrite an
-  existing ID/version.
+  must author a benchmark separately. `benchmarks add FILE --holdout-root
+  HOLDOUT_DIR` admits an operator-authored public record only after schema and
+  complete-corpus validation against both roots; it rejects sealed holdout
+  records and will not overwrite an existing ID/version.
 - `candidate create --repository REPO --experiment-id ID --candidate-id ID
   --content FILE` creates an immutable candidate commit in a separate
   `candidate/<experiment-id>` branch/worktree. Supply metadata directly with

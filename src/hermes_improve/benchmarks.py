@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
-import tempfile
+import secrets
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from .errors import AccessDenied
 from .models import Benchmark, Role, Split
@@ -61,8 +64,19 @@ class BenchmarkStore:
     def admit_public(self, benchmark: Benchmark) -> Path:
         if benchmark.split is Split.SEALED_HOLDOUT:
             raise ValueError("sealed holdout benchmarks cannot be admitted to the public store")
-        _validate_benchmark_set([*self.load_all(), benchmark])
-        return write_benchmark(self.root, benchmark)
+        if self.holdout_root is None:
+            raise ValueError("public benchmark admission requires the sealed holdout root")
+        public_root = self.root.resolve()
+        holdout_root = self.holdout_root.resolve()
+        if (
+            public_root == holdout_root
+            or public_root.is_relative_to(holdout_root)
+            or holdout_root.is_relative_to(public_root)
+        ):
+            raise ValueError("sealed holdout root must be separate from the public benchmark tree")
+        with _admission_lock(self.root):
+            _validate_benchmark_set([*self.load_all(), benchmark])
+            return write_benchmark(self.root, benchmark)
 
     @property
     def version(self) -> str:
@@ -122,29 +136,82 @@ def write_benchmark(
         base = Path(holdout_root)
     else:
         base = Path(root)
-    split_dir = base / benchmark.split.value.lower()
-    split_dir.mkdir(parents=True, exist_ok=True)
+    split_name = benchmark.split.value.lower()
+    base.mkdir(parents=True, exist_ok=True)
     resolved_base = base.resolve()
-    resolved_split_dir = split_dir.resolve()
-    if not resolved_split_dir.is_relative_to(resolved_base):
-        raise ValueError("benchmark split directory must remain inside its configured root")
-    path = split_dir / f"{benchmark.id}-v{benchmark.version}.json"
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(resolved_base, directory_flags)
+    split_fd = -1
+    temporary_name = f".benchmark-{secrets.token_hex(16)}"
+    destination_name = f"{benchmark.id}-v{benchmark.version}.json"
     payload = json.dumps(benchmark.to_dict(), indent=2, sort_keys=True) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".benchmark-", dir=split_dir)
-    temporary_path = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
-            destination.write(payload)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.chmod(temporary_path, 0o644)
         try:
-            os.link(temporary_path, path)
-        except FileExistsError as exc:
-            raise ValueError(f"benchmark destination already exists: {path.name}") from exc
+            os.mkdir(split_name, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        try:
+            split_fd = os.open(split_name, directory_flags, dir_fd=root_fd)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise ValueError(
+                    "benchmark split directory must remain inside its configured root"
+                ) from exc
+            raise
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=split_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+                destination.write(payload)
+                destination.flush()
+                os.fchmod(destination.fileno(), 0o644)
+                os.fsync(destination.fileno())
+            try:
+                os.link(
+                    temporary_name,
+                    destination_name,
+                    src_dir_fd=split_fd,
+                    dst_dir_fd=split_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as exc:
+                raise ValueError(
+                    f"benchmark destination already exists: {destination_name}"
+                ) from exc
+            os.fsync(split_fd)
+        finally:
+            os.unlink(temporary_name, dir_fd=split_fd)
     finally:
-        temporary_path.unlink(missing_ok=True)
-    return path
+        if split_fd >= 0:
+            os.close(split_fd)
+        os.close(root_fd)
+    return base / split_name / destination_name
+
+
+@contextmanager
+def _admission_lock(root: Path) -> Iterator[None]:
+    root.mkdir(parents=True, exist_ok=True)
+    resolved_root = root.resolve()
+    root_fd = os.open(resolved_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(
+            ".benchmark-admission.lock",
+            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_fd,
+        )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+    finally:
+        os.close(root_fd)
 
 
 def _validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
