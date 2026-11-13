@@ -25,6 +25,11 @@ permissions; the capability alone is not a security boundary.
 - `hermes-improve benchmarks mine SESSION_ID` creates a deduplicated proposal
   from a redacted session. The miner scores reproducibility and ground-truth
   source; it does not establish truth or automatically admit the proposal.
+- `hermes-improve benchmarks add FILE --holdout-root HOLDOUT_DIR` admits an
+  operator-authored JSON record to the configured public store after validating
+  both the record and the complete public/holdout corpus. It rejects sealed
+  holdout records, duplicate ID/version pairs, and split/cluster leakage; an
+  existing destination is never replaced.
 - `hermes-improve benchmarks inspect-candidate FINGERPRINT` shows a bounded
   preview of up to three redacted source sessions. `review-candidate` records
   one immutable operator accept/reject decision with reviewer and rationale;
