@@ -67,13 +67,18 @@ session or SessionDB transcript.
   immutable triage decision. Acceptance does not admit the proposal; operators
   must author and validate a benchmark separately.
 - `candidate create --repository REPO --experiment-id ID --candidate-id ID
-  --type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --content FILE
-  --hypothesis TEXT` creates an immutable candidate commit in a separate
-  `candidate/<experiment-id>` branch/worktree. Candidate content must be supplied
-  explicitly; the target must be a canonical directory path under
-  `brain/skills/` (not a `SKILL.md` file path). The command validates the
-  target, content size, and credential-like strings, and does not write
-  production. Only `SKILL.md` candidates are currently supported.
+  --content FILE` creates an immutable candidate commit in a separate
+  `candidate/<experiment-id>` branch/worktree. Supply metadata directly with
+  `--type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --hypothesis TEXT`,
+  or select it from a DEEP output file with
+  `--proposal-file FILE --proposal-index N` (zero-based). Proposal files are
+  limited to 1 MiB and five candidates; only skill create/patch proposals are
+  supported. A proposal supplies metadata only: skill content must still be
+  supplied explicitly by the operator. The target must be a canonical
+  directory path under `brain/skills/` (not a `SKILL.md` file path). The
+  command validates the target, content size, and credential-like strings,
+  and does not write production. Only `SKILL.md` candidates are currently
+  supported.
 - `evaluate CANDIDATE_ID` runs paired command benchmarks and signs persisted
   evidence. It requires a digest-pinned Docker-compatible benchmark, separate
   holdout root, evaluator private key, and execution under the configured

@@ -33,6 +33,8 @@ _MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MAX_MONITOR_FILE_BYTES = 10 * 1024 * 1024
 _MAX_CURATOR_REPORT_BYTES = 1024 * 1024
 _MAX_CURATOR_REPORT_RECORDS = 10_000
+_MAX_DREAMING_PROPOSAL_BYTES = 1024 * 1024
+_MAX_DREAMING_PROPOSALS = 5
 
 
 def _paths() -> tuple[Path, Path]:
@@ -172,6 +174,44 @@ def _load_curator_usage_report(path: Path) -> list[dict[str, object]]:
     return data
 
 
+def _load_dreaming_proposal(
+    path: Path, index: int,
+) -> tuple[CandidateType, str, str]:
+    if isinstance(index, bool) or index < 0:
+        raise ValueError("Dreaming proposal index must be a non-negative integer")
+    with path.open("rb") as source:
+        raw = source.read(_MAX_DREAMING_PROPOSAL_BYTES + 1)
+    if len(raw) > _MAX_DREAMING_PROPOSAL_BYTES:
+        raise ValueError("Dreaming proposal file exceeds the 1 MiB limit")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Dreaming proposal file must be valid UTF-8 JSON") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("candidates"), list):
+        raise ValueError("Dreaming proposal file must contain a candidates array")
+    candidates = value["candidates"]
+    if len(candidates) > _MAX_DREAMING_PROPOSALS:
+        raise ValueError("Dreaming proposal file exceeds the five-candidate limit")
+    if index >= len(candidates):
+        raise ValueError("Dreaming proposal index is out of range")
+    proposal = candidates[index]
+    if not isinstance(proposal, dict):
+        raise ValueError("selected Dreaming proposal must be an object")
+    candidate_type = proposal.get("candidate_type")
+    target = proposal.get("target")
+    hypothesis = proposal.get("hypothesis")
+    if not isinstance(candidate_type, str) or candidate_type not in {
+        "SKILL_CREATE", "SKILL_PATCH",
+    }:
+        raise ValueError("Dreaming proposals only support skill create/patch candidates")
+    if (
+        not isinstance(target, str) or not target.strip()
+        or not isinstance(hypothesis, str) or not hypothesis.strip()
+    ):
+        raise ValueError("selected Dreaming proposal requires a target and hypothesis")
+    return CandidateType(candidate_type), target, hypothesis
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -221,10 +261,18 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--repository", type=Path, required=True)
     create.add_argument("--experiment-id", required=True)
     create.add_argument("--candidate-id", required=True)
-    create.add_argument("--type", choices=["SKILL_CREATE", "SKILL_PATCH"], required=True)
-    create.add_argument("--target", required=True, help="skill directory under brain/skills/")
+    create.add_argument("--type", choices=["SKILL_CREATE", "SKILL_PATCH"])
+    create.add_argument("--target", help="skill directory under brain/skills/")
     create.add_argument("--content", type=Path, required=True, help="file containing the new SKILL.md text")
-    create.add_argument("--hypothesis", required=True)
+    create.add_argument("--hypothesis")
+    create.add_argument(
+        "--proposal-file", type=Path,
+        help="DEEP Dreaming JSON file to select candidate metadata from",
+    )
+    create.add_argument(
+        "--proposal-index", type=int,
+        help="zero-based candidate index in --proposal-file",
+    )
     create.add_argument("--source-session", action="append", default=[])
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list"])
@@ -377,6 +425,27 @@ def main() -> int:
     elif args.command == "candidates":
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
     elif args.command == "candidate":
+        if args.proposal_file is not None:
+            if args.proposal_index is None:
+                raise ValueError("--proposal-index is required with --proposal-file")
+            if any(value is not None for value in (args.type, args.target, args.hypothesis)):
+                raise ValueError(
+                    "--proposal-file cannot be combined with --type, --target, or --hypothesis"
+                )
+            candidate_type, target, hypothesis = _load_dreaming_proposal(
+                args.proposal_file, args.proposal_index,
+            )
+        else:
+            if args.proposal_index is not None:
+                raise ValueError("--proposal-index requires --proposal-file")
+            if any(value is None for value in (args.type, args.target, args.hypothesis)):
+                raise ValueError(
+                    "provide --proposal-file and --proposal-index or all of "
+                    "--type, --target, and --hypothesis"
+                )
+            candidate_type = CandidateType(args.type)
+            target = args.target
+            hypothesis = args.hypothesis
         with args.content.open("rb") as source:
             content_bytes = source.read(256 * 1024 + 1)
         if len(content_bytes) > 256 * 1024:
@@ -391,10 +460,10 @@ def main() -> int:
             ExperimentStore(database),
             experiment_id=args.experiment_id,
             candidate_id=args.candidate_id,
-            candidate_type=CandidateType(args.type),
-            target=args.target,
+            candidate_type=candidate_type,
+            target=target,
             content=content,
-            hypothesis=args.hypothesis,
+            hypothesis=hypothesis,
             benchmark_version=benchmark_version,
             source_sessions=tuple(args.source_session),
         )
