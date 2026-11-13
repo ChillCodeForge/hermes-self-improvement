@@ -9,7 +9,8 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
   → redact and queue
   → LIGHT/REM/DEEP evidence analysis and benchmark proposals
   → immutable candidate record referencing a Git commit/diff (created through
-    the API or from operator-supplied content by `candidate create`)
+    the API or by `candidate create` from operator-supplied content and either
+    direct metadata or an explicitly selected Dreaming proposal)
   → paired Docker command evaluation + deterministic policy
   → signed evaluator report
   → skills-only Git promotion + atomic release pointer

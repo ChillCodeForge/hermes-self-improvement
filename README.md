@@ -84,8 +84,8 @@ for evaluation readiness.
 
 Hermes hook ingestion is disabled by default and requires explicit plugin
 enablement/settings. Candidate proposals are not automatically converted
-into Git content; candidate creation requires explicit operator-supplied skill
-text. The
+into Git content. An operator may select a DEEP proposal as candidate metadata,
+but candidate creation still requires explicitly supplied skill text. The
 `evaluate` CLI accepts only command-based benchmark environments; it is not a
 Hermes runtime or `batch_runner`. Production ingestion and monitoring need
 external callers. The end-to-end flow has been exercised with a temporary Git

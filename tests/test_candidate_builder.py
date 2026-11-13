@@ -229,3 +229,199 @@ def test_candidate_create_cli_materializes_commit_and_reports_hash(tmp_path, mon
     assert result["status"] == "awaiting_evaluation"
     assert result["candidate_hash"]
     assert git(repo, "rev-parse", "main") == result["base_commit"]
+
+
+def test_candidate_create_cli_uses_selected_deep_proposal_but_operator_content(
+    tmp_path, monkeypatch, capsys,
+):
+    import json
+    import sys
+
+    from hermes_improve.cli import main
+
+    repo = repository(tmp_path)
+    home = tmp_path / "state"
+    content = tmp_path / "SKILL.md"
+    content.write_text("---\nname: sample\n---\nOperator-authored skill.\n", encoding="utf-8")
+    proposal = tmp_path / "dreaming.json"
+    proposal.write_text(json.dumps({"candidates": [
+        {
+            "summary": "Unused proposal",
+            "candidate_type": "SKILL_CREATE",
+            "target": "brain/skills/unused",
+            "hypothesis": "An unselected proposal",
+        },
+        {
+            "summary": "Create sample skill",
+            "candidate_type": "SKILL_CREATE",
+            "target": "brain/skills/sample",
+            "hypothesis": "Document the validated sample workflow",
+        },
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    monkeypatch.setenv(
+        "HERMES_IMPROVE_BENCHMARKS",
+        str(Path(__file__).parents[1] / "benchmarks"),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "candidate", "create",
+        "--repository", str(repo),
+        "--experiment-id", "proposal-experiment",
+        "--candidate-id", "proposal-candidate",
+        "--proposal-file", str(proposal),
+        "--proposal-index", "1",
+        "--content", str(content),
+    ])
+
+    assert main() == 0
+
+    result = json.loads(capsys.readouterr().out)
+    stored = ExperimentStore(home / "experiments.sqlite3").show_experiment("proposal-experiment")
+    candidate_content = git(repo, "show", f"{result['commit']}:brain/skills/sample/SKILL.md")
+    assert result["target"] == "brain/skills/sample"
+    assert stored["hypothesis"] == "Document the validated sample workflow"
+    assert "Operator-authored skill." in candidate_content
+
+
+def test_candidate_create_cli_rejects_unsupported_proposal_without_git_changes(
+    tmp_path, monkeypatch,
+):
+    import json
+    import sys
+
+    from hermes_improve.cli import main
+
+    repo = repository(tmp_path)
+    base = git(repo, "rev-parse", "main")
+    proposal = tmp_path / "dreaming.json"
+    proposal.write_text(json.dumps({"candidates": [{
+        "summary": "Merge proposal",
+        "candidate_type": "SKILL_MERGE",
+        "target": "brain/skills/sample",
+        "hypothesis": "Merge two skills",
+    }]}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv(
+        "HERMES_IMPROVE_BENCHMARKS",
+        str(Path(__file__).parents[1] / "benchmarks"),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "candidate", "create",
+        "--repository", str(repo),
+        "--experiment-id", "unsupported-proposal",
+        "--candidate-id", "unsupported-candidate",
+        "--proposal-file", str(proposal),
+        "--proposal-index", "0",
+        "--content", str(tmp_path / "SKILL.md"),
+    ])
+
+    with pytest.raises(ValueError, match="only support skill create/patch"):
+        main()
+
+    assert git(repo, "rev-parse", "main") == base
+    assert "refs/heads/candidate/unsupported-proposal" not in git(repo, "show-ref")
+
+
+def test_candidate_create_cli_bounds_dreaming_proposal_file_size(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    repo = repository(tmp_path)
+    proposal = tmp_path / "dreaming.json"
+    proposal.write_bytes(b" " * (1024 * 1024 + 1))
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv(
+        "HERMES_IMPROVE_BENCHMARKS",
+        str(Path(__file__).parents[1] / "benchmarks"),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "candidate", "create",
+        "--repository", str(repo),
+        "--experiment-id", "large-proposal",
+        "--candidate-id", "large-candidate",
+        "--proposal-file", str(proposal),
+        "--proposal-index", "0",
+        "--content", str(tmp_path / "SKILL.md"),
+    ])
+
+    with pytest.raises(ValueError, match="1 MiB limit"):
+        main()
+
+
+def test_candidate_create_cli_requires_exactly_one_metadata_source(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    repo = repository(tmp_path)
+    proposal = tmp_path / "dreaming.json"
+    proposal.write_text('{"candidates":[]}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv(
+        "HERMES_IMPROVE_BENCHMARKS",
+        str(Path(__file__).parents[1] / "benchmarks"),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "candidate", "create",
+        "--repository", str(repo),
+        "--experiment-id", "mixed-metadata",
+        "--candidate-id", "mixed-candidate",
+        "--proposal-file", str(proposal),
+        "--proposal-index", "0",
+        "--target", "brain/skills/sample",
+        "--content", str(tmp_path / "SKILL.md"),
+    ])
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        main()
+
+
+@pytest.mark.parametrize(
+    ("payload", "index", "message"),
+    [
+        ({"candidates": []}, 0, "out of range"),
+        ({"candidates": [{}]}, -1, "non-negative integer"),
+        ({"candidates": [{
+            "candidate_type": ["SKILL_CREATE"],
+            "target": "brain/skills/sample",
+            "hypothesis": "Create a skill",
+        }]}, 0, "only support skill create/patch"),
+        ({"items": []}, 0, "candidates array"),
+        ({"candidates": [{}] * 6}, 0, "five-candidate limit"),
+    ],
+)
+def test_candidate_create_cli_rejects_invalid_dreaming_proposals(
+    tmp_path, monkeypatch, payload, index, message,
+):
+    import json
+    import sys
+
+    from hermes_improve.cli import main
+
+    repo = repository(tmp_path)
+    base = git(repo, "rev-parse", "main")
+    proposal = tmp_path / "dreaming.json"
+    proposal.write_text(json.dumps(payload), encoding="utf-8")
+    state = tmp_path / "state"
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(state))
+    monkeypatch.setenv(
+        "HERMES_IMPROVE_BENCHMARKS",
+        str(Path(__file__).parents[1] / "benchmarks"),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "candidate", "create",
+        "--repository", str(repo),
+        "--experiment-id", "invalid-proposal",
+        "--candidate-id", "invalid-candidate",
+        "--proposal-file", str(proposal),
+        "--proposal-index", str(index),
+        "--content", str(tmp_path / "SKILL.md"),
+    ])
+
+    with pytest.raises(ValueError, match=message):
+        main()
+
+    assert git(repo, "rev-parse", "main") == base
+    assert "refs/heads/candidate/invalid-proposal" not in git(repo, "show-ref")
+    assert not (state / "experiments.sqlite3").exists()
