@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -53,31 +55,14 @@ class BenchmarkStore:
 
     def validate(self) -> list[Benchmark]:
         benchmarks = self.load_all()
-        ids: set[tuple[str, int]] = set()
-        cluster_splits: dict[str, Split] = {}
-        for index, benchmark in enumerate(benchmarks):
-            identity = (benchmark.id, benchmark.version)
-            if identity in ids:
-                raise ValueError(f"duplicate benchmark id/version: {identity}")
-            ids.add(identity)
-            existing = cluster_splits.setdefault(benchmark.cluster_id, benchmark.split)
-            if existing is not benchmark.split:
-                raise ValueError(
-                    f"cluster {benchmark.cluster_id!r} leaks across splits "
-                    f"({existing.value}, {benchmark.split.value})"
-                )
-            for previous in benchmarks[:index]:
-                if (
-                    benchmark.split is not previous.split
-                    or benchmark.cluster_id != previous.cluster_id
-                ) and are_near_duplicate_tasks(
-                    str(benchmark.task["prompt"]), str(previous.task["prompt"]),
-                ):
-                    raise ValueError(
-                        f"near-duplicate benchmarks {previous.id!r} and {benchmark.id!r} "
-                        "must share the same split and cluster_id"
-                    )
+        _validate_benchmark_set(benchmarks)
         return benchmarks
+
+    def admit_public(self, benchmark: Benchmark) -> Path:
+        if benchmark.split is Split.SEALED_HOLDOUT:
+            raise ValueError("sealed holdout benchmarks cannot be admitted to the public store")
+        _validate_benchmark_set([*self.load_all(), benchmark])
+        return write_benchmark(self.root, benchmark)
 
     @property
     def version(self) -> str:
@@ -139,9 +124,55 @@ def write_benchmark(
         base = Path(root)
     split_dir = base / benchmark.split.value.lower()
     split_dir.mkdir(parents=True, exist_ok=True)
+    resolved_base = base.resolve()
+    resolved_split_dir = split_dir.resolve()
+    if not resolved_split_dir.is_relative_to(resolved_base):
+        raise ValueError("benchmark split directory must remain inside its configured root")
     path = split_dir / f"{benchmark.id}-v{benchmark.version}.json"
-    path.write_text(json.dumps(benchmark.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(benchmark.to_dict(), indent=2, sort_keys=True) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".benchmark-", dir=split_dir)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+            destination.write(payload)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.chmod(temporary_path, 0o644)
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError as exc:
+            raise ValueError(f"benchmark destination already exists: {path.name}") from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return path
+
+
+def _validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
+    rows = list(benchmarks)
+    ids: set[tuple[str, int]] = set()
+    cluster_splits: dict[str, Split] = {}
+    for index, benchmark in enumerate(rows):
+        identity = (benchmark.id, benchmark.version)
+        if identity in ids:
+            raise ValueError(f"duplicate benchmark id/version: {identity}")
+        ids.add(identity)
+        existing = cluster_splits.setdefault(benchmark.cluster_id, benchmark.split)
+        if existing is not benchmark.split:
+            raise ValueError(
+                f"cluster {benchmark.cluster_id!r} leaks across splits "
+                f"({existing.value}, {benchmark.split.value})"
+            )
+        for previous in rows[:index]:
+            if (
+                benchmark.split is not previous.split
+                or benchmark.cluster_id != previous.cluster_id
+            ) and are_near_duplicate_tasks(
+                str(benchmark.task["prompt"]), str(previous.task["prompt"]),
+            ):
+                raise ValueError(
+                    f"near-duplicate benchmarks {previous.id!r} and {benchmark.id!r} "
+                    "must share the same split and cluster_id"
+                )
 
 
 def validate_benchmarks(root: Path, *, holdout_root: Path | None = None) -> list[Benchmark]:

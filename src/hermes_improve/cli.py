@@ -21,7 +21,7 @@ from .miner import mine_session
 from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
-from .models import Candidate, CandidateType, Eligibility, Role, Split
+from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Split
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
@@ -241,6 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
     review_candidate.add_argument("--rationale", required=True)
     listing = benchmark_sub.add_parser("list")
     listing.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
+    add_benchmark = benchmark_sub.add_parser("add")
+    add_benchmark.add_argument("file", type=Path, help="operator-authored public benchmark JSON")
     evaluate = sub.add_parser("evaluate")
     evaluate.add_argument("candidate_id")
     evaluate.add_argument("--repository", type=Path, required=True)
@@ -413,6 +415,22 @@ def main() -> int:
                 "review_rationale": result["review_rationale"],
                 "reviewed_at": result["reviewed_at"],
                 "benchmark_admitted": False,
+            }, indent=2))
+        elif args.benchmark_command == "add":
+            try:
+                document = json.loads(args.file.read_text(encoding="utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("benchmark file must be valid UTF-8 JSON") from exc
+            if not isinstance(document, dict):
+                raise ValueError("benchmark file must contain a JSON object")
+            benchmark = Benchmark.from_dict(document)
+            path = store.admit_public(benchmark)
+            print(json.dumps({
+                "status": "admitted",
+                "benchmark_id": benchmark.id,
+                "version": benchmark.version,
+                "path": str(path),
+                "manifest_version": store.version,
             }, indent=2))
         else:
             print(json.dumps(store.list(Role(args.role)), indent=2))

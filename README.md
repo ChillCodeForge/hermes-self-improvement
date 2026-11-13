@@ -552,6 +552,7 @@ hermes-improve experiments list
 hermes-improve experiments show <id>
 hermes-improve benchmarks list --role <role>
 hermes-improve benchmarks validate
+hermes-improve benchmarks add FILE
 hermes-improve benchmarks mine <session-id>
 hermes-improve benchmarks candidates
 hermes-improve releases list

@@ -217,3 +217,144 @@ def test_holdout_generation_is_durable_per_lineage_and_changes_on_rotation(tmp_p
 def test_benchmark_id_is_a_safe_identifier(identifier):
     with pytest.raises(ValueError, match="safe"):
         Benchmark.from_dict(data(identifier, "TRAIN"))
+
+
+def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
+    tmp_path, monkeypatch, capsys,
+):
+    import sys
+
+    from hermes_improve.cli import main
+
+    source = tmp_path / "authored.json"
+    source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
+    root = tmp_path / "public"
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    assert main() == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "admitted"
+    assert result["path"] == str(root / "train" / "authored-task-v1.json")
+    assert result["manifest_version"] == BenchmarkStore(root).version
+
+
+def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    source = tmp_path / "holdout.json"
+    source.write_text(
+        json.dumps(data("private-task", "SEALED_HOLDOUT")), encoding="utf-8",
+    )
+    root = tmp_path / "public"
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    with pytest.raises(ValueError, match="sealed holdout"):
+        main()
+
+    assert not root.exists()
+
+
+def test_cli_rejects_corpus_leakage_without_admitting_record(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    root = tmp_path / "public"
+    root.mkdir()
+    existing = data("existing-task", "TRAIN", "existing-cluster")
+    existing["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and validates malformed rows "
+        "with clear useful error messages for users."
+    )
+    (root / "existing.json").write_text(json.dumps(existing), encoding="utf-8")
+    authored = data("authored-task", "TRAIN", "different-cluster")
+    authored["task"]["prompt"] = (
+        "Create a Python package that parses CSV files and reports malformed rows "
+        "with clear useful error messages for users."
+    )
+    source = tmp_path / "authored.json"
+    source.write_text(json.dumps(authored), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    with pytest.raises(ValueError, match="same split and cluster_id"):
+        main()
+
+    assert sorted(path.name for path in root.rglob("*.json")) == ["existing.json"]
+
+
+def test_cli_rejects_duplicate_id_version_without_overwriting_existing_record(
+    tmp_path, monkeypatch,
+):
+    import sys
+
+    from hermes_improve.cli import main
+
+    root = tmp_path / "public"
+    existing_path = root / "train" / "same-task-v1.json"
+    existing_path.parent.mkdir(parents=True)
+    original = data("same-task", "TRAIN")
+    existing_path.write_text(json.dumps(original), encoding="utf-8")
+    changed = data("same-task", "TRAIN")
+    changed["task"]["prompt"] = "Different operator-authored task."
+    source = tmp_path / "replacement.json"
+    source.write_text(json.dumps(changed), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    with pytest.raises(ValueError, match="duplicate benchmark id/version"):
+        main()
+
+    assert json.loads(existing_path.read_text(encoding="utf-8")) == original
+    assert sorted(path.name for path in root.rglob("*.json")) == ["same-task-v1.json"]
+
+
+def test_cli_does_not_overwrite_existing_destination_with_different_record(
+    tmp_path, monkeypatch,
+):
+    import sys
+
+    from hermes_improve.cli import main
+
+    root = tmp_path / "public"
+    existing_path = root / "train" / "authored-task-v1.json"
+    existing_path.parent.mkdir(parents=True)
+    original = data("different-id", "TRAIN", "different-cluster")
+    original["task"]["prompt"] = "Build an unrelated calendar reminder application."
+    existing_path.write_text(json.dumps(original), encoding="utf-8")
+    source = tmp_path / "authored.json"
+    source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    with pytest.raises(ValueError, match="destination already exists"):
+        main()
+
+    assert json.loads(existing_path.read_text(encoding="utf-8")) == original
+    assert list(existing_path.parent.iterdir()) == [existing_path]
+
+
+def test_cli_rejects_public_split_symlink_outside_root(tmp_path, monkeypatch):
+    import sys
+
+    from hermes_improve.cli import main
+
+    root = tmp_path / "public"
+    root.mkdir()
+    holdout = tmp_path / "holdout"
+    holdout.mkdir()
+    (root / "train").symlink_to(holdout, target_is_directory=True)
+    source = tmp_path / "authored.json"
+    source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "add", str(source)])
+
+    with pytest.raises(ValueError, match="inside its configured root"):
+        main()
+
+    assert list(holdout.iterdir()) == []
