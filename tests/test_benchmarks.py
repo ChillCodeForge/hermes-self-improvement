@@ -445,3 +445,68 @@ def test_concurrent_admissions_revalidate_after_acquiring_the_store_lock(tmp_pat
     assert sum(result is None for result in results) == 1
     assert sum(isinstance(result, ValueError) for result in results) == 1
     assert len(list(root.rglob("*.json"))) == 1
+
+
+def test_admission_rejects_split_directory_replaced_during_validation(tmp_path, monkeypatch):
+    import os
+
+    import hermes_improve.benchmarks as benchmarks_module
+
+    root = tmp_path / "public"
+    train = root / "train"
+    train.mkdir(parents=True)
+    original = train / "existing.json"
+    existing = data("existing-task", "TRAIN")
+    existing["task"]["prompt"] = "Create an existing arithmetic exercise."
+    original.write_text(json.dumps(existing), encoding="utf-8")
+    moved = tmp_path / "moved-train"
+    store = BenchmarkStore(root, holdout_root=tmp_path / "holdout")
+    authored = data("authored-task", "TRAIN", "other-cluster")
+    authored["task"]["prompt"] = "Design a new geography challenge."
+    benchmark = Benchmark.from_dict(authored)
+    validate = benchmarks_module._validate_benchmark_set
+
+    def replace_split_directory(rows):
+        os.rename(train, moved)
+        train.mkdir()
+        validate(rows)
+
+    monkeypatch.setattr(benchmarks_module, "_validate_benchmark_set", replace_split_directory)
+
+    with pytest.raises(ValueError, match="split directory changed"):
+        store.admit_public(benchmark)
+
+    assert sorted(path.name for path in moved.iterdir()) == ["existing.json"]
+    assert not list(train.rglob("*.json"))
+
+
+def test_corpus_loader_reads_the_pinned_split_after_path_replacement(tmp_path):
+    import os
+
+    import hermes_improve.benchmarks as benchmarks_module
+
+    root = tmp_path / "public"
+    train = root / "train"
+    train.mkdir(parents=True)
+    original = data("existing-task", "TRAIN")
+    (train / "existing.json").write_text(json.dumps(original), encoding="utf-8")
+    root_fd, split_fd = benchmarks_module._open_benchmark_split(root, Split.TRAIN)
+    moved = tmp_path / "moved-train"
+    try:
+        os.rename(train, moved)
+        train.mkdir()
+        replacement = data("replacement-task", "TRAIN")
+        (train / "replacement.json").write_text(json.dumps(replacement), encoding="utf-8")
+
+        rows = benchmarks_module._load_root_fd(
+            root,
+            root_fd,
+            holdout=False,
+            pinned_split_name="train",
+            pinned_split_fd=split_fd,
+        )
+    finally:
+        os.close(split_fd)
+        os.close(root_fd)
+
+    assert [row.id for row in rows] == ["existing-task"]
