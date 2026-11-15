@@ -123,7 +123,7 @@ class ModelMutationStrategy:
         self.model = model
 
     def propose(self, request: MutationRequest) -> list[VariantProposal]:
-        _validate_request(request)
+        validate_mutation_request(request)
         response = self.model.complete(
             role="qwen_optimizer",
             system_prompt=load_prompt("optimizer/mutate_skill.md"),
@@ -157,7 +157,7 @@ def parse_variant_response(response: str, limit: int) -> list[VariantProposal]:
     return proposals
 
 
-def _validate_request(request: MutationRequest) -> None:
+def validate_mutation_request(request: MutationRequest) -> None:
     if not isinstance(request, MutationRequest):
         raise TypeError("strategy requires a MutationRequest")
     if (
