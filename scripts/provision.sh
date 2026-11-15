@@ -212,7 +212,7 @@ if [[ -n "$INSTALL_FROM" ]]; then
   [[ -d "$INSTALL_FROM" ]] || die "--install-from must be a source directory"
   if [[ ! -x "$ROOT/install/venv/bin/hermes-improve" ]]; then
     python3 -m venv "$ROOT/install/venv"
-    "$ROOT/install/venv/bin/pip" install --quiet "$INSTALL_FROM"
+    "$ROOT/install/venv/bin/pip" install --quiet --disable-pip-version-check "$INSTALL_FROM"
   fi
   tree_owner_mode "$ROOT/install" root root
   CLI="$ROOT/install/venv/bin/hermes-improve"
