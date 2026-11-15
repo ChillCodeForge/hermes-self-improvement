@@ -43,21 +43,41 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
 - Post-promotion monitoring decision API plus bounded JSONL CLI ingestion for
   trusted collector observations; no live Hermes telemetry collector is wired.
 
-## Role boundaries and remaining isolation work
+## Trust boundaries
 
-- **Generator:** consumes redacted/untrusted evidence and proposes hypotheses.
-  It must not read sealed benchmark files or modify production.
-- **Evaluator:** runs paired tests and signs evidence. The Python holdout
-  capability is process-local, so filesystem permissions and a dedicated
-  evaluator identity are still essential.
-- **Promoter:** verifies and deploys skill-only changes. The CLI checks its
-  effective UID against configuration, but operators must provision and
-  configure the separate user and protected paths.
+Each role runs as its own Unix user, created by `scripts/provision.sh` and
+entered only through `scripts/hermes-improve-as`:
 
-The Docker runner isolates candidate command execution relative to the host
-using Docker controls, but the Docker daemon itself remains privileged. It is
-not a Hermes runtime runner and does not execute Hermes tasks unless a benchmark
-provides a compatible command and pinned environment.
+- **Generator / agent (`hermes-agent`)** — the Hermes runtime, Dreaming, and
+  optimizer. Writes only the candidate repository, workspaces, handoff
+  directory, and its own state. Reads production through `deploy/current`
+  and the production repository; has no access to the sealed holdout, the
+  ledger, or any private key; cannot modify installed code, configuration,
+  policy, or public ground truth.
+- **Evaluator (`hermes-evaluator`)** — imports candidate bundles into its own
+  Git mirror, reads TRAIN/VALIDATION/REGRESSION and the sealed holdout, signs
+  reports with its private key, and appends to the ledger. It cannot write
+  production, the holdout, candidates, or configuration.
+- **Promoter (`hermes-promoter`)** — owns the production repository,
+  releases, and the deployment pointer; verifies the signed evidence and
+  fetches the evaluated commit from the handoff bundle. It has no access to
+  the holdout or candidate workspaces and never runs Git in agent-owned
+  repositories.
+
+```text
+agent: candidate create → candidate export ──bundle──▶ handoff/
+evaluator: candidate import (mirror, re-hash) → evaluate → signed ledger rows
+promoter: promote --candidate-bundle → production.git main + tag → releases/brain-vN → deploy/current
+Hermes runtime (agent): reads deploy/current (read-only)
+```
+
+The boundary is enforced by the kernel through owners, modes, and POSIX ACLs;
+`hermes-improve security check` and the fail-closed checks in `evaluate`,
+`candidate import`, `promote`, and `rollback` verify that the layout still
+matches the matrix before acting. See `security.md` for the full matrix and
+the split between kernel-enforced, code-enforced, and operator-owned
+controls. The Docker daemon used by the evaluator remains privileged and
+trusted.
 
 ## Not yet implemented or validated
 
