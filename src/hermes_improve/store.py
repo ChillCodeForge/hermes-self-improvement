@@ -186,11 +186,14 @@ class ExperimentStore:
         benchmark_version: str,
         policy_version: str,
         source_sessions: Iterable[str] = (),
+        parent_id: str | None = None,
     ) -> None:
         if not all(isinstance(value, str) and value.strip() for value in (
             lineage_id, hypothesis, risk, benchmark_version, policy_version,
         )):
             raise ValueError("experiment metadata fields must be non-empty strings")
+        if parent_id is not None and (not isinstance(parent_id, str) or not parent_id.strip()):
+            raise ValueError("parent experiment ID must be a non-empty string")
         if not candidate.diff or not candidate.commit or not candidate.base_commit:
             raise ValueError("candidate requires commit IDs and a non-empty diff")
         import hashlib
@@ -200,8 +203,9 @@ class ExperimentStore:
                 """INSERT INTO experiments
                 (id,parent_id,lineage_id,hypothesis,source_sessions,candidate_type,target,risk,
                  baseline_commit,benchmark_version,policy_version,created_at)
-                VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?)""",
-                (candidate.experiment_id, lineage_id, hypothesis, canonical_json(list(source_sessions)),
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (candidate.experiment_id, parent_id, lineage_id, hypothesis,
+                 canonical_json(list(source_sessions)),
                  candidate.candidate_type.value, candidate.target, risk, candidate.base_commit,
                  benchmark_version, policy_version, utc_now()),
             )
