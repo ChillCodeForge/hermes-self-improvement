@@ -8,6 +8,17 @@ class EvolutionStrategy(Protocol):
     def evolve(self, candidate: str, feedback: str, generation: int) -> list[str]: ...
 
 
+def verify_strategy_version(strategy: object, expected_version: str) -> None:
+    """Refuse any external or built-in strategy whose version is not the pinned, tested one."""
+    if not isinstance(expected_version, str) or not expected_version.strip():
+        raise ValueError("a pinned strategy version is required")
+    actual = getattr(strategy, "version", None)
+    if actual != expected_version:
+        raise RuntimeError(
+            f"self-evolution adapter version mismatch: expected {expected_version!r}, got {actual!r}"
+        )
+
+
 @dataclass(frozen=True)
 class SelfEvolutionAdapter:
     """Version gate around optional external candidate evolution."""
@@ -16,11 +27,7 @@ class SelfEvolutionAdapter:
     strategy: EvolutionStrategy
 
     def __post_init__(self) -> None:
-        actual = getattr(self.strategy, "version", None)
-        if actual != self.expected_version:
-            raise RuntimeError(
-                f"self-evolution adapter version mismatch: expected {self.expected_version!r}, got {actual!r}"
-            )
+        verify_strategy_version(self.strategy, self.expected_version)
 
     def evolve(self, candidate: str, feedback: str, generation: int) -> list[str]:
         if generation < 0:
