@@ -1,0 +1,22 @@
+# Scoring data for evaluator/optimizer packages. No aggregate score ever
+# decides promotion; overall_score.dashboard_only must stay true.
+schema_version: 1
+overall_score:
+  dashboard_only: true
+run_counts:
+  # Deterministic tasks run once.
+  deterministic: 1
+  # LLM-influenced tasks, per suite (spec section 21).
+  llm:
+    SMOKE: {min: 1, max: 2}
+    CORE: {min: 3, max: 3}
+    FULL: {min: 5, max: 5}
+    SEALED_HOLDOUT: {min: 5, max: 5}
+# Optimization loop limits (spec section 25).
+evolution:
+  max_generations: 10
+  candidates_per_generation: 3
+  max_candidates_total: 30
+  stop_after_no_improvement_candidates: 8
+  stop_after_no_improvement_generations: 3
+  minimum_meaningful_delta: 0.5
