@@ -716,7 +716,7 @@ class EvolutionLoop:
 def load_verified_candidate(repository: Path, store: ExperimentStore, candidate_id: str) -> Candidate:
     """Rebuild a stored candidate from Git and verify its immutable diff and content hash."""
     stored = store.get_candidate(candidate_id)
-    diff = _git(
+    diff = git_output(
         Path(repository), "diff", "--no-ext-diff", "--no-textconv", "--binary",
         stored["base_commit"], stored["commit_id"],
     )
@@ -736,10 +736,10 @@ def read_skill_content(repository: Path, commit: str, target: str) -> str:
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         raise ValueError("candidate commit must be a full Git commit ID")
     path = validate_skill_target(target) / "SKILL.md"
-    return _git(Path(repository), "show", f"{commit}:{path.as_posix()}").decode("utf-8")
+    return git_output(Path(repository), "show", f"{commit}:{path.as_posix()}").decode("utf-8")
 
 
-def _git(repository: Path, *arguments: str) -> bytes:
+def git_output(repository: Path, *arguments: str) -> bytes:
     result = subprocess.run(
         ["git", "-c", "core.hooksPath=/dev/null", "-C", str(repository), *arguments],
         stdin=subprocess.DEVNULL,
