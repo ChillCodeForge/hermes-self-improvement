@@ -25,10 +25,10 @@ controlled Git-backed process.
 > plugin has not been exercised inside a live Hermes runtime.
 >
 > This is **not yet a complete autonomous Hermes self-improvement service**.
-> The optional Hermes finalize hook is version-sensitive and no Hermes
-> `batch_runner` execution adapter is wired; existing
-> `trajectories.jsonl` output can be imported as untrusted evidence, while the
-> Docker runner handles declared command benchmarks only.
+> The optional Hermes finalize hook is version-sensitive. A Hermes
+> `batch_runner` execution adapter (`HermesBatchRunner`) exists and is tested
+> against the real CLI and trajectory schema with a fixture, but has not been
+> run against a live Hermes install and model endpoint.
 > The repository still lacks the curated 20–50 real-task benchmark corpus,
 > tested external GEPA/DSPy/self-evolution integrations, a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
@@ -73,9 +73,12 @@ for evaluation readiness.
 - JSON benchmark validation, split/cluster leakage checks, separate holdout
   roots, conservative lexical near-duplicate split checks, SQLite
   experiment/evaluation/release metadata, and content-addressed artifacts.
-- Paired baseline/candidate evaluation, deterministic hard gates, confidence
-  intervals, Ed25519-signed reports, and a Docker runner for explicit
-  digest-pinned command benchmarks.
+- Paired baseline/candidate evaluation with a run-count policy per suite,
+  15 spec-driven deterministic verifiers, a blind pairwise judge that can only
+  block, paired deltas with CI95 and effect sizes, efficiency metrics,
+  Ed25519-signed reports, a Docker runner for digest-pinned command benchmarks
+  (network off by default, optional internal allowlist network) and a Hermes
+  `batch_runner` adapter. See `docs/evaluation.md`.
 - A skills-only Git promoter with signed manifests, atomic release-pointer
   switching, rollback, and a monitoring decision API.
 - CLI creation of immutable skill candidates in isolated Git worktrees/branches
@@ -86,8 +89,9 @@ Hermes hook ingestion is disabled by default and requires explicit plugin
 enablement/settings. Candidate proposals are not automatically converted
 into Git content. An operator may select a DEEP proposal as candidate metadata,
 but candidate creation still requires explicitly supplied skill text. The
-`evaluate` CLI accepts only command-based benchmark environments; it is not a
-Hermes runtime or `batch_runner`. Production ingestion and monitoring need
+`evaluate` CLI (`--suite SMOKE|CORE|FULL`, `--runner docker|hermes`) needs a
+Hermes install and model endpoint for the Hermes runner; CI only exercises it
+with a fixture. Production ingestion and monitoring need
 external callers. The end-to-end flow has been exercised with a temporary Git
 repository and local Docker image, but not against a real Hermes task corpus
 or independently provisioned generator/evaluator/promoter identities.
