@@ -9,7 +9,8 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
   → redact and queue
   → LIGHT/REM/DEEP evidence analysis and benchmark proposals
   → immutable candidate record referencing a Git commit/diff (created through
-    the API or by `candidate create` from operator-supplied content and either
+    the evolution loop, from DEEP proposals by the qwen_optimizer role,
+    via the API, or by `candidate create` from operator-supplied content and either
     direct metadata or an explicitly selected Dreaming proposal)
   → paired Docker command evaluation + deterministic policy
   → signed evaluator report
@@ -35,9 +36,21 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
   and a Docker runner for declared command-based benchmarks.
 - Loopback-first Qwen-compatible API adapter, blind swapped pairwise judgment,
   and optional model usage/latency metrics.
-- Version-gated strategy interface and iterative optimization API; they do
-  not include a verified external GEPA/DSPy integration or automatic skill
-  generation. The candidate CLI only commits content supplied by an operator.
+- Evolution loop (`evolution_loop.py`, `hermes-improve evolve`): baseline →
+  variants → SMOKE → CORE → next generation → FULL → sealed holdout for
+  finalists only, with the spec's stop limits. The generator-side
+  `OptimizerStrategy` (built-in `qwen_optimizer`, or pinned GEPA 0.1.4 running
+  `gepa.optimize` with this evaluator as its metric) receives only filtered feedback from the evaluator-side
+  `EvaluationGateway`, which alone holds the holdout grant and spent-holdout
+  registry. Every variant is an immutable candidate with recorded lineage;
+  variants are deduplicated by content hash and failures retained. The loop
+  never promotes. Details: `dreaming.md`.
+- Dreaming candidate generation (`proposal_generator.py`,
+  `hermes-improve candidate generate`): the `qwen_optimizer` role writes skill
+  text for up to five selected DEEP proposals; text is checked for secrets,
+  protected paths and override phrases and committed only as a candidate.
+  Role prompts are files under `prompts/` with mandatory untrusted-evidence
+  framing; payloads are nonce-delimited escaped JSON.
 - Git promoter restricted to skill paths, with evidence and diff checks,
   release manifests, atomic symlink switching, and rollback.
 - Post-promotion monitoring decision API plus bounded JSONL CLI ingestion for
@@ -65,8 +78,11 @@ provides a compatible command and pinned environment.
   finalization plugin and a supported `batch_runner` adapter.
 - Curated and replay-verified 20–50-task starter benchmark corpus and
   holdout-rotation/spent-generation management.
-- Automatic immutable candidate creation from Dreaming proposals.
-- Pinned and tested Hermes self-evolution, GEPA, or DSPy integrations.
+- `hermes-agent-self-evolution` and DSPy integrations (self-evolution's
+  judge-based fitness and in-optimizer holdout conflict with the role
+  separation; see `dreaming.md`). The CLI `evolve` command does not run the
+  sealed holdout itself; finalists are evaluated by `evaluate` under the
+  evaluator identity.
 - Live Qwen endpoint validation, production telemetry ingestion, installation
   hardening, and a complete end-to-end Hermes skill improvement/deployment
   workflow.
