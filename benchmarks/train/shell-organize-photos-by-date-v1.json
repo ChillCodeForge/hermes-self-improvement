@@ -1,0 +1,105 @@
+{
+  "benchmark": {
+    "cluster_id": "shell-organize-photos-by-date",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/shell*",
+      "skills/*-shell*",
+      "tools/shell*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "c8bed1344b2617a1a3c103edd2698a378eef570e6f60bc9baebb343b5a8b9383",
+      "outcome_digest": "fc31b13dd5e12ea3755359640c91123d76ccae90dc67e23da06bc03ab10a0d45",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:44.101424+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/shell-organize-photos-by-date",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:4664eb9deaaace24e6d160228adda67a37e453b9c2d21453db76b4afe492773a",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/shell-organize-photos-by-date",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "shell-organize-photos-by-date",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:44.101424+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Move every IMG_YYYYMMDD_HHMMSS.* and VID_YYYYMMDD_HHMMSS.* file from inbox/ into photos/YYYY/MM/DD/ keeping the file name and content. Leave all other files in inbox/.",
+    "title": "Sort camera files into dated folders"
+  },
+  "taxonomy": {
+    "categories": [
+      "shell"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "posix-shell",
+      "filesystem"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 7,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

@@ -1,0 +1,105 @@
+{
+  "benchmark": {
+    "cluster_id": "coding-fix-pagination-bug",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/coding*",
+      "skills/*-coding*",
+      "tools/coding*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "576653df52db080d0e25791f7f74bacf0bd83169984296dde3446baaf8b84561",
+      "outcome_digest": "e18b1f23964e8b7eed42007838cd30448de66f5dfbba43665d5e9f46e342e796",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:40.574772+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/coding-fix-pagination-bug",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:56e14b8aef3c9ba62c4632aae17232df74c3e236973b0de46f6518ecbf476c8e",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/coding-fix-pagination-bug",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "coding-fix-pagination-bug",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:40.574772+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. paginate.py returns the wrong slice for 1-based page numbers and page_count() rounds down instead of up. Fix both functions so the existing unit tests in test_paginate.py pass. Do not modify the tests.",
+    "title": "Fix the pagination off-by-one bug"
+  },
+  "taxonomy": {
+    "categories": [
+      "coding"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "python",
+      "unit-tests"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 4,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

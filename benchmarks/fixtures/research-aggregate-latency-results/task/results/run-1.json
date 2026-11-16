@@ -1,0 +1,5 @@
+{"run": 1, "measurements": [
+  {"model": "m-small", "latency_ms": 120, "success": true},
+  {"model": "m-large", "latency_ms": 410, "success": true},
+  {"model": "m-tiny", "latency_ms": 60, "success": false}
+]}

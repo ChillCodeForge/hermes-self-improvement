@@ -14,3 +14,5 @@ candidate_risk:
   TOOL_CREATE: CRITICAL
   TOOL_PATCH: CRITICAL
 difficulties: [easy, medium, hard]
+# Benchmark task categories (must equal benchmark_schema.TAXONOMY_CATEGORIES).
+categories: [coding, git, shell, data-transform, docs, devops, research, mcp]

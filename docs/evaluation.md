@@ -28,6 +28,13 @@ evaluation. SMOKE and CORE runs are staged evidence:
 experiment decision untouched; FULL (including the sealed holdout, which is
 consumed per lineage) sets `passed`/`rejected`.
 
+Task selection uses `suites.select_evaluation_suite` (WP-B `select_suite`). Skill
+candidates get an impact scope from their target (`brain/skills/<name>` ->
+`skills/<name>` matched against `benchmark.impact_areas`, plus taxonomy
+categories named by the skill); other candidate types are not narrowed. If
+narrowing leaves SMOKE/CORE empty the full suite is used. FULL ignores impact
+and adds every sealed holdout task.
+
 Programmatic use: `PairedEvaluator(benchmark_store, runner, policy,
 experiment_store=None, evaluator_signing_key=None, artifact_store=None, *,
 run_policy=RunPolicy(), judge=None).evaluate(candidate, baseline_commit=...,
@@ -173,6 +180,9 @@ statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests only).
 `evaluation_schema_version: 2`, signed with the report):
 
 - `suite`, `run_policy` (counts, `llm_influenced`, `runs_per_task`);
+- `suite_selection`: the `suite_manifest` digest of the selected tasks, the
+  holdout manifest digest (FULL only, ids/versions/digests), the applied impact
+  scope and the task IDs;
 - `paired_statistics` for quality, success rate, tokens, latency and tool
   calls: per-task paired mean delta, CI95, SD, Cohen's d_z, Hedges' g_z and a
   magnitude label. No p-values are produced;

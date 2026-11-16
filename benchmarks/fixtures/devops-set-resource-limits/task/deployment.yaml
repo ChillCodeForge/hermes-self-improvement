@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: api
+          image: registry.example.com/catalog/api:2.1.0
+          ports:
+            - containerPort: 8080
+        - name: log-shipper
+          image: registry.example.com/infra/log-shipper:0.9.3

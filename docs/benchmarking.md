@@ -1,83 +1,264 @@
 # Benchmarking
 
-Benchmark JSON records are parsed and validated by `Benchmark.from_dict`.
-`BenchmarkStore.validate()` checks duplicate ID/version pairs, required
-metadata, non-empty source type/provenance, taxonomy labels and difficulty,
-and a finite ground-truth confidence in `[0, 1]`. These provenance fields are
-descriptive metadata, not a signed or independently attested source claim.
-Validation also checks sanitization flags, separate storage of sealed holdout,
-and that a cluster is assigned to only one split. It rejects normalized exact
-duplicates and likely lexical near duplicates that do not share both a split
-and cluster: prompts with at least eight words and word-set Jaccard similarity
-of at least 0.85. This conservative rule is a deterministic leakage guard, not
-semantic clustering. Its manifest version is a deterministic hash of the
-validated records.
+This document describes the benchmark store as implemented: record schema,
+eligibility, deduplication and clustering, suites, replay, the curated
+corpus, and operator-managed sealed-holdout rotation.
 
-Generator-facing stores may contain only public benchmark roots. They expose
-TRAIN/VALIDATION while evaluator-only suites remain hidden. Evaluator holdout
-access uses a process-local capability and must be backed by OS filesystem
-permissions; the capability alone is not a security boundary.
+## Record schema
 
-## Available benchmark tools
+A benchmark record is a JSON (`.json`) or YAML (`.yaml`/`.yml`) object with
+`schema_version: 1`. Parsing runs in two stages:
 
-- `hermes-improve benchmarks validate` validates the public set.
-- `hermes-improve benchmarks list --role ROLE` lists visible records.
-- `hermes-improve benchmarks mine SESSION_ID` creates a deduplicated proposal
-  from a redacted session. The miner scores reproducibility and ground-truth
-  source; it does not establish truth or automatically admit the proposal.
+1. **Structural schema** (`hermes_improve.benchmark_schema.BenchmarkRecord`,
+   Pydantic v2, strict types). It defines every section: `source{type,
+   provenance, session_id, verified_at}`, `task{title, prompt}`,
+   `taxonomy{categories, difficulty, required_capabilities}`,
+   `environment{type, repository_fixture, git_commit, dependency_digest,
+   container_image, network_policy, input_data, command, cwd,
+   timeout_seconds}`, `eligibility{class, reproducibility_score,
+   replay_verified, replay_evidence}`, `verification{deterministic,
+   subjective}`, `ground_truth{type, confidence, expected_exit_code,
+   structured_result}`, `benchmark{split, suites, cluster_id, criticality,
+   impact_areas}`, `security{sanitized, contains_secrets}`. Unknown top-level
+   keys are rejected; sections may carry additional runner-specific keys.
+2. **Semantic validation** (`Benchmark.from_dict`) stays authoritative: hard
+   benchmark thresholds, secret scanning, sanitization, label hygiene and
+   safe identifiers.
+
+Decoding rejects duplicate keys (JSON and YAML), YAML tags beyond the safe
+loader, and YAML values that are not JSON types (quote dates). Schema errors
+report field locations only and never echo input values.
+`hermes-improve benchmarks schema` prints the JSON Schema.
+
+The public loader reads records recursively under the benchmark root but
+skips the reserved top-level directories `fixtures/` and `manifests/`.
+
+## Taxonomy
+
+Categories (shared with `config/taxonomy.yaml`, module constant
+`benchmark_schema.TAXONOMY_CATEGORIES`): `coding`, `git`, `shell`,
+`data-transform`, `docs`, `devops`, `research`, `mcp`. Difficulties: `easy`,
+`medium`, `hard`. Criticalities: `low`, `normal`, `high`, `critical`.
+
+`hermes-improve benchmarks validate` validates the public corpus and then
+lints it: every record needs at least one known category, a known difficulty
+and criticality; a record must not declare a stronger eligibility class or a
+higher reproducibility score than the classifier derives from its own
+fields; `replay_verified: true` requires `eligibility.replay_evidence`.
+`BenchmarkStore.validate()` itself does not enforce the taxonomy, so other
+callers (for example evaluator tests) can use their own labels.
+
+## Eligibility and ground truth
+
+`hermes_improve.eligibility` scores reproducibility from nine factors:
+
+| Factor | Weight |
+|---|---|
+| git commit present (or repository fixture) | 0.10 |
+| input present | 0.10 |
+| dependencies reproducible (dependency digest) | 0.10 |
+| container present | 0.10 |
+| external services controllable (`network_policy` disabled/allowlist/fixture) | 0.10 |
+| tests present | 0.15 |
+| ground truth present | 0.15 |
+| secrets removed | 0.05 |
+| replay successful | 0.15 |
+
+Ground truth is ranked: 1 deterministic tests, 2 integration tests,
+3 structured API/file result, 4 human accepted, 5 multiple machine signals,
+6 LLM judge, 7 agent self-report. Classification:
+
+- secrets not removed → `EXCLUDED`;
+- ground truth rank 1–3, successful replay and score ≥ 0.8 → `HARD_BENCHMARK`;
+- any ground truth except self-report and score ≥ 0.5 → `SOFT_BENCHMARK`;
+- otherwise → `DREAMING_ONLY`. Agent self-report is never ground truth.
+
+The miner (`mine_session`, `mine_sessions`) applies this after redaction:
+normalization → eligibility → ground truth → exact/fingerprint dedup →
+similarity clustering → proposal. `benchmarks mine` clusters the session
+against the public corpus, so a session similar to an existing benchmark
+inherits its `cluster_id`. Mining never admits a benchmark.
+
+## Deduplication and clustering
+
+`hermes_improve.clustering` provides four layers:
+
+1. exact content hash (SHA-256 of the raw prompt);
+2. task fingerprint (case-folded, whitespace-normalized SHA-256);
+3. lexical near duplicates (`task_similarity`: ≥ 8 words, word-set Jaccard
+   ≥ 0.85) — must share split *and* `cluster_id`;
+4. similarity clusters: character 5-shingles, 64-permutation MinHash with
+   16×4 LSH banding for candidates, confirmed by exact shingle Jaccard ≥ 0.5;
+   connected components get the deterministic id `sem-<fingerprint prefix>`.
+
+Validation (`BenchmarkStore.validate`, public admission and holdout rotation)
+rejects duplicate id/version pairs, a declared `cluster_id` used in more than
+one split, near duplicates across split/cluster, and any similarity cluster
+spanning splits — including public/holdout leakage. Layer 4 is a lexical
+approximation of semantic similarity: it catches rewordings that share
+vocabulary but not paraphrases with different vocabulary.
+
+## Suites
+
+`hermes_improve.suites.select_suite(benchmarks, suite, *, impact=None,
+hard_only=True, smoke_limit=50) -> tuple[Benchmark, ...]` is a pure,
+deterministic function:
+
+- `SMOKE`/`CORE`: public, non-shadow records declaring the suite, narrowed by
+  an `ImpactScope` (categories, required capabilities, or candidate target
+  paths matched against `benchmark.impact_areas` globs). Critical REGRESSION
+  records in the suite are always kept. SMOKE is capped at 50.
+- `FULL`: all public, non-shadow records declaring FULL; impact is ignored.
+- `SEALED_HOLDOUT`: every sealed record supplied by the evaluator; impact is
+  ignored so holdouts cannot be cherry-picked.
+
+Only the latest version of an id is selected; only `HARD_BENCHMARK` records
+by default. `suite_manifest(...)` returns `{schema_version, suite,
+benchmark_version, impact, task_count, tasks[{id, version, digest, split,
+cluster_id, categories}], digest}`, where `digest` is `sha256:` over the
+canonical body and `benchmark_version` is `BenchmarkStore.version`; holdout
+manifests omit task details. `verify_manifest` detects tampering.
+`corpus_manifest(...)` describes the public corpus (counts by split,
+category, difficulty, suite, eligibility; per-record digests) and refuses
+holdout records. `benchmarks/manifests/corpus.json` is the committed corpus
+manifest; a test fails when it no longer matches the records.
+
+CLI: `hermes-improve benchmarks list --suite CORE --impact category:git
+--impact target:skills/git-helper [--role generator]` prints the suite
+manifest; `hermes-improve benchmarks manifest` prints the corpus manifest.
+
+## Replay
+
+`hermes-improve benchmarks replay [--id ID] --commit SHA --repository PATH
+[--runs N]` re-runs public command benchmarks (records with
+`environment.command`) N times (2–20, seeds `0..N-1`) through the
+digest-pinned `DockerCommandRunner`. A benchmark is *reproducible* when
+every run has the identical verifier outcome (exit code, pass/fail, quality,
+security pass, environment digest); it is *replay verified* when it is also
+passing. Results are printed without command output and appended to the
+`benchmark_replays` table of the experiment database; the command exits 1
+if any benchmark is not replay verified. `ReplayResult.evidence()` is the
+`eligibility.replay_evidence` block for authored records. The library entry
+point is `replay.replay_benchmark(runner, benchmark, *, commit, runs)` for
+any `BenchmarkRunner`. Sealed holdout records are never replayed here.
+
+Images are pulled by the operator in advance; the runner uses
+`--pull=never` and `--network=none`.
+
+## Curated corpus
+
+The repository ships 26 deterministic command benchmarks (public splits
+only; no holdout data is in the repository):
+
+| Split | Count |
+|---|---|
+| TRAIN | 10 |
+| VALIDATION | 8 |
+| REGRESSION | 8 |
+
+| Category | Count | Category | Count |
+|---|---|---|---|
+| coding | 3 | docs | 3 |
+| git | 4 | devops | 3 |
+| shell | 3 | research | 3 |
+| data-transform | 4 | mcp | 3 |
+
+Difficulties: 11 easy, 13 medium, 2 hard. Suites: SMOKE 14, CORE 23,
+FULL 26 (the SMOKE target of 20–50 tasks needs a larger corpus).
+
+Each task lives in `benchmarks/fixtures/<id>/`:
+
+- `task/` — the starting workspace (absent when `setup.sh` builds it);
+- `setup.sh` — optional deterministic setup (for example a Git history with
+  fixed author dates);
+- `solve.sh` (+ `solution/`) — the reference solution;
+- `check.sh` — the deterministic check; prints one JSON line
+  `{"checks": N, "failed": [...], "status": "pass"|"fail"}` and exits 0 only
+  on pass. Checks verify results and guard against shortcuts (for example
+  that unit tests were not edited, plus hidden assertions).
+
+`benchmarks/fixtures/harness/run-reference.sh` copies `task/` into a scratch
+directory, runs setup and the reference solution, then the check. The record
+command is `["sh", "../harness/run-reference.sh"]` with
+`cwd: benchmarks/fixtures/<id>`; the verifier requires exit code 0 and
+`status == "pass"`, `failed == []`, `checks == N`. `environment.input_data`
+is `replay.fixture_tree_digest()` of the fixture directory, and a test keeps
+it in sync. Git tasks use `alpine/git` pinned by digest; all others use
+`python:3.12-slim` pinned by digest.
+
+All 26 records carry replay evidence from three Docker replays each at
+commit `85b0c7d` and are `HARD_BENCHMARK` with reproducibility score 1.0.
+Every reference solution was also checked to fail when the solution step is
+skipped, so the checks are not vacuous.
+
+What the reference replay proves is that the task, its ground truth and its
+check are deterministic. Running the *agent* on these tasks (agent work
+replacing `solve.sh`) needs the Hermes batch-runner adapter, which is not
+part of this package; `hermes-improve evaluate` still runs each record's
+command against the baseline and candidate commits.
+
+## Admission and access
+
 - `hermes-improve benchmarks add FILE --holdout-root HOLDOUT_DIR` admits an
-  operator-authored JSON record to the configured public store after validating
-  both the record and the complete public/holdout corpus. It rejects sealed
-  holdout records, duplicate ID/version pairs, and split/cluster leakage; an
-  existing destination is never replaced.
-- `hermes-improve benchmarks inspect-candidate FINGERPRINT` shows a bounded
-  preview of up to three redacted source sessions. `review-candidate` records
-  one immutable operator accept/reject decision with reviewer and rationale;
-  the source-session set is frozen at that point. Acceptance is triage only: it
-  does not create or admit an executable benchmark; benchmark authoring and
-  validation remain separate.
-- `hermes-improve evaluate` accepts only hard benchmarks with successful replay,
-  reproducibility score and ground-truth confidence of at least `0.8`, and
-  deterministic or structured ground truth. It selects declared FULL tasks
-  plus sealed holdout tasks, then uses a digest-pinned Docker command runner.
+  operator-authored JSON or YAML public record after validating the record
+  and the complete public/holdout corpus (including similarity leakage). It
+  rejects sealed holdout records and duplicate id/version pairs; an existing
+  destination is never replaced.
+- Generator-facing stores may contain only public roots; they expose
+  TRAIN/VALIDATION only. Holdout access uses an evaluator capability that
+  must be backed by OS filesystem permissions.
+- `benchmarks inspect-candidate` / `review-candidate` provide bounded
+  previews and immutable triage decisions for mined proposals; acceptance
+  does not admit a benchmark.
 
-The runner requires `environment.container_image` pinned by SHA-256 digest,
-`network_policy: disabled`, an argv-array command, and an expected exit code.
-It exports the selected Git commit, rejects symlinks and oversized source
-trees, and records redacted output plus per-check results as a
-content-addressed artifact.
+## Sealed holdout rotation (operator procedure)
 
-`verification.deterministic` supports up to 64 declarative checks:
+Holdout data never lives in this repository. The operator keeps a managed
+holdout store on protected storage (owned by the operator account, readable
+by the evaluator identity only, not readable by the generator/agent users):
 
-```json
-[
-  {"type": "exit_code"},
-  {"type": "json_path_equals", "path": ["status"], "expected": "ok"},
-  {"type": "json_required_keys", "expected": ["status", "result"]},
-  {"type": "output_contains", "expected": "completed"}
-]
+```text
+STORE_ROOT/
+  .rotation.lock
+  generations/<digest>/...   # immutable generations
+  active -> generations/<digest>
 ```
 
-Supported types are `exit_code`, `output_exact`, `output_contains`,
-`output_not_contains`, `json_output_equals`, `json_required_keys`,
-`json_path_exists`, and `json_path_equals`. The exit code check defaults to
-`ground_truth.expected_exit_code` and is added automatically when omitted. JSON
-equality is type-sensitive (for example, `true` does not equal `1`).
-Unsupported or malformed checks fail closed rather than passing on a
-successful process exit. Quality is the percentage of deterministic checks
-passed; overall task success still requires every check.
+1. **Stage**: write the new sealed records (SEALED_HOLDOUT split, JSON/YAML,
+   regular files only, no hidden files or symlinks) into a staging directory
+   outside both the public benchmark tree and the store.
+2. **Rotate**: `HERMES_IMPROVE_BENCHMARKS=<public root> hermes-improve
+   benchmarks holdout rotate STAGING --store-root STORE_ROOT`. Under an
+   exclusive lock the command snapshots the staging files, validates every
+   record (schema + semantics + SEALED_HOLDOUT split), runs the full
+   public/holdout leakage checks, copies the snapshot into a private
+   temporary directory, re-reads and re-verifies it, removes write bits,
+   renames it to `generations/<digest>` and atomically replaces the `active`
+   symlink. Any failure leaves the previous active generation unchanged and
+   removes the temporary copy.
+3. **Output**: only `{"generation", "record_count", "status"}` — never
+   benchmark content.
 
-## Still required
+`<digest>` is the sealed-manifest digest used by the spent-holdout registry
+(`security.consume_holdout_generation`), so registry rows and generation
+directories share one identifier. Re-rotating an unchanged manifest is
+rejected; existing generations are never overwritten or re-activated, and
+nothing is deleted (retention is unlimited; pruning is a manual operator
+decision). The spent-holdout registry is never touched. The command creates
+new directories `0700`/`0750` and files `0640` (subject to umask), only
+removes write bits afterwards, and never relaxes permissions of existing
+paths — filesystem permissions remain the security boundary.
 
-The repository includes only a schema fixture, not the 20–50 curated
-real-session tasks required for meaningful readiness. Manual curation and
-replay verification are still required. The human proposal-review record does
-not replace benchmark authoring or admission controls. Semantic deduplication
-and clustering, benchmark provenance attestation, automatic holdout-generation
-rotation, and impact-aware suite selection are not implemented. The lexical
-near-duplicate guard can miss paraphrases and can require manual cluster
-assignment for similar prompts. Evaluation
-records a durable spent marker keyed by the sealed benchmark manifest and
-candidate evolution lineage before consuming holdout feedback; failed attempts
-also consume that generation, so operators must rotate the holdout before
-retrying that lineage.
+**Evaluator compatibility**: pass `--holdout-root STORE_ROOT/active` to
+`hermes-improve evaluate`; it resolves the symlink to the active generation.
+After rotation, lineages that consumed the previous generation can be
+evaluated again on the new one.
+
+## Known limits
+
+- The corpus is curated, not mined from real Hermes sessions; provenance is
+  descriptive metadata, not an attestation.
+- Similarity clustering is lexical (character shingles); paraphrases with
+  different vocabulary can evade it and may need manual `cluster_id`s.
+- Agent execution on corpus tasks depends on a Hermes runtime adapter
+  outside this package.

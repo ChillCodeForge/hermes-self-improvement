@@ -151,6 +151,19 @@ class ExperimentStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (target, content_sha256)
                 );
+                CREATE TABLE IF NOT EXISTS benchmark_replays (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    benchmark_id TEXT NOT NULL,
+                    benchmark_version INTEGER NOT NULL,
+                    benchmark_digest TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    runs INTEGER NOT NULL,
+                    reproducible INTEGER NOT NULL,
+                    passed INTEGER NOT NULL,
+                    outcome_digest TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(evaluation_runs)")}
             if "metrics_json" not in columns:
@@ -940,6 +953,46 @@ class ExperimentStore:
         item = dict(row)
         item["scores"] = json.loads(item.pop("scores_json"))
         return item
+
+    def record_benchmark_replay(self, result: dict[str, Any]) -> int:
+        """Append immutable replay evidence (a `ReplayResult.to_dict()` payload)."""
+        required = {
+            "benchmark_id", "benchmark_version", "benchmark_digest", "commit", "runs",
+            "reproducible", "passed", "outcome_digest", "replayed_at",
+        }
+        if not isinstance(result, dict) or not required <= result.keys():
+            raise ValueError("benchmark replay evidence is missing required fields")
+        if (
+            not isinstance(result["runs"], list) or len(result["runs"]) < 2
+            or not isinstance(result["reproducible"], bool) or not isinstance(result["passed"], bool)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(result["outcome_digest"]))
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", str(result["commit"]))
+        ):
+            raise ValueError("benchmark replay evidence is malformed")
+        if contains_secret_material(result):
+            raise ValueError("benchmark replay evidence must not contain credential-like material")
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """INSERT INTO benchmark_replays
+                (benchmark_id,benchmark_version,benchmark_digest,commit_id,runs,reproducible,
+                 passed,outcome_digest,result_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (result["benchmark_id"], result["benchmark_version"], result["benchmark_digest"],
+                 result["commit"], len(result["runs"]), int(result["reproducible"]),
+                 int(result["passed"]), result["outcome_digest"], canonical_json(result),
+                 result["replayed_at"]),
+            )
+            return int(cursor.lastrowid)
+
+    def list_benchmark_replays(self, benchmark_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT result_json FROM benchmark_replays"
+        parameters: tuple[str, ...] = ()
+        if benchmark_id is not None:
+            query += " WHERE benchmark_id=?"
+            parameters = (benchmark_id,)
+        with self._connect() as db:
+            return [json.loads(row["result_json"]) for row in db.execute(query + " ORDER BY id", parameters)]
+
 
 
 _PROMOTION_AUDIT_SCHEMA = """

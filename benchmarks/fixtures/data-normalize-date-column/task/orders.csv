@@ -1,0 +1,6 @@
+order_id,customer,order_date,total
+1001,ACME GmbH,2024-03-05,199.00
+1002,Globex,05/03/2024,45.50
+1003,Initech,"March 7, 2024",12.00
+1004,Umbrella,2024.03.09,300.10
+1005,Hooli,31/12/2023,80.00

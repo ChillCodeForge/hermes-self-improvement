@@ -12,21 +12,25 @@ from pathlib import Path
 from . import __version__
 from .artifacts import ArtifactStore
 from .batch_ingestion import load_batch_runner_export
-from .benchmarks import BenchmarkStore
+from .benchmark_schema import benchmark_json_schema, load_benchmark_document, parse_benchmark_document
+from .benchmarks import BenchmarkStore, lint_public_corpus
 from .curator import CuratorAdapter, CuratorMutation
 from .curator_connector import CuratorConnector
 from .decisions import DECISION_TYPES, DecisionRecorder
 from .candidate_builder import create_candidate, create_skill_candidate
 from .config import config_from_environment
 from .approvals import approve_promotion
+from .errors import AccessDenied
 from .docker_runner import DockerCommandRunner
 from .hermes_plugin import HookSignalStore
 from .observability import ObservabilityLog, build_report, render_text
 from .shadow_replay import CommandReplayRunner, ShadowReplayer
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue, contains_secret_material
+from .holdout_rotation import rotate_holdout
 from .isolation import ROLES as ISOLATION_ROLES, check_isolation, enforce_isolation, load_layout, resolve_layout_path
-from .miner import mine_session
+from .miner import corpus_similarity_index, mine_session
+from .replay import is_command_benchmark, replay_benchmark
 from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
@@ -45,6 +49,10 @@ from .run_policy import RunPolicy
 from .sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits
 from .security import SpentHoldoutRegistry, consume_holdout_generation
 from .store import ExperimentStore
+from .suites import (
+    ImpactScope, Suite, corpus_manifest, impact_scope_for_candidate, select_evaluation_suite, select_suite,
+    suite_manifest,
+)
 
 
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
@@ -281,23 +289,14 @@ def _candidate_summary(candidate: Candidate, worktree_root: Path | None) -> dict
     }
 
 
-def select_suite_benchmarks(benchmarks: list[Benchmark], suite: str) -> tuple[list[str], list[str]]:
-    """Hard benchmarks of a suite; FULL additionally includes every sealed holdout task."""
-    suite = suite.upper()
-    if suite not in {"SMOKE", "CORE", "FULL"}:
+def select_suite_benchmarks(
+    benchmarks: list[Benchmark], suite: str, *, impact: ImpactScope | None = None,
+) -> tuple[list[str], list[str]]:
+    """Task IDs of a staged evaluation via WP-B's `select_suite`; FULL adds every sealed holdout task."""
+    if str(suite).upper() not in {"SMOKE", "CORE", "FULL"}:
         raise ValueError(f"unsupported evaluation suite: {suite!r}")
-    hard = [item for item in benchmarks if Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK]
-    suite_ids = [
-        item.id for item in hard
-        if item.split is not Split.SEALED_HOLDOUT
-        and suite in {str(name).upper() for name in item.benchmark.get("suites", [])}
-    ]
-    holdout_ids = [item.id for item in hard if item.split is Split.SEALED_HOLDOUT] if suite == "FULL" else []
-    if not suite_ids:
-        raise ValueError(f"no HARD_BENCHMARK tasks are assigned to suite {suite}")
-    if suite == "FULL" and not holdout_ids:
-        raise ValueError("promotion evaluation requires at least one FULL and one sealed holdout benchmark")
-    return suite_ids, holdout_ids
+    selected, holdout, _applied = select_evaluation_suite(benchmarks, suite, impact=impact)
+    return [item.id for item in selected], [item.id for item in holdout]
 
 
 def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
@@ -334,6 +333,32 @@ def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
         fixtures_root=args.fixtures_root,
         verifier_http_allowlist=http_allowlist,
     )
+
+
+def _replay_benchmarks(args: argparse.Namespace, store: BenchmarkStore, database: Path) -> int:
+    benchmarks = [item for item in store.validate() if is_command_benchmark(item)]
+    if args.benchmark_id is not None:
+        benchmarks = [item for item in benchmarks if item.id == args.benchmark_id]
+        if not benchmarks:
+            raise ValueError(f"no public command benchmark with id {args.benchmark_id!r}")
+        benchmarks = [max(benchmarks, key=lambda item: item.version)]
+    if not benchmarks:
+        raise ValueError("no public command benchmarks to replay")
+    artifact_store = ArtifactStore(database.parent / "artifacts")
+    runner = DockerCommandRunner(args.repository, artifact_store)
+    experiment_store = ExperimentStore(database)
+    results = []
+    for benchmark in sorted(benchmarks, key=lambda item: (item.id, item.version)):
+        result = replay_benchmark(runner, benchmark, commit=args.commit, runs=args.runs)
+        payload = result.to_dict()
+        experiment_store.record_benchmark_replay(payload)
+        results.append(payload)
+    print(json.dumps({
+        "replayed": len(results),
+        "replay_verified": sum(1 for item in results if item["replay_verified"]),
+        "results": results,
+    }, indent=2))
+    return 0 if all(item["replay_verified"] for item in results) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -401,8 +426,28 @@ def build_parser() -> argparse.ArgumentParser:
     review_candidate.add_argument("--rationale", required=True)
     listing = benchmark_sub.add_parser("list")
     listing.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
+    listing.add_argument(
+        "--suite", choices=[suite.value for suite in Suite if suite is not Suite.SEALED_HOLDOUT],
+        help="select a suite and print its manifest",
+    )
+    listing.add_argument(
+        "--impact", action="append", default=[],
+        help="impact scope: category:NAME, capability:NAME or target:PATH (repeatable)",
+    )
+    benchmark_sub.add_parser("schema", help="print the benchmark record JSON Schema")
+    benchmark_sub.add_parser("manifest", help="print the public corpus manifest")
+    replay = benchmark_sub.add_parser("replay", help="re-run command benchmarks and check reproducibility")
+    replay.add_argument("--id", dest="benchmark_id", help="replay one benchmark (default: all command benchmarks)")
+    replay.add_argument("--commit", required=True, help="full Git object ID of the repository state")
+    replay.add_argument("--repository", type=Path, required=True)
+    replay.add_argument("--runs", type=int, default=3)
+    holdout = benchmark_sub.add_parser("holdout", help="operator-managed sealed holdout generations")
+    holdout_sub = holdout.add_subparsers(dest="holdout_command", required=True)
+    rotate = holdout_sub.add_parser("rotate", help="validate STAGING and activate it as a new generation")
+    rotate.add_argument("staging", type=Path)
+    rotate.add_argument("--store-root", type=Path, required=True)
     add_benchmark = benchmark_sub.add_parser("add")
-    add_benchmark.add_argument("file", type=Path, help="operator-authored public benchmark JSON")
+    add_benchmark.add_argument("file", type=Path, help="operator-authored public benchmark JSON or YAML")
     add_benchmark.add_argument(
         "--holdout-root", type=Path, required=True,
         help="sealed holdout benchmark directory used for leakage validation",
@@ -695,10 +740,13 @@ def main() -> int:
         )
         if args.benchmark_command == "validate":
             rows = store.validate()
+            lint_public_corpus(rows)
             print(json.dumps({"valid_benchmarks": len(rows), "version": store.version}))
         elif args.benchmark_command == "mine":
             session = SessionQueue(database.parent / "sessions.sqlite3").get(args.session_id)
-            candidate = mine_session(session)
+            candidate = mine_session(
+                session, cluster_index=corpus_similarity_index(store.load_public()),
+            )
             added = ExperimentStore(database).save_benchmark_candidate(candidate, args.session_id)
             print(json.dumps(candidate.__dict__ | {
                 "eligibility": candidate.eligibility.value,
@@ -757,13 +805,8 @@ def main() -> int:
                 "benchmark_admitted": False,
             }, indent=2))
         elif args.benchmark_command == "add":
-            try:
-                document = json.loads(args.file.read_text(encoding="utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError("benchmark file must be valid UTF-8 JSON") from exc
-            if not isinstance(document, dict):
-                raise ValueError("benchmark file must contain a JSON object")
-            benchmark = Benchmark.from_dict(document)
+            document = load_benchmark_document(args.file)
+            benchmark = parse_benchmark_document(document, source=args.file.name)
             path = store.admit_public(benchmark)
             print(json.dumps({
                 "status": "admitted",
@@ -772,7 +815,33 @@ def main() -> int:
                 "path": str(path),
                 "manifest_version": store.version,
             }, indent=2))
+        elif args.benchmark_command == "schema":
+            print(json.dumps(benchmark_json_schema(), indent=2, sort_keys=True))
+        elif args.benchmark_command == "manifest":
+            rows = store.validate()
+            print(json.dumps(corpus_manifest(rows, benchmark_version=store.version), indent=2))
+        elif args.benchmark_command == "replay":
+            return _replay_benchmarks(args, store, database)
+        elif args.benchmark_command == "holdout":
+            result = rotate_holdout(args.staging, args.store_root, public_root=benchmark_root)
+            print(json.dumps(result.to_dict(), indent=2))
+        elif args.suite is not None:
+            role = Role(args.role)
+            visible = []
+            for item in store.load_public() if role is Role.GENERATOR else store.validate():
+                try:
+                    store.access.authorize_benchmark_read(role, item.split)
+                except AccessDenied:
+                    continue
+                visible.append(item)
+            impact = ImpactScope.parse(args.impact)
+            selected = select_suite(visible, args.suite, impact=impact)
+            print(json.dumps(suite_manifest(
+                selected, suite=args.suite, benchmark_version=store.version, impact=impact,
+            ), indent=2))
         else:
+            if args.impact:
+                raise ValueError("--impact requires --suite")
             print(json.dumps(store.list(Role(args.role)), indent=2))
     elif args.command == "experiments":
         store = ExperimentStore(database)
@@ -1148,8 +1217,24 @@ def main() -> int:
             holdout_root=holdout_root,
         )
         benchmarks = access_store.validate()
-        suite = args.suite
-        suite_ids, holdout_ids = select_suite_benchmarks(benchmarks, suite)
+        suite = args.suite.upper()
+        config = config_from_environment()
+        impact = impact_scope_for_candidate(
+            candidate.candidate_type, candidate.target, config.taxonomy.categories,
+        )
+        selected, holdout, applied_impact = select_evaluation_suite(benchmarks, suite, impact=impact)
+        suite_ids = [item.id for item in selected]
+        holdout_ids = [item.id for item in holdout]
+        selection_manifest = suite_manifest(
+            selected, suite=suite, benchmark_version=access_store.version, impact=applied_impact,
+        )
+        holdout_manifest = (
+            suite_manifest(
+                holdout, suite=Suite.SEALED_HOLDOUT, benchmark_version=access_store.version,
+                include_task_details=False,
+            )
+            if holdout else None
+        )
         seeds = None
         if args.seeds is not None:
             try:
@@ -1160,7 +1245,6 @@ def main() -> int:
                 raise ValueError("--seeds must contain non-negative integers")
         grant = access_store.access.evaluator_holdout_grant(Role.EVALUATOR) if holdout_ids else None
         artifact_store = ArtifactStore(database.parent / "artifacts")
-        config = config_from_environment()
         evaluator = PairedEvaluator(
             access_store,
             build_runner(args, artifact_store),
@@ -1187,6 +1271,12 @@ def main() -> int:
             benchmark_version=access_store.version,
             holdout_grant=grant,
             evaluation_id=f"eval-{suite.lower()}-{args.candidate_id}-{__import__('uuid').uuid4().hex}",
+            suite_selection={
+                "suite_manifest_digest": selection_manifest["digest"],
+                "holdout_manifest_digest": holdout_manifest["digest"] if holdout_manifest else None,
+                "impact": applied_impact.to_dict(),
+                "task_ids": suite_ids,
+            },
         )
         print(json.dumps(report_payload(report), indent=2))
     elif args.command in {"promote", "rollback"}:

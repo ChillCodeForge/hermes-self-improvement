@@ -1,0 +1,7 @@
+{
+  "service": {"port": 9090, "features": ["invoices"]},
+  "database": {"pool": {"max": 25}, "ssl": null},
+  "logging": {"level": "debug"},
+  "legacy_mode": null,
+  "metrics": {"enabled": true}
+}

@@ -1,0 +1,13 @@
+{
+  "name": "create_ticket",
+  "description": "Create a support ticket in the helpdesk.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "minLength": 1},
+      "body": {"type": "string"},
+      "labels": {"type": "list"}
+    },
+    "required": ["title", "priority"]
+  }
+}

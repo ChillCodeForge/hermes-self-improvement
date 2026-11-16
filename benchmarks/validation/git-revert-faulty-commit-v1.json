@@ -1,0 +1,105 @@
+{
+  "benchmark": {
+    "cluster_id": "git-revert-faulty-commit",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git*",
+      "skills/*-git*",
+      "tools/git*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "629509b1a22cef52b6008221d2743b65c2b16d1775f06f9b4958938e17b581dc",
+      "outcome_digest": "764284e9cdb1a3c8479da89836774b7ae02ff42f4cbbe24aa60a8e0a6a88120d",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:15.938006+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": "benchmarks/fixtures/git-revert-faulty-commit",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "input_data": "sha256:b3ccf38fedc53d4eab449ff7b97d5a60d09eed027288197a438f8bdc9f3ace86",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/git-revert-faulty-commit",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "git-revert-faulty-commit",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:15.938006+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. The commit titled 'Break greeting output' corrupted greet.sh. Undo exactly that commit with a revert commit on main, keeping all later history (do not reset or rewrite commits).",
+    "title": "Revert the commit that broke the greeting"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "git-cli",
+      "history"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 7,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}
