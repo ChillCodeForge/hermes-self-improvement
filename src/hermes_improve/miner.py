@@ -1,12 +1,30 @@
+"""Benchmark candidate mining from redacted session exports (spec §14).
+
+Pipeline per session (hook, export and redaction happen upstream in
+`ingestion`): normalization -> eligibility -> ground-truth analysis -> dedup
+(exact / fingerprint) -> similarity clustering -> benchmark candidate. Mining
+never admits a benchmark; it only proposes one for operator review.
+"""
+
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
+from .clustering import SimilarityIndex, task_fingerprint
+from .eligibility import assess_session
 from .ingestion import contains_secret_material
-from .models import Eligibility, canonical_json
+from .models import Benchmark, Eligibility
+
+__all__ = [
+    "BenchmarkCandidate",
+    "DedupRegistry",
+    "corpus_similarity_index",
+    "mine_session",
+    "mine_sessions",
+    "task_fingerprint",
+]
 
 
 @dataclass(frozen=True)
@@ -20,12 +38,15 @@ class BenchmarkCandidate:
     reasons: tuple[str, ...]
 
 
-def task_fingerprint(task: str) -> str:
-    normalized = re.sub(r"\s+", " ", task.casefold()).strip()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+def mine_session(
+    session: Mapping[str, Any], *, cluster_index: SimilarityIndex | None = None,
+) -> BenchmarkCandidate:
+    """Assess one redacted session.
 
-
-def mine_session(session: Mapping[str, Any]) -> BenchmarkCandidate:
+    Without `cluster_index` the cluster id is the task fingerprint. With an
+    index, the task joins the cluster of the most similar indexed task (for
+    example an existing corpus benchmark) and is added to the index.
+    """
     if contains_secret_material(session):
         return _excluded(session, "credential-like material detected")
     task = session.get("task")
@@ -34,53 +55,48 @@ def mine_session(session: Mapping[str, Any]) -> BenchmarkCandidate:
     prompt = task.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _excluded(session, "task prompt unavailable")
-    environment = session.get("environment")
-    environment = environment if isinstance(environment, Mapping) else {}
-    verification = session.get("verification")
-    verification = verification if isinstance(verification, Mapping) else {}
-    security = session.get("security")
-    security = security if isinstance(security, Mapping) else {}
-    checks = {
-        "repository_commit_known": bool(environment.get("git_commit")),
-        "dependency_state_known": bool(environment.get("dependency_digest")),
-        "environment_known": bool(environment.get("container_image") or environment.get("type")),
-        "input_available": task.get("input_available") is True,
-        "external_services_controlled": bool(environment.get("network_policy") in {"disabled", "allowlist", "fixture"}),
-        "tests_present": (
-            isinstance(verification.get("deterministic"), list)
-            and bool(verification.get("deterministic"))
-        ),
-        "ground_truth_strong": (
-            isinstance(verification.get("deterministic"), list)
-            and bool(verification.get("deterministic"))
-        ) or (
-            isinstance(verification.get("structured_result"), Mapping)
-            and bool(verification.get("structured_result"))
-        ),
-        "secret_free": security.get("sanitized") is True and security.get("contains_secrets") is False,
-        "replay_verified": session.get("replay_verified") is True,
-    }
-    score = sum(checks.values()) / len(checks)
-    reasons = tuple(name for name, passed in checks.items() if not passed)
-    if not checks["secret_free"]:
-        eligibility = Eligibility.EXCLUDED
-    elif checks["ground_truth_strong"] and checks["replay_verified"] and score >= 0.8:
-        eligibility = Eligibility.HARD_BENCHMARK
-    elif score >= 0.45:
-        eligibility = Eligibility.SOFT_BENCHMARK
-    else:
-        eligibility = Eligibility.DREAMING_ONLY
-    ground_truth = "deterministic" if checks["tests_present"] else "structured" if checks["ground_truth_strong"] else "agent_self_report"
+    decision = assess_session(session)
     fingerprint = task_fingerprint(prompt)
+    candidate_id = hashlib.sha256(
+        f"{session.get('session_id', '')}:{fingerprint}".encode()
+    ).hexdigest()[:24]
+    if cluster_index is None:
+        cluster_id = fingerprint
+    else:
+        key = f"session:{candidate_id}"
+        cluster_id = (
+            cluster_index.cluster_of(key) if key in cluster_index
+            else cluster_index.add(key, prompt, cluster_id=fingerprint)
+        )
     return BenchmarkCandidate(
-        candidate_id=hashlib.sha256(f"{session.get('session_id', '')}:{fingerprint}".encode()).hexdigest()[:24],
+        candidate_id=candidate_id,
         task_fingerprint=fingerprint,
-        cluster_id=fingerprint,
-        eligibility=eligibility,
-        reproducibility_score=score,
-        ground_truth_type=ground_truth,
-        reasons=reasons,
+        cluster_id=cluster_id,
+        eligibility=decision.eligibility,
+        reproducibility_score=decision.reproducibility_score,
+        ground_truth_type=decision.ground_truth.value,
+        reasons=decision.reasons,
     )
+
+
+def mine_sessions(
+    sessions: Iterable[Mapping[str, Any]], *, corpus: Iterable[Benchmark] = (),
+) -> list[BenchmarkCandidate]:
+    """Mine a batch; similar sessions share a cluster, and tasks similar to an
+    existing corpus benchmark inherit that benchmark's declared cluster_id."""
+    index = corpus_similarity_index(corpus)
+    return [mine_session(session, cluster_index=index) for session in sessions]
+
+
+def corpus_similarity_index(corpus: Iterable[Benchmark]) -> SimilarityIndex:
+    index = SimilarityIndex()
+    for benchmark in sorted(corpus, key=lambda item: (item.id, item.version)):
+        index.add(
+            f"benchmark:{benchmark.id}:{benchmark.version}",
+            str(benchmark.task["prompt"]),
+            cluster_id=benchmark.cluster_id,
+        )
+    return index
 
 
 def _excluded(session: Mapping[str, Any], reason: str) -> BenchmarkCandidate:
@@ -94,7 +110,11 @@ def _excluded(session: Mapping[str, Any], reason: str) -> BenchmarkCandidate:
 
 
 class DedupRegistry:
-    """Exact and normalized task deduplication; near/semantic models are deferred."""
+    """Pins each cluster to the first split it was assigned to.
+
+    Cluster ids come from `mine_session`: the normalized task fingerprint, or a
+    similarity cluster when the candidate was mined with a `SimilarityIndex`.
+    """
 
     def __init__(self) -> None:
         self._clusters: dict[str, str] = {}

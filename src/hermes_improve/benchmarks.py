@@ -12,10 +12,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .benchmark_schema import (
+    BENCHMARK_FILE_SUFFIXES,
+    CRITICALITIES,
+    DIFFICULTIES,
+    MAX_BENCHMARK_FILE_BYTES,
+    TAXONOMY_CATEGORIES,
+    decode_benchmark_document,
+    load_benchmark_document,
+    parse_benchmark_document,
+)
+from .clustering import find_similarity_split_leaks
+from .eligibility import ELIGIBILITY_RANK, assess_benchmark
 from .errors import AccessDenied
-from .models import Benchmark, Role, Split
+from .models import Benchmark, Eligibility, Role, Split
 from .security import AccessController, HoldoutGrant
 from .task_similarity import are_near_duplicate_tasks
+
+# Top-level directories of the public benchmark root that hold task fixtures and
+# manifests rather than benchmark records; the record loader skips them.
+RESERVED_PUBLIC_DIRECTORIES = frozenset({"fixtures", "manifests"})
 
 
 class BenchmarkStore:
@@ -34,8 +50,13 @@ class BenchmarkStore:
         benchmarks: list[Benchmark] = []
         if not root.exists():
             return benchmarks
-        for path in sorted(root.rglob("*.json")):
-            data = json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root)
+            if not holdout and relative.parts[0] in RESERVED_PUBLIC_DIRECTORIES:
+                continue
+            if path.suffix.lower() not in BENCHMARK_FILE_SUFFIXES or path.is_dir():
+                continue
+            data = load_benchmark_document(path)
             benchmarks.append(_parse_benchmark(path, data, holdout=holdout))
         return benchmarks
 
@@ -246,6 +267,8 @@ def _load_root_fd(
             path = root / relative_path / name
             if not relative_path.parts and name == pinned_split_name:
                 continue
+            if not holdout and not relative_path.parts and name in RESERVED_PUBLIC_DIRECTORIES:
+                continue
             info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
@@ -253,7 +276,7 @@ def _load_root_fd(
                     visit(child_fd, relative_path / name)
                 finally:
                     os.close(child_fd)
-            elif name.endswith(".json"):
+            elif Path(name).suffix.lower() in BENCHMARK_FILE_SUFFIXES:
                 if not stat.S_ISREG(info.st_mode):
                     raise ValueError(f"{path}: benchmark file must be a regular file")
                 descriptor = os.open(
@@ -261,8 +284,9 @@ def _load_root_fd(
                     os.O_RDONLY | os.O_NOFOLLOW,
                     dir_fd=directory_fd,
                 )
-                with os.fdopen(descriptor, encoding="utf-8") as source:
-                    data = json.load(source)
+                with os.fdopen(descriptor, "rb") as source:
+                    raw = source.read(MAX_BENCHMARK_FILE_BYTES + 1)
+                data = decode_benchmark_document(name, raw)
                 benchmarks.append(_parse_benchmark(path, data, holdout=holdout))
 
     visit(root_fd, Path())
@@ -273,7 +297,7 @@ def _load_root_fd(
 def _parse_benchmark(path: Path, data: object, *, holdout: bool) -> Benchmark:
     if not isinstance(data, dict):
         raise ValueError(f"{path}: benchmark document must be an object")
-    benchmark = Benchmark.from_dict(data)
+    benchmark = parse_benchmark_document(data, source=str(path))
     if holdout != (benchmark.split is Split.SEALED_HOLDOUT):
         raise ValueError(
             f"{path}: sealed holdout tasks must be separated from public benchmarks"
@@ -329,6 +353,59 @@ def _validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
                     f"near-duplicate benchmarks {previous.id!r} and {benchmark.id!r} "
                     "must share the same split and cluster_id"
                 )
+    leaks = find_similarity_split_leaks(rows)
+    if leaks:
+        raise ValueError(
+            "similar benchmarks must share one split: "
+            + "; ".join(leak.describe() for leak in leaks)
+        )
+
+
+def validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
+    """Public entry point for full corpus leakage validation (ids, clusters, similarity)."""
+    _validate_benchmark_set(benchmarks)
+
+
+def lint_public_corpus(benchmarks: Iterable[Benchmark]) -> None:
+    """Curated-corpus rules applied by `benchmarks validate` on top of record validation.
+
+    Records must use the shared category taxonomy and difficulty scale, must
+    not claim a stronger eligibility class or higher reproducibility score
+    than the classifier derives from their own fields, and a claimed
+    successful replay must carry replay evidence.
+    """
+    errors: list[str] = []
+    for benchmark in benchmarks:
+        label = f"{benchmark.id} v{benchmark.version}"
+        categories = benchmark.taxonomy.get("categories", [])
+        if not categories:
+            errors.append(f"{label}: at least one taxonomy category is required")
+        unknown = sorted(set(categories) - set(TAXONOMY_CATEGORIES))
+        if unknown:
+            errors.append(f"{label}: unknown taxonomy categories {unknown}")
+        if benchmark.taxonomy.get("difficulty") not in DIFFICULTIES:
+            errors.append(f"{label}: difficulty must be one of {list(DIFFICULTIES)}")
+        if benchmark.benchmark.get("criticality") not in CRITICALITIES:
+            errors.append(f"{label}: criticality must be one of {list(CRITICALITIES)}")
+        decision = assess_benchmark(benchmark)
+        declared = Eligibility(benchmark.eligibility["class"])
+        if ELIGIBILITY_RANK[declared] > ELIGIBILITY_RANK[decision.eligibility]:
+            errors.append(
+                f"{label}: declared {declared.value} exceeds classifier result "
+                f"{decision.eligibility.value} (missing: {', '.join(decision.reasons) or 'none'})"
+            )
+        if float(benchmark.eligibility["reproducibility_score"]) > decision.reproducibility_score + 1e-9:
+            errors.append(
+                f"{label}: declared reproducibility_score exceeds computed "
+                f"{decision.reproducibility_score}"
+            )
+        if (
+            benchmark.eligibility.get("replay_verified") is True
+            and not isinstance(benchmark.eligibility.get("replay_evidence"), dict)
+        ):
+            errors.append(f"{label}: replay_verified requires eligibility.replay_evidence")
+    if errors:
+        raise ValueError("benchmark corpus lint failed: " + "; ".join(errors))
 
 
 def validate_benchmarks(root: Path, *, holdout_root: Path | None = None) -> list[Benchmark]:
