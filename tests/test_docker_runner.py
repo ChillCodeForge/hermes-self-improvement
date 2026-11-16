@@ -24,6 +24,8 @@ def commit_tree(tmp_path, files):
     repo.mkdir(exist_ok=True)
     if not (repo / ".git").exists():
         git(repo, "init", "-q")
+        git(repo, "config", "user.name", "Test")
+        git(repo, "config", "user.email", "test@example.invalid")
     for name, content in files.items():
         path = repo / name
         path.parent.mkdir(parents=True, exist_ok=True)

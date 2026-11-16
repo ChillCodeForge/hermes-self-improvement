@@ -37,6 +37,8 @@ def brain_repo(tmp_path):
     repo = tmp_path / "brain-repo"
     repo.mkdir(parents=True)
     git(repo, "init", "-q")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "config", "user.email", "test@example.invalid")
     skill = repo / "brain" / "skills" / "answer" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("# Answer skill\nANSWER=41\n")
