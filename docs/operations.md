@@ -4,22 +4,39 @@
 
 ```bash
 python -m pip install -e '.[test]'
-pytest
+pytest                          # POSIX only; on Windows use scripts/docker-test.sh
 hermes-improve status
 hermes-improve benchmarks validate
 hermes-improve benchmarks list --role generator
 hermes-improve experiments list
 ```
 
-`HERMES_IMPROVE_HOME` selects the local database/artifact state root;
-`HERMES_IMPROVE_BENCHMARKS` selects the non-holdout benchmark directory. The
-repository's example benchmark is a schema fixture, not a curated real-task
-evaluation.
+`HERMES_IMPROVE_HOME` selects the local state root (`experiments.sqlite3`,
+`sessions.sqlite3`, `monitoring.sqlite3`, `observability.sqlite3`,
+`hook_signals.sqlite3`, `artifacts/`); `HERMES_IMPROVE_BENCHMARKS` selects the
+non-holdout benchmark directory. The repository's example benchmark is a
+schema fixture, not a curated real-task evaluation.
 
-## Optional Hermes session hook
+## Daily operations
+
+A typical operator day uses only these commands. Every command prints JSON
+unless noted.
+
+| When | Command | Effect |
+|---|---|---|
+| Morning check | `hermes-improve report` (or `--json`) | Six-section report (Hermes, Improvement, Benchmarks, Dreaming, Qwen, Production). Read-only; never creates state. |
+| Curator review | `hermes-improve curator status [--hermes-home PATH]` | Reads the live Hermes Curator state read-only, lists signals, records each signal in the decision history. |
+| Evidence intake | `hermes-improve ingest EXPORT.json` / `ingest-batch RUN/trajectories.jsonl` | Queues redacted, untrusted session evidence. |
+| Analysis | `hermes-improve dream --stage light [--curator-hermes-home PATH]` | LIGHT analysis; REM/DEEP need a loopback Qwen endpoint. Run summary and Qwen usage go to `observability.sqlite3`. |
+| Curator change wanted | `hermes-improve curator propose ...` / `curator convert-pending ID ...` | Turns a Curator mutation into an immutable candidate; never writes production. |
+| Candidate work | `candidate create`, `evaluate`, `promote` | Unchanged gated path (see below). |
+| Post-promotion | `monitor ingest FILE`, `monitor replay RELEASE ...`, `monitor evaluate RELEASE [--apply ...]` | Collects evidence and stabilizes or rolls back a provisional release. |
+| Training data | `decisions export [--labeled-only] [--output FILE]`, `decisions backfill ID ...` | Laya decision dataset (see `laya-future.md`). |
+
+## Hermes plugin (opt-in observers)
 
 Install this package into the same Python environment as Hermes Agent and
-explicitly enable the entry-point plugin. For example, in Hermes `config.yaml`:
+explicitly enable the entry-point plugin in Hermes `config.yaml`:
 
 ```yaml
 plugins:
@@ -28,105 +45,213 @@ plugins:
   entries:
     hermes-self-improvement:
       settings:
-        auto_ingest: true
+        auto_ingest: true               # on_session_finalize transcript queueing
+        observe_skill_lifecycle: true   # on_skill_lifecycle facts
+        observe_tool_calls: true        # pre_tool_call name counter
         state_dir: /absolute/path/to/hermes-improvement-state
 ```
 
-The plugin reads finalized transcript messages through Hermes'
-`agent.trace_upload.load_session_messages` API, redacts them, and queues them
-under `state_dir`. Keep this path private and point
-`HERMES_IMPROVE_HOME` at the same directory when running this package's CLI.
-In multi-profile Hermes installations, configure a distinct state directory
-per profile. The hook is disabled unless `auto_ingest` is explicitly `true`.
-This integration was checked against the API present at the Hermes revision
-recorded in `discovery.md`. The package was installed into the local Hermes
-virtual environment, and an entry-point/PluginManager hook smoke test queued a
-mocked transcript. It has not yet been verified with a real finalized Hermes
-session or SessionDB transcript.
+Every setting defaults to off and must be exactly `true`. Point
+`HERMES_IMPROVE_HOME` at the same directory to see the collected data in
+`curator status` (`hook_signals`). In multi-profile installations configure a
+distinct `state_dir` per profile; the directory must not be accessible by group
+or other users.
 
-## Available operator workflows
+Hook contracts were verified in the local Hermes source (v0.22.2) at commit
+`d923a5eb487a17c0a68801bba9ef0f56c81040a8`:
 
-- `ingest EXPORT.json` redacts and queues a session export.
-- `ingest-batch RUN/trajectories.jsonl` imports Hermes `batch_runner` output;
-  discarded tombstones are skipped, and all imported conversations remain
-  redacted, untrusted evidence. Bounded tool counters can feed recurring
-  failure signals. This imports previous run data only—it does not run Hermes
-  or produce candidate evaluation results.
-- `dream --stage light|rem` analyzes queued evidence; REM requires a configured
-  loopback Qwen endpoint. An optional `--curator-report FILE` supplies a
-  bounded JSON array of read-only skill usage counters to LIGHT/REM:
-  `{"name":"skill-name","use_count":4,"patch_count":1,"activity_count":7}`.
-  This is caller-supplied data, not a live Hermes Curator connector.
-  `dream --stage deep --hypotheses FILE` produces filtered proposals and also
-  requires Qwen.
-- `benchmarks mine SESSION_ID` creates a benchmark proposal; proposals require
-  review before they are admitted to a benchmark suite. Use
-  `benchmarks inspect-candidate FINGERPRINT` to inspect a bounded preview of
-  its redacted sources, then `benchmarks review-candidate FINGERPRINT
-  --decision accept|reject --reviewer NAME --rationale TEXT` to record an
-  immutable triage decision. Acceptance does not admit the proposal; operators
-  must author a benchmark separately. `benchmarks add FILE --holdout-root
-  HOLDOUT_DIR` admits an operator-authored public record only after schema and
-  complete-corpus validation against both roots; it rejects sealed holdout
-  records and will not overwrite an existing ID/version.
-- `candidate create --repository REPO --experiment-id ID --candidate-id ID
-  --content FILE` creates an immutable candidate commit in a separate
-  `candidate/<experiment-id>` branch/worktree. Supply metadata directly with
-  `--type SKILL_CREATE|SKILL_PATCH --target brain/skills/NAME --hypothesis TEXT`,
-  or select it from a DEEP output file with
-  `--proposal-file FILE --proposal-index N` (zero-based). Proposal files are
-  limited to 1 MiB and five candidates; only skill create/patch proposals are
-  supported. A proposal supplies metadata only: skill content must still be
-  supplied explicitly by the operator. The target must be a canonical
-  directory path under `brain/skills/` (not a `SKILL.md` file path). The
-  command validates the target, content size, and credential-like strings,
-  and does not write production. Only `SKILL.md` candidates are currently
-  supported.
-- `evaluate CANDIDATE_ID` runs paired command benchmarks and signs persisted
-  evidence. It requires a digest-pinned Docker-compatible benchmark, separate
-  holdout root, evaluator private key, and execution under the configured
-  evaluator effective UID. It consumes the current sealed-manifest generation
-  once per candidate evolution lineage before starting; even a failed attempt
-  requires a rotated holdout generation before retrying that lineage.
-- `promote CANDIDATE_ID --release brain-vN` verifies evidence and deploys a
-  skills-only Git candidate. `rollback brain-vN` restores a prior release.
-  Both require a configured promoter UID, evaluator public key, manifest key,
-  and repository/release/deployment paths.
+- `on_session_finalize`: reads finalized messages through
+  `agent.trace_upload.load_session_messages`, redacts them, and queues them.
+- `on_skill_lifecycle`: listed in `VALID_HOOKS` (`hermes_cli/plugins.py:135`)
+  and fired by `tools/skill_usage.py:477` (`_emit_skill_lifecycle`) with
+  `action, skill_name, provenance, task_id, session_id, use_count, reused,
+  reuse_after_patch`. Actions emitted: `loaded`, `patched`, `edited`,
+  `created`, `installed`, `archived`, `stale`, `restored`. The observer stores
+  these facts in `hook_signals.sqlite3`.
+- `pre_tool_call`: listed in `VALID_HOOKS` (`hermes_cli/plugins.py:110`) and
+  invoked at `hermes_cli/plugins.py:1988` with `tool_name, args, task_id,
+  session_id, tool_call_id, turn_id, api_request_id, middleware_trace`. A
+  `{"action": "block"}` return would veto the tool, so this observer always
+  returns `None`, stores only a per-day count per tool name (never the
+  arguments), uses a 250 ms SQLite timeout, and swallows its own errors. It is
+  registered only when enabled, so a disabled observer adds no work.
 
-The CLI does not generate skill text, create users, establish filesystem
-permissions, rotate holdout generations, or connect a Hermes session/telemetry
-service. Read `security.md` before configuring keys, Docker, or deployment
-paths. Never run generator/evaluator/promoter roles as one shared UID for a
-production rollout.
+The hooks were exercised with the exact keyword arguments above in tests,
+not inside a live Hermes runtime.
 
-## Monitoring and deployment limits
+## Curator integration
 
-`ReleaseMonitor` accepts observations through both its Python API and a
-bounded JSONL import for trusted external collectors:
+`curator status` parses these real Hermes Curator files under the Hermes home
+(`--hermes-home`, else `HERMES_HOME`, else `~/.hermes`). Paths and formats are
+from the Hermes source at the commit above:
+
+| File | Source | Used for |
+|---|---|---|
+| `skills/.usage.json` | `tools/skill_usage.py:51`, record shape `:348` | usage counters, `active/stale/archived` state, `pinned`, `created_by` |
+| `skills/.curator_state` | `agent/curator.py:40` | last run, run count, paused |
+| `logs/curator/<YYYYMMDD-HHMMSS>/run.json` | `agent/curator.py:473`, `:737` | consolidations (Curator's overlap outcome), prunings, archives, state transitions |
+| `skills/.curator_ledger.jsonl` | `tools/skill_ledger.py:84`, `:298` | mutation audit counts by action/actor, ledger `rollback` entries (`:628`) |
+| `skills/.curator_backups/<id>/manifest.json` | `agent/curator_backup.py:67`, `:133` | snapshot backups available for `hermes curator rollback` |
+| `pending/skills/<id>.json` | `tools/write_approval.py:65`, `:74` | skill writes staged by `skills.write_approval` |
+
+Hermes has no separate overlap detector: overlap is judged by the LLM
+consolidation pass and recorded as `consolidated` entries in `run.json`.
+
+Files are opened without following symbolic links, size-bounded, and
+validated. Malformed records are listed under `rejected_records` rather than
+dropped or trusted. The connector never writes the Hermes home.
+
+Signals produced: stale skills, archived skills that had recorded use,
+repeated in-place patching (patch churn), consolidations (as SKILL_MERGE
+review signals), ledger rollbacks, and pending staged writes.
+
+### Keeping the Curator off the production path
+
+Hermes' Curator (checked at Hermes v0.22.2) writes skills directly through
+`skill_manage` unless `skills.write_approval: true` is set. Two Hermes
+settings keep it off the production brain:
+
+- Mount the deployed brain checkout (`--deployment-link` target) through
+  `skills.external_dirs`. Hermes treats external skill directories as
+  read-only to the Curator (`tools/skill_usage.py:278`, `is_curation_eligible`),
+  so lifecycle transitions and consolidation cannot touch them.
+- Set `skills.write_approval: true` so remaining skill writes are staged
+  instead of applied.
+
+With the gate on, every skill write
+(foreground or background review, including the Curator fork) is staged as
+`pending/skills/<id>.json` (`tools/skill_manager_tool.py:657`,
+`tools/write_approval.py:201`). Convert staged writes instead of approving
+them in place:
 
 ```bash
-hermes-improve monitor ingest observations.jsonl
+hermes-improve curator convert-pending 1a2b3c4d --repository REPO \
+  --experiment-id exp-curator-1 --candidate-id cand-curator-1
+hermes-improve curator propose --kind patch --skill NAME --rationale TEXT \
+  --old-string-file OLD --new-string-file NEW --repository REPO \
+  --experiment-id ID --candidate-id ID
 ```
 
-Example record:
+Conversion rules (`CuratorAdapter`):
 
-```json
-{"observation_id":"gateway-event-123","release_id":"brain-v7","task_id":"task-42","success":true,"tool_errors":0,"tokens":820,"tool_calls":3,"latency_ms":1420.5,"user_corrections":0,"retries":0,"critical_regression":false}
+- `create` → `SKILL_CREATE`; `edit` or full-content `patch` → `SKILL_PATCH`.
+- Targeted `patch` (old/new string) is applied to the production `SKILL.md`
+  read from `main`; the match must be unique unless `replace_all` is set.
+- `consolidate` → `SKILL_PATCH` of the umbrella skill. The absorbed skill stays
+  in production and is reported under `unapplied`.
+- `archive`/`delete`, supporting-file writes, and skill names that are not a
+  safe `brain/skills/` directory component are refused with an explicit
+  error. The candidate builder only writes `SKILL.md`; removal needs a manual
+  operator change.
+
+The converted candidate still needs `evaluate` and `promote`. The adapter
+never writes production or the Hermes pending record.
+
+## Candidate, evaluation and promotion workflows
+
+- `benchmarks mine SESSION_ID` creates a benchmark proposal; proposals require
+  review (`benchmarks inspect-candidate`, `benchmarks review-candidate`).
+  `benchmarks add FILE --holdout-root HOLDOUT_DIR` admits an operator-authored
+  public record after schema and complete-corpus validation.
+- `candidate create --repository REPO --experiment-id ID --candidate-id ID
+  --content FILE` (with `--type/--target/--hypothesis` or
+  `--proposal-file/--proposal-index`) creates an immutable `SKILL.md`
+  candidate commit on `candidate/<experiment-id>`. Candidates created from a
+  DEEP proposal are counted for the Dreaming conversion rate.
+- `evaluate CANDIDATE_ID` runs paired command benchmarks and signs evidence;
+  it requires a digest-pinned Docker benchmark, a separate holdout root, the
+  evaluator private key, and the evaluator UID.
+- `promote CANDIDATE_ID --release brain-vN` deploys a skills-only candidate as
+  a `PROVISIONAL` release. `rollback brain-vN` restores a prior release. Both
+  require the promoter UID, evaluator public key, manifest key, and
+  repository/release/deployment paths.
+
+## Post-promotion monitoring
+
+Releases move `CANDIDATE → PROVISIONAL → STABLE`, or `PROVISIONAL/STABLE →
+ROLLED_BACK`. `ExperimentStore.set_release_status` enforces these transitions.
+
+Evidence sources:
+
+1. `monitor ingest observations.jsonl` — trusted external collectors:
+
+   ```json
+   {"observation_id":"gateway-event-123","release_id":"brain-v7","task_id":"task-42","success":true,"tool_errors":0,"tokens":820,"tool_calls":3,"latency_ms":1420.5,"user_corrections":0,"retries":0,"critical_regression":false,"skills":["demo"],"source":"production"}
+   ```
+
+   Required: `observation_id, release_id, task_id, success, tool_errors,
+   tokens, tool_calls, latency_ms`. Optional: `user_corrections, retries,
+   critical_regression, skills, source` (`production`, `shadow_replay`,
+   `historical_replay`). IDs are idempotent; the whole file is validated before
+   anything is recorded (10 MiB / 10,000 rows).
+2. `monitor replay RELEASE --runner-command '["/abs/path/replay"]' [--limit N]`
+   — read-only shadow replay. Prior sessions in the queue whose content names a
+   skill changed by the release are replayed through the runner against the
+   release's deployment checkout, which must be a real directory without write
+   bits (the promoter installs it as `0555`). The runner gets one JSON object
+   on stdin (`session_id`, `prompt`, `release_checkout`,
+   `evidence_trust: "untrusted"`), a reduced environment (`PATH`, `HOME`,
+   `HERMES_BRAIN_CHECKOUT`), and must print `success, tool_errors, tokens,
+   tool_calls, latency_ms` (optional `retries, critical_regression`). Runner
+   failures are reported, not recorded as evidence. No Hermes replay wrapper
+   ships with this package; the operator supplies one.
+
+Observations are matched to the release's affected area: the skills under
+`brain/skills/` in the signed manifest's `changed_paths`. An observation that
+names skills counts only if one of them changed; an observation without skill
+attribution counts for the whole release.
+
+Metrics: success rate, tool error rate, tokens/success, tool calls/success,
+latency/success, retry rate, user-correction rate, and critical regression
+signals. Each metric is compared with the manifest's `baseline_metrics` only
+when that baseline exists; missing baselines are listed under
+`unavailable_baselines` instead of being assumed. Any critical signal means
+immediate rollback; a success-rate or tool-error regression is `high`
+severity, any other regression is `medium`.
+
+```bash
+hermes-improve monitor evaluate brain-v7          # assessment only, no change
+HERMES_PROMOTER_UID=... HERMES_IMPROVE_MANIFEST_KEY=... \
+hermes-improve monitor evaluate brain-v7 --apply --repository REPO \
+  --release-root RELEASES --deployment-link CURRENT --evaluator-public-key KEY
 ```
 
-Each row requires an `observation_id`, `release_id`, `task_id`, `success`,
-`tool_errors`, `tokens`, `tool_calls`, and `latency_ms`; corrections, retries,
-and critical-regression status are optional. IDs are idempotent: replaying the
-same ID and same content does not increase the sample count, while reusing an
-ID for different content is rejected. The import validates the entire file
-before recording any row and is limited to 10 MiB / 10,000 records. No
-production collector or Hermes hook is connected automatically.
+`--apply` runs only as the promoter UID. A healthy release becomes `STABLE`.
+On regression it finds the release whose commit was the regressing release's
+baseline, checks that the regressing release is the active `main`, and calls
+`GitPromoter.rollback` (atomic link switch, release tags kept). Every applied
+or blocked action is audited in `monitoring_actions` (release, action, target,
+previous commit, reasons, metrics, actor UID). A regression without an
+earlier restorable release is recorded as `ROLLBACK_BLOCKED` and needs an
+operator. Ingesting observations still marks a release `STABLE` automatically
+once policy passes, but never rolls back by itself.
 
-The monitor recommends rollback on observed regressions and changes a release
-to `STABLE` only after the configured sample count passes its policy.
-Recommendation does not itself perform rollback.
+## Observability report
 
-The Docker command runner is not a general Hermes runner. Full project
-acceptance requires real benchmark tasks, a Hermes runtime adapter, independent
-role identities and filesystem controls, production observation wiring, and a
-rehearsed end-to-end deployment.
+`hermes-improve report [--json]` reads, never writes:
+
+- **Hermes**: production observations (success rate, tokens/success, tool
+  calls/success, failed tool calls, retry rate) and queued-session counts.
+- **Improvement**: candidates generated/rejected/promoted, experiments by
+  decision, generations (longest parent chain), mean `quality_delta_mean`,
+  failed evaluations with regression reasons.
+- **Benchmarks**: public benchmarks only (count, categories, difficulty,
+  ground-truth types, reproducibility, splits) and spent holdout generations.
+- **Dreaming**: runs, sessions processed, clusters, hypotheses, and
+  proposal-to-candidate conversion rate from the CLI's observability log.
+- **Qwen**: requests, tokens, average latency per request by role from REM/DEEP
+  runs. GPU runtime is `unavailable` (no source exists); judge uncertainty is
+  `no data` because judge results are not persisted yet.
+- **Production**: active brain version and status, releases by status,
+  critical post-promotion observations, releases with rollback decisions,
+  rollback count.
+
+Missing sources print `no data`.
+
+## Limits
+
+The CLI does not generate skill text, create users, establish filesystem
+permissions, rotate holdout generations, or run Hermes. The Docker command
+runner is not a Hermes runner and no production collector is wired. Never run
+generator/evaluator/promoter roles as one shared UID for a production rollout.
+Read `security.md` before configuring keys, Docker, or deployment paths.

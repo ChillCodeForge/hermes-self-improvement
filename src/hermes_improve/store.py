@@ -459,6 +459,34 @@ class ExperimentStore:
             if cursor.rowcount != 1:
                 raise KeyError(release_id)
 
+    _RELEASE_TRANSITIONS = {
+        "CANDIDATE": frozenset({"PROVISIONAL"}),
+        "PROVISIONAL": frozenset({"STABLE", "ROLLED_BACK"}),
+        "STABLE": frozenset({"ROLLED_BACK"}),
+        "ROLLED_BACK": frozenset(),
+    }
+
+    def set_release_status(self, release_id: str, status: str) -> str:
+        """Move a release along CANDIDATE -> PROVISIONAL -> STABLE / ROLLED_BACK.
+
+        Returns the previous status. Setting the current status again is an
+        idempotent no-op; any other transition outside the lifecycle is refused.
+        """
+        if status not in self._RELEASE_TRANSITIONS:
+            raise ValueError("invalid release status")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status FROM releases WHERE id=?", (release_id,)).fetchone()
+            if row is None:
+                raise KeyError(release_id)
+            current = row["status"]
+            if current == status:
+                return current
+            if status not in self._RELEASE_TRANSITIONS.get(current, frozenset()):
+                raise ValueError(f"release status cannot change from {current} to {status}")
+            db.execute("UPDATE releases SET status=? WHERE id=? AND status=?", (status, release_id, current))
+            return current
+
     def transition_rollback(self, active_commit: str, target_release_id: str) -> None:
         with self._lock, self._connect() as db:
             rows = db.execute("SELECT id,manifest_json FROM releases").fetchall()

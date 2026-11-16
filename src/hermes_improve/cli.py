@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from . import __version__
@@ -13,12 +14,17 @@ from .artifacts import ArtifactStore
 from .batch_ingestion import load_batch_runner_export
 from .benchmarks import BenchmarkStore
 from .candidate_builder import create_skill_candidate
-from .curator import CuratorAdapter
+from .curator import CuratorAdapter, CuratorMutation
+from .curator_connector import CuratorConnector
+from .decisions import DECISION_TYPES, DecisionRecorder
 from .docker_runner import DockerCommandRunner
+from .hermes_plugin import HookSignalStore
+from .observability import ObservabilityLog, build_report, render_text
+from .shadow_replay import CommandReplayRunner, ShadowReplayer
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue, contains_secret_material
 from .miner import mine_session
-from .monitoring import ProductionObservation, ReleaseMonitor
+from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
 from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Split
@@ -72,6 +78,7 @@ def _load_observations(path: Path) -> list[ProductionObservation]:
     allowed = {
         "observation_id", "release_id", "task_id", "success", "tool_errors", "tokens",
         "tool_calls", "latency_ms", "user_corrections", "retries", "critical_regression",
+        "skills", "source",
     }
     required = {
         "observation_id", "release_id", "task_id", "success", "tool_errors",
@@ -128,7 +135,10 @@ def _load_observations(path: Path) -> list[ProductionObservation]:
         critical = item.get("critical_regression", False)
         if not isinstance(critical, bool):
             raise ValueError(f"monitoring observation line {line_number}: critical_regression must be boolean")
-        observations.append(ProductionObservation(
+        skills = item.get("skills", [])
+        if not isinstance(skills, list):
+            raise ValueError(f"monitoring observation line {line_number}: skills must be a list of skill names")
+        observation = ProductionObservation(
             release_id=item["release_id"],
             task_id=item["task_id"],
             success=item["success"],
@@ -140,7 +150,14 @@ def _load_observations(path: Path) -> list[ProductionObservation]:
             retries=item.get("retries", 0),
             critical_regression=critical,
             observation_id=item["observation_id"],
-        ))
+            skills=tuple(skills),
+            source=item.get("source", "production"),
+        )
+        try:
+            validate_observation(observation)
+        except ValueError as exc:
+            raise ValueError(f"monitoring observation line {line_number}: {exc}") from exc
+        observations.append(observation)
     if not observations:
         raise ValueError("monitoring observation file contains no records")
     return observations
@@ -226,6 +243,42 @@ def build_parser() -> argparse.ArgumentParser:
     dream.add_argument("--limit", type=int, default=100)
     dream.add_argument("--hypotheses", type=Path)
     dream.add_argument("--curator-report", type=Path)
+    dream.add_argument(
+        "--curator-hermes-home", type=Path,
+        help="read live Curator usage read-only from this Hermes home",
+    )
+    curator = sub.add_parser("curator")
+    curator_sub = curator.add_subparsers(dest="curator_command", required=True)
+    curator_status = curator_sub.add_parser("status")
+    curator_propose = curator_sub.add_parser("propose")
+    curator_propose.add_argument("--kind", choices=["create", "patch", "consolidate", "archive"], required=True)
+    curator_propose.add_argument("--skill", required=True)
+    curator_propose.add_argument("--into")
+    curator_propose.add_argument("--rationale", required=True)
+    curator_propose.add_argument("--content", type=Path, help="complete new SKILL.md text")
+    curator_propose.add_argument("--old-string-file", type=Path)
+    curator_propose.add_argument("--new-string-file", type=Path)
+    curator_propose.add_argument("--replace-all", action="store_true")
+    curator_convert = curator_sub.add_parser("convert-pending")
+    curator_convert.add_argument("pending_id")
+    for command in (curator_status, curator_convert):
+        command.add_argument("--hermes-home", type=Path)
+    for command in (curator_propose, curator_convert):
+        command.add_argument("--repository", type=Path, required=True)
+        command.add_argument("--experiment-id", required=True)
+        command.add_argument("--candidate-id", required=True)
+    report = sub.add_parser("report")
+    report.add_argument("--json", action="store_true")
+    decisions = sub.add_parser("decisions")
+    decisions_sub = decisions.add_subparsers(dest="decisions_command", required=True)
+    decisions_export = decisions_sub.add_parser("export")
+    decisions_export.add_argument("--output", type=Path, help="new JSONL file (default: stdout)")
+    decisions_export.add_argument("--type", choices=sorted(DECISION_TYPES))
+    decisions_export.add_argument("--labeled-only", action="store_true")
+    decisions_backfill = decisions_sub.add_parser("backfill")
+    decisions_backfill.add_argument("decision_id")
+    decisions_backfill.add_argument("--ground-truth", required=True)
+    decisions_backfill.add_argument("--source", required=True)
     benchmarks = sub.add_parser("benchmarks")
     benchmark_sub = benchmarks.add_subparsers(dest="benchmark_command", required=True)
     benchmark_sub.add_parser("validate")
@@ -286,6 +339,20 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     observe = monitor_sub.add_parser("ingest")
     observe.add_argument("observations", type=Path)
+    monitor_evaluate = monitor_sub.add_parser("evaluate")
+    monitor_evaluate.add_argument("release")
+    monitor_evaluate.add_argument(
+        "--apply", action="store_true",
+        help="execute the outcome: mark STABLE or roll back through the promoter (promoter UID required)",
+    )
+    monitor_replay = monitor_sub.add_parser("replay")
+    monitor_replay.add_argument("release")
+    monitor_replay.add_argument(
+        "--runner-command", required=True,
+        help='JSON array argv of the replay command, e.g. ["/opt/hermes-replay"]',
+    )
+    monitor_replay.add_argument("--limit", type=int, default=20)
+    monitor_replay.add_argument("--timeout", type=float, default=600.0)
     promote = sub.add_parser("promote")
     promote.add_argument("candidate_id")
     promote.add_argument("--release", required=True)
@@ -296,7 +363,67 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--release-root", type=Path, required=True)
         command.add_argument("--deployment-link", type=Path, required=True)
         command.add_argument("--evaluator-public-key", type=Path, required=True)
+    for option in ("--repository", "--release-root", "--deployment-link", "--evaluator-public-key"):
+        monitor_evaluate.add_argument(option, type=Path)
     return parser
+
+
+def _hermes_home(configured: Path | None) -> Path:
+    if configured is not None:
+        return configured
+    environment = os.environ.get("HERMES_HOME", "").strip()
+    return Path(environment) if environment else Path.home() / ".hermes"
+
+
+def _read_text_file(path: Path, label: str, limit: int = 256 * 1024) -> str:
+    with path.open("rb") as source:
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"{label} exceeds the {limit // 1024} KiB limit")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label} must be UTF-8") from exc
+
+
+def _curator_status(database: Path, hermes_home: Path) -> dict[str, object]:
+    connector = CuratorConnector(hermes_home)
+    snapshot = connector.snapshot()
+    recorder = DecisionRecorder(database)
+    signals = []
+    for signal in connector.signals(snapshot):
+        decision = recorder.record(
+            decision_type="curator_signal",
+            input_features={"summary": signal.summary, "evidence": dict(signal.evidence)},
+            available_options=("no_action", "propose_candidate"),
+            selected_option="propose_candidate",
+            confidence=signal.impact_score,
+            source="curator-connector",
+            model_version="curator-signal-rules-1",
+        )
+        signals.append(signal.__dict__ | {"evidence": dict(signal.evidence), "decision_id": decision.id})
+    hook_path = database.parent / "hook_signals.sqlite3"
+    return {
+        "curator": connector.status(),
+        "signals": signals,
+        "hook_signals": HookSignalStore(hook_path).summary() if hook_path.is_file() else "no data",
+        "production_writes": "none; Curator mutations are converted into candidates",
+    }
+
+
+def _conversion_payload(conversion) -> dict[str, object]:
+    candidate = conversion.candidate
+    return {
+        "candidate_id": candidate.candidate_id,
+        "experiment_id": candidate.experiment_id,
+        "candidate_type": candidate.candidate_type.value,
+        "candidate_hash": candidate.content_hash,
+        "target": candidate.target,
+        "commit": candidate.commit,
+        "mutation_kind": conversion.mutation_kind,
+        "unapplied": list(conversion.unapplied),
+        "status": "awaiting_evaluation",
+    }
 
 
 def main() -> int:
@@ -323,32 +450,48 @@ def main() -> int:
         }, indent=2))
     elif args.command == "dream":
         if args.stage == "deep":
-            if args.curator_report is not None:
+            if args.curator_report is not None or args.curator_hermes_home is not None:
                 raise ValueError("--curator-report is supported only by LIGHT and REM dreaming")
             if args.hypotheses is None:
                 raise ValueError("DEEP dreaming requires --hypotheses JSON input")
             hypotheses = json.loads(args.hypotheses.read_text(encoding="utf-8"))
             if not isinstance(hypotheses, list) or not all(isinstance(row, dict) for row in hypotheses):
                 raise ValueError("--hypotheses must contain a JSON array of objects")
-            result = DreamingEngine(OpenAICompatibleQwen(QwenConfig.from_env())).deep(hypotheses)
+            model = OpenAICompatibleQwen(QwenConfig.from_env())
+            result = DreamingEngine(model).deep(hypotheses)
+            log = ObservabilityLog(database.parent / "observability.sqlite3")
+            log.record_qwen_stats(model.stats)
+            log.record_dreaming_run(
+                stage="deep", sessions_processed=0, clusters={}, signals=0, hypotheses=len(result),
+            )
             print(json.dumps({"candidates": result}, indent=2))
             return 0
-        curator = (
-            CuratorAdapter(lambda: _load_curator_usage_report(args.curator_report))
-            if args.curator_report is not None else None
-        )
+        if args.curator_report is not None and args.curator_hermes_home is not None:
+            raise ValueError("use either --curator-report or --curator-hermes-home, not both")
+        if args.curator_report is not None:
+            curator = CuratorAdapter(lambda: _load_curator_usage_report(args.curator_report))
+        elif args.curator_hermes_home is not None:
+            curator = CuratorAdapter(CuratorConnector(args.curator_hermes_home).usage_rows)
+        else:
+            curator = None
         queue = SessionQueue(database.parent / "sessions.sqlite3")
         session_ids = queue.queued(args.limit)
         sessions = [queue.get(session_id) for session_id in session_ids]
+        log = ObservabilityLog(database.parent / "observability.sqlite3")
         if args.stage == "light":
             report = DreamingEngine(curator=curator).light(sessions)
         else:
-            report = DreamingEngine(
-                OpenAICompatibleQwen(QwenConfig.from_env()),
-                curator=curator,
-            ).rem(sessions)
+            model = OpenAICompatibleQwen(QwenConfig.from_env())
+            try:
+                report = DreamingEngine(model, curator=curator).rem(sessions)
+            finally:
+                log.record_qwen_stats(model.stats)
         for session_id in session_ids:
             queue.set_status(session_id, "processed")
+        log.record_dreaming_run(
+            stage=args.stage, sessions_processed=report.sessions_processed, clusters=report.clusters,
+            signals=len(report.signals), hypotheses=len(report.hypotheses),
+        )
         print(json.dumps({
             "sessions_processed": report.sessions_processed,
             "clusters": report.clusters,
@@ -493,6 +636,10 @@ def main() -> int:
             benchmark_version=benchmark_version,
             source_sessions=tuple(args.source_session),
         )
+        if args.proposal_file is not None:
+            ObservabilityLog(database.parent / "observability.sqlite3").record_proposal_conversion(
+                result.candidate_id
+            )
         print(json.dumps({
             "candidate_id": result.candidate_id,
             "experiment_id": result.experiment_id,
@@ -504,6 +651,102 @@ def main() -> int:
         }, indent=2))
     elif args.command == "releases":
         print(json.dumps(ExperimentStore(database).list_releases(), indent=2))
+    elif args.command == "curator":
+        if args.curator_command == "status":
+            print(json.dumps(_curator_status(database, _hermes_home(args.hermes_home)), indent=2))
+            return 0
+        adapter = CuratorAdapter(
+            repository=args.repository,
+            store=ExperimentStore(database),
+            benchmark_version=BenchmarkStore(benchmark_root).version,
+        )
+        if args.curator_command == "convert-pending":
+            pending = CuratorConnector(_hermes_home(args.hermes_home)).pending_write(args.pending_id)
+            conversion = adapter.convert_pending_write(
+                pending, experiment_id=args.experiment_id, candidate_id=args.candidate_id,
+            )
+        else:
+            targeted = args.old_string_file is not None or args.new_string_file is not None
+            if targeted and (args.old_string_file is None or args.new_string_file is None):
+                raise ValueError("--old-string-file and --new-string-file must be supplied together")
+            mutation = CuratorMutation(
+                kind=args.kind,
+                skill=args.skill,
+                rationale=args.rationale,
+                content=_read_text_file(args.content, "SKILL.md content") if args.content else None,
+                old_string=_read_text_file(args.old_string_file, "old string") if targeted else None,
+                new_string=_read_text_file(args.new_string_file, "new string") if targeted else None,
+                replace_all=args.replace_all,
+                into=args.into,
+            )
+            conversion = adapter.to_candidate(
+                mutation, experiment_id=args.experiment_id, candidate_id=args.candidate_id,
+            )
+        print(json.dumps(_conversion_payload(conversion), indent=2))
+    elif args.command == "report":
+        report = build_report(database.parent, benchmark_root)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            sys.stdout.write(render_text(report))
+    elif args.command == "decisions":
+        recorder = DecisionRecorder(database)
+        if args.decisions_command == "backfill":
+            record = recorder.backfill_ground_truth(
+                args.decision_id, ground_truth=args.ground_truth, ground_truth_source=args.source,
+            )
+            print(json.dumps(record.to_dict(), indent=2))
+        elif args.output is None:
+            recorder.export_jsonl(sys.stdout, decision_type=args.type, labeled_only=args.labeled_only)
+        else:
+            with args.output.open("x", encoding="utf-8") as destination:
+                count = recorder.export_jsonl(
+                    destination, decision_type=args.type, labeled_only=args.labeled_only,
+                )
+            print(json.dumps({"exported": count, "output": str(args.output)}, indent=2))
+    elif args.command == "monitor" and args.monitor_command == "evaluate":
+        monitor = ReleaseMonitor(
+            database.parent / "monitoring.sqlite3", ExperimentStore(database),
+            decisions=DecisionRecorder(database),
+        )
+        if not args.apply:
+            print(json.dumps(monitor.evaluate(args.release).to_dict(), indent=2))
+            return 0
+        _require_role_uid("promoter")
+        manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
+        if manifest_key is None:
+            raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
+        missing = [
+            option for option, value in (
+                ("--repository", args.repository), ("--release-root", args.release_root),
+                ("--deployment-link", args.deployment_link),
+                ("--evaluator-public-key", args.evaluator_public_key),
+            ) if value is None
+        ]
+        if missing:
+            raise ValueError(f"monitor evaluate --apply requires {', '.join(missing)}")
+        promoter = GitPromoter(
+            ExperimentStore(database), args.repository, args.release_root, args.deployment_link,
+            PromotionPolicy(), args.evaluator_public_key.read_bytes(),
+        )
+        result = monitor.apply(
+            args.release, promoter=promoter, manifest_key=manifest_key.encode(),
+            actor=f"uid:{os.geteuid()}",
+        )
+        print(json.dumps(result, indent=2))
+    elif args.command == "monitor" and args.monitor_command == "replay":
+        try:
+            argv = json.loads(args.runner_command)
+        except json.JSONDecodeError as exc:
+            raise ValueError("--runner-command must be a JSON array of strings") from exc
+        if not isinstance(argv, list):
+            raise ValueError("--runner-command must be a JSON array of strings")
+        monitor = ReleaseMonitor(database.parent / "monitoring.sqlite3", ExperimentStore(database))
+        replayer = ShadowReplayer(
+            SessionQueue(database.parent / "sessions.sqlite3"), monitor,
+            CommandReplayRunner(argv, timeout=args.timeout),
+        )
+        print(json.dumps(replayer.replay(args.release, limit=args.limit).to_dict(), indent=2))
     elif args.command == "monitor":
         observations = _load_observations(args.observations)
         monitor = ReleaseMonitor(database.parent / "monitoring.sqlite3", ExperimentStore(database))
