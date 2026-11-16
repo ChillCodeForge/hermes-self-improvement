@@ -14,6 +14,7 @@ dependencies = ["cryptography>=42", "pyyaml>=6"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+gepa = ["gepa==0.1.4"]
 
 [project.scripts]
 hermes-improve = "hermes_improve.cli:main"

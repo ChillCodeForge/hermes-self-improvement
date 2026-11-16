@@ -124,6 +124,33 @@ class ExperimentStore:
                     review_rationale TEXT,
                     reviewed_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS evolution_runs (
+                    id TEXT PRIMARY KEY,
+                    root_candidate_id TEXT NOT NULL REFERENCES candidates(id),
+                    lineage_id TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    strategy_version TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    stop_reason TEXT,
+                    report_json TEXT,
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS generated_variants (
+                    target TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    parent_candidate_id TEXT,
+                    candidate_id TEXT REFERENCES candidates(id),
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    scores_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (target, content_sha256)
+                );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(evaluation_runs)")}
             if "metrics_json" not in columns:
@@ -773,6 +800,148 @@ class ExperimentStore:
         )
 
 
+    def link_experiment_lineage(self, experiment_id: str, *, parent_id: str, lineage_id: str) -> None:
+        """Attach a freshly created experiment to its parent's lineage exactly once."""
+        if not all(isinstance(value, str) and value.strip() for value in (experiment_id, parent_id, lineage_id)):
+            raise ValueError("experiment lineage identifiers must be non-empty strings")
+        if parent_id == experiment_id:
+            raise ValueError("an experiment cannot be its own parent")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            parent = db.execute(
+                "SELECT lineage_id FROM experiments WHERE id=?", (parent_id,)
+            ).fetchone()
+            if parent is None:
+                raise KeyError(parent_id)
+            if parent["lineage_id"] != lineage_id:
+                raise ValueError("child experiment must join its parent's lineage")
+            cursor = db.execute(
+                """UPDATE experiments SET parent_id=?, lineage_id=?
+                   WHERE id=? AND parent_id IS NULL AND lineage_id=id""",
+                (parent_id, lineage_id, experiment_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("experiment lineage is already assigned or the experiment does not exist")
+
+    def create_evolution_run(
+        self, run_id: str, *, root_candidate_id: str, lineage_id: str,
+        strategy: str, strategy_version: str, config: dict[str, Any],
+    ) -> None:
+        if not all(isinstance(value, str) and value.strip() for value in (
+            run_id, root_candidate_id, lineage_id, strategy, strategy_version,
+        )):
+            raise ValueError("evolution run metadata fields must be non-empty strings")
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO evolution_runs
+                   (id,root_candidate_id,lineage_id,strategy,strategy_version,config_json,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (run_id, root_candidate_id, lineage_id, strategy, strategy_version,
+                 canonical_json(config), utc_now()),
+            )
+
+    def finish_evolution_run(
+        self, run_id: str, *, status: str, stop_reason: str, report: dict[str, Any],
+    ) -> None:
+        if status not in {"completed", "failed"}:
+            raise ValueError("evolution run status must be completed or failed")
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """UPDATE evolution_runs SET status=?, stop_reason=?, report_json=?, finished_at=?
+                   WHERE id=? AND status='running'""",
+                (status, stop_reason, canonical_json(report), utc_now(), run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("evolution run is unknown or already finished")
+
+    def get_evolution_run(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM evolution_runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        result = dict(row)
+        result["config"] = json.loads(result.pop("config_json"))
+        report = result.pop("report_json")
+        result["report"] = json.loads(report) if report is not None else None
+        return result
+
+    def find_generated_variant(self, target: str, content_sha256: str) -> dict[str, Any] | None:
+        _validate_variant_key(target, content_sha256)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM generated_variants WHERE target=? AND content_sha256=?",
+                (target, content_sha256),
+            ).fetchone()
+        return self._generated_variant_record(row) if row is not None else None
+
+    def record_generated_variant(
+        self, *, target: str, content_sha256: str, origin: str, generation: int,
+        status: str, parent_candidate_id: str | None = None,
+        candidate_id: str | None = None, reason: str = "",
+    ) -> None:
+        """Record generated content once per target; failed variants are never deleted."""
+        _validate_variant_key(target, content_sha256)
+        if status not in _VARIANT_STATUSES:
+            raise ValueError(f"unknown generated variant status {status!r}")
+        if not isinstance(origin, str) or not origin.strip():
+            raise ValueError("generated variant origin must be non-empty")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise ValueError("generated variant generation must be a non-negative integer")
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            try:
+                db.execute(
+                    """INSERT INTO generated_variants
+                       (target,content_sha256,origin,generation,parent_candidate_id,candidate_id,
+                        status,reason,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (target, content_sha256, origin, generation, parent_candidate_id,
+                     candidate_id, status, reason[:2000], now, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "UNIQUE" in str(exc):
+                    raise ValueError("generated variant content was already recorded for this target") from exc
+                raise
+
+    def update_generated_variant(
+        self, target: str, content_sha256: str, *, status: str,
+        reason: str = "", scores: dict[str, Any] | None = None,
+    ) -> None:
+        _validate_variant_key(target, content_sha256)
+        if status not in _VARIANT_STATUSES or status == "root":
+            raise ValueError(f"invalid generated variant status transition to {status!r}")
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT scores_json FROM generated_variants WHERE target=? AND content_sha256=?",
+                (target, content_sha256),
+            ).fetchone()
+            if row is None:
+                raise KeyError(content_sha256)
+            merged = json.loads(row["scores_json"]) | dict(scores or {})
+            db.execute(
+                """UPDATE generated_variants SET status=?, reason=?, scores_json=?, updated_at=?
+                   WHERE target=? AND content_sha256=?""",
+                (status, reason[:2000], canonical_json(merged), utc_now(), target, content_sha256),
+            )
+
+    def list_generated_variants(self, target: str, limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT * FROM generated_variants WHERE target=?
+                   ORDER BY updated_at DESC, rowid DESC LIMIT ?""",
+                (target, limit),
+            ).fetchall()
+        return [self._generated_variant_record(row) for row in rows]
+
+    @staticmethod
+    def _generated_variant_record(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["scores"] = json.loads(item.pop("scores_json"))
+        return item
+
+
 _PROMOTION_AUDIT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS promotion_approvals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -808,3 +977,17 @@ CREATE TRIGGER IF NOT EXISTS release_events_append_only_delete
 BEFORE DELETE ON release_events
 BEGIN SELECT RAISE(ABORT, 'release events are append-only'); END;
 """
+
+
+_VARIANT_STATUSES = frozenset({
+    "root", "created", "rejected", "smoke_rejected", "core_rejected", "core_no_improvement",
+    "improved", "full_rejected", "full_passed", "holdout_passed", "holdout_failed",
+    "holdout_refused",
+})
+
+
+def _validate_variant_key(target: str, content_sha256: str) -> None:
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("generated variant target must be non-empty")
+    if not isinstance(content_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", content_sha256):
+        raise ValueError("generated variant content hash must be a lowercase SHA-256 digest")

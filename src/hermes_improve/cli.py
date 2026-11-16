@@ -32,9 +32,13 @@ from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
 from .hermes_runner import HermesBatchRunner, HermesModelConfig
 from .judge import PairwiseJudge
+from .evolution_loop import EvaluationGateway, EvolutionConfig, EvolutionLoop
+from .gepa_adapter import SUPPORTED_GEPA_VERSION, GepaOptimizeStrategy, GepaStrategy
 from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Split
+from .optimizer import ModelMutationStrategy
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
+from .proposal_generator import generate_candidates_from_proposals
 from .qwen import OpenAICompatibleQwen, QwenConfig
 from .role_handoff import export_candidate, import_bundle_ref, import_candidate, sync_production_baseline
 from .run_policy import RunPolicy
@@ -50,6 +54,7 @@ _MAX_CURATOR_REPORT_RECORDS = 10_000
 _MAX_DREAMING_PROPOSAL_BYTES = 1024 * 1024
 _MAX_DREAMING_PROPOSALS = 5
 _MAX_CANDIDATE_FILE_BYTES = 256 * 1024
+_MAX_EVOLUTION_SETTINGS_BYTES = 64 * 1024
 
 
 def _paths() -> tuple[Path, Path]:
@@ -486,6 +491,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--production", type=Path, action="append", default=[],
         help="additional Hermes deployment checkout that must be read-only",
     )
+    generate = candidate_sub.add_parser(
+        "generate", help="author candidate content for selected DEEP proposals with the qwen_optimizer role",
+    )
+    generate.add_argument("--repository", type=Path, required=True)
+    generate.add_argument("--proposal-file", type=Path, required=True)
+    generate.add_argument(
+        "--proposal-index", type=int, action="append", required=True,
+        help="zero-based proposal index; repeat to select up to five proposals",
+    )
+    generate.add_argument("--source-session", action="append", default=[])
+    evolve = sub.add_parser("evolve", help="iteratively evolve a skill candidate (generator + screening only)")
+    evolve.add_argument("candidate_id")
+    evolve.add_argument("--repository", type=Path, required=True)
+    evolve.add_argument("--strategy", choices=["qwen", "gepa", "gepa-proposer"], default="qwen")
+    evolve.add_argument("--settings", type=Path, help="JSON object with evolution setting overrides")
+    evolve.add_argument("--max-generations", type=int)
+    evolve.add_argument("--candidates-per-generation", type=int)
+    evolve.add_argument("--max-candidates-total", type=int)
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list", "events"])
     releases.add_argument("--release", dest="release_filter", help="limit events to one release")
@@ -759,6 +782,77 @@ def main() -> int:
             print(json.dumps(store.show_experiment(args.experiment_id), indent=2))
     elif args.command == "candidates":
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
+    elif args.command == "candidate" and args.candidate_command == "generate":
+        indexes = args.proposal_index
+        if len(indexes) > _MAX_DREAMING_PROPOSALS or len(set(indexes)) != len(indexes):
+            raise ValueError("select between one and five distinct --proposal-index values")
+        proposals = []
+        for index in indexes:
+            candidate_type, target, hypothesis = _load_dreaming_proposal(args.proposal_file, index)
+            proposals.append({
+                "candidate_type": candidate_type.value, "target": target, "hypothesis": hypothesis,
+            })
+        outcomes = generate_candidates_from_proposals(
+            proposals,
+            model=OpenAICompatibleQwen(QwenConfig.from_env()),
+            repository=args.repository,
+            store=ExperimentStore(database),
+            benchmark_version=BenchmarkStore(benchmark_root).version,
+            source_sessions=tuple(args.source_session),
+            policy_version=config_from_environment().promotion.policy_version,
+        )
+        print(json.dumps({
+            "candidates": [
+                outcome.to_dict() | {"proposal_index": indexes[outcome.proposal_index]}
+                for outcome in outcomes
+            ],
+            "promotion": "not performed; created candidates await evaluation",
+        }, indent=2))
+    elif args.command == "evolve":
+        overrides: dict[str, object] = {}
+        if args.settings is not None:
+            with args.settings.open("rb") as source:
+                raw = source.read(_MAX_EVOLUTION_SETTINGS_BYTES + 1)
+            if len(raw) > _MAX_EVOLUTION_SETTINGS_BYTES:
+                raise ValueError("evolution settings file exceeds the 64 KiB limit")
+            try:
+                loaded = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("evolution settings file must be valid UTF-8 JSON") from exc
+            if not isinstance(loaded, dict):
+                raise ValueError("evolution settings file must contain a JSON object")
+            overrides.update(loaded)
+        for key in ("max_generations", "candidates_per_generation", "max_candidates_total"):
+            if getattr(args, key) is not None:
+                overrides[key] = getattr(args, key)
+        hermes_config = config_from_environment()
+        config = EvolutionConfig.from_config(hermes_config.scoring.evolution, overrides)
+        model = OpenAICompatibleQwen(QwenConfig.from_env())
+        if args.strategy in {"gepa", "gepa-proposer"}:
+            strategy = GepaOptimizeStrategy(model) if args.strategy == "gepa" else GepaStrategy(model)
+            expected_version = f"gepa-{SUPPORTED_GEPA_VERSION}"
+        else:
+            strategy = ModelMutationStrategy(model)
+            expected_version = ModelMutationStrategy.version
+        store = ExperimentStore(database)
+        artifact_store = ArtifactStore(database.parent / "artifacts")
+        gateway = EvaluationGateway(
+            BenchmarkStore(benchmark_root),
+            DockerCommandRunner(args.repository, artifact_store),
+            PromotionPolicy.from_config(hermes_config.promotion),
+            generator_store=BenchmarkStore(benchmark_root),
+            run_policy=RunPolicy.from_config(hermes_config.scoring),
+        )
+        report = EvolutionLoop(
+            repository=args.repository, store=store, gateway=gateway, strategy=strategy,
+            expected_strategy_version=expected_version, config=config,
+        ).run(args.candidate_id)
+        print(json.dumps(report.to_dict() | {
+            "next_steps": [
+                f"hermes-improve evaluate {item.candidate_id} (evaluator identity: FULL + sealed holdout)"
+                for item in report.finalists if item.full_passed
+            ],
+        }, indent=2))
     elif args.command == "security":
         layout = load_layout(args.layout or resolve_layout_path())
         report = check_isolation(layout, args.role, production=args.production)
@@ -788,7 +882,7 @@ def main() -> int:
             "commit": imported.commit,
             "status": "imported_awaiting_evaluation",
         }, indent=2))
-    elif args.command == "candidate" and (args.file or args.delete):
+    elif args.command == "candidate" and args.candidate_command == "create" and (args.file or args.delete):
         if any(value is not None for value in (
             args.content, args.target, args.proposal_file, args.proposal_index,
         )):
@@ -814,7 +908,7 @@ def main() -> int:
             parent_experiment_id=args.parent_experiment,
         )
         print(json.dumps(_candidate_summary(result, args.worktree_root), indent=2))
-    elif args.command == "candidate":
+    elif args.command == "candidate" and args.candidate_command == "create":
         if args.proposal_file is not None:
             if args.proposal_index is None:
                 raise ValueError("--proposal-index is required with --proposal-file")
