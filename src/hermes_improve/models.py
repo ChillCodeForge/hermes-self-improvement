@@ -276,6 +276,11 @@ class TaskOutcome:
     candidate_retries: int = 0
     baseline_user_corrections: int = 0
     candidate_user_corrections: int = 0
+    # Evaluation schema v2 (optional, defaulted for backward compatibility).
+    run_count: int = 1
+    judge_result: str = ""
+    judge_confidence: float | None = None
+    judge_uncertainty: float | None = None
 
 
 @dataclass(frozen=True)
@@ -290,6 +295,12 @@ class EvaluationReport:
     created_at: str = field(default_factory=utc_now)
     metrics: Mapping[str, Any] = field(default_factory=dict)
     run_observations: tuple["RunObservation", ...] = ()
+
+
+# Version 2 adds optional per-run metrics, verifier summaries, judge fields and
+# run-policy/statistics metrics. It is recorded in ``EvaluationReport.metrics``
+# so the signed top-level payload shape stays identical to version 1.
+EVALUATION_SCHEMA_VERSION = 2
 
 
 def evaluation_payload(report: EvaluationReport) -> dict[str, Any]:
@@ -342,6 +353,20 @@ class RunObservation:
     exit_code: int = 0
     final_output: str = ""
     artifact_digests: tuple[str, ...] = ()
+    # Evaluation schema v2 (optional, defaulted for backward compatibility).
+    input_tokens: int = 0
+    output_tokens: int = 0
+    token_usage_reported: bool = True
+    context_chars: int = 0
+    turns: int = 0
+    api_calls: int = 0
+    exit_state: str = ""
+    model_config_digest: str = ""
+    limits_digest: str = ""
+    verifier_results: tuple[Mapping[str, Any], ...] = ()
+    filesystem_changes: tuple[str, ...] = ()
+    trajectory_digest: str = ""
+    diff_digest: str = ""
 
 
 @dataclass(frozen=True)

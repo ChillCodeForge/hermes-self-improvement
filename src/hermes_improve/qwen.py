@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import ipaddress
 import math
@@ -9,6 +10,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -24,6 +27,7 @@ class QwenConfig:
     api_key: str | None = None
     timeout: float = 60
     max_concurrency: int = 2
+    log_dir: str | None = None
 
     @classmethod
     def from_env(cls) -> "QwenConfig":
@@ -42,6 +46,7 @@ class QwenConfig:
             api_key=os.environ.get("QWEN_API_KEY"),
             timeout=timeout,
             max_concurrency=concurrency,
+            log_dir=os.environ.get("QWEN_LOG_DIR") or None,
         )
         config.validate_endpoint()
         return config
@@ -67,8 +72,17 @@ class QwenConfig:
             raise ValueError("model, positive timeout, and positive concurrency are required")
 
 
+QWEN_ROLES = frozenset({"qwen_solver", "qwen_optimizer", "qwen_dreamer", "qwen_judge"})
+
+
 class OpenAICompatibleQwen:
-    """Small synchronous adapter for local OpenAI-compatible chat endpoints."""
+    """Small synchronous adapter for local OpenAI-compatible chat endpoints.
+
+    Logical roles share the endpoint but keep separate models (``qwen_judge``
+    may use ``judge_model``), statistics and, when ``log_dir`` is set, separate
+    JSONL logs (``<log_dir>/<role>.jsonl``). Logs record digests, token usage,
+    latency and status, never prompt or response text.
+    """
 
     def __init__(self, config: QwenConfig) -> None:
         config.validate_endpoint()
@@ -76,14 +90,23 @@ class OpenAICompatibleQwen:
         self._semaphore = threading.BoundedSemaphore(config.max_concurrency)
         self._stats_lock = threading.Lock()
         self._stats: dict[str, dict[str, float | int]] = {}
+        self._log_lock = threading.Lock()
+        self._log_dir = Path(config.log_dir) if config.log_dir else None
+        if self._log_dir is not None:
+            self._log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     @property
     def stats(self) -> dict[str, dict[str, float | int]]:
         with self._stats_lock:
             return {role: dict(values) for role, values in self._stats.items()}
 
+    def role_log_path(self, role: str) -> Path | None:
+        if role not in QWEN_ROLES:
+            raise ValueError(f"unknown Qwen logical role: {role}")
+        return self._log_dir / f"{role}.jsonl" if self._log_dir is not None else None
+
     def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str:
-        if role not in {"qwen_solver", "qwen_optimizer", "qwen_dreamer", "qwen_judge"}:
+        if role not in QWEN_ROLES:
             raise ValueError(f"unknown Qwen logical role: {role}")
         if not isinstance(system_prompt, str) or not isinstance(user_payload, str):
             raise TypeError("Qwen prompts and payloads must be strings")
@@ -98,13 +121,30 @@ class OpenAICompatibleQwen:
         }).encode("utf-8")
         if len(body) > _MAX_REQUEST_BYTES:
             raise ValueError("Qwen request exceeds the 1 MiB payload limit")
+        started = time.monotonic()
+        try:
+            content, prompt_tokens, completion_tokens = self._request(body)
+        except (RuntimeError, ValueError) as exc:
+            self._log(role, model, body, None, started, 0, 0, str(exc))
+            raise
+        elapsed_ms = self._log(role, model, body, content, started, prompt_tokens, completion_tokens, None)
+        with self._stats_lock:
+            metrics = self._stats.setdefault(role, {
+                "requests": 0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0.0,
+            })
+            metrics["requests"] = int(metrics["requests"]) + 1
+            metrics["input_tokens"] = int(metrics["input_tokens"]) + prompt_tokens
+            metrics["output_tokens"] = int(metrics["output_tokens"]) + completion_tokens
+            metrics["latency_ms"] = float(metrics["latency_ms"]) + elapsed_ms
+        return content
+
+    def _request(self, body: bytes) -> tuple[str, int, int]:
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         request = urllib.request.Request(
             f"{self.config.base_url}/v1/chat/completions", data=body, headers=headers, method="POST"
         )
-        started = time.monotonic()
         with self._semaphore:
             try:
                 with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
@@ -130,46 +170,31 @@ class OpenAICompatibleQwen:
             or isinstance(completion_tokens, bool) or not isinstance(completion_tokens, int)
         ):
             prompt_tokens = completion_tokens = 0
+        return content, prompt_tokens, completion_tokens
+
+    def _log(
+        self, role: str, model: str, body: bytes, content: str | None, started: float,
+        prompt_tokens: int, completion_tokens: int, error: str | None,
+    ) -> float:
         elapsed_ms = (time.monotonic() - started) * 1000
-        with self._stats_lock:
-            metrics = self._stats.setdefault(role, {
-                "requests": 0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0.0,
-            })
-            metrics["requests"] = int(metrics["requests"]) + 1
-            metrics["input_tokens"] = int(metrics["input_tokens"]) + prompt_tokens
-            metrics["output_tokens"] = int(metrics["output_tokens"]) + completion_tokens
-            metrics["latency_ms"] = float(metrics["latency_ms"]) + elapsed_ms
-        return content
-
-
-def judge_pairwise(model: OpenAICompatibleQwen, baseline: str, candidate: str) -> str:
-    """Two blind presentations; contradictory preferences abstain."""
-    prompt = (
-        "Choose A, B, or TIE based only on task success and quality. "
-        "Return JSON: {\"winner\":\"A|B|TIE\",\"confidence\":0.0}. "
-        "Do not infer which answer is the candidate."
-    )
-    first = model.complete(role="qwen_judge", system_prompt=prompt, user_payload=json.dumps({"A": baseline, "B": candidate}))
-    second = model.complete(role="qwen_judge", system_prompt=prompt, user_payload=json.dumps({"A": candidate, "B": baseline}))
-    a = _parse_judgment(first)
-    b = _parse_judgment(second)
-    if a["winner"] == "TIE" or b["winner"] == "TIE":
-        return "unreliable"
-    candidate_first = a["winner"] == "B"
-    candidate_swapped = b["winner"] == "A"
-    if candidate_first != candidate_swapped or min(a["confidence"], b["confidence"]) < 0.5:
-        return "unreliable"
-    return "candidate" if candidate_first else "baseline"
-
-
-def _parse_judgment(response: str) -> dict[str, float | str]:
-    try:
-        value = json.loads(response)
-    except json.JSONDecodeError as exc:
-        raise ValueError("judge response is not valid JSON") from exc
-    if not isinstance(value, dict) or value.get("winner") not in {"A", "B", "TIE"}:
-        raise ValueError("judge response has invalid winner")
-    confidence = value.get("confidence")
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
-        raise ValueError("judge confidence must be between zero and one")
-    return {"winner": value["winner"], "confidence": float(confidence)}
+        path = self.role_log_path(role)
+        if path is None:
+            return elapsed_ms
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "model": model,
+            "request_sha256": hashlib.sha256(body).hexdigest(),
+            "response_sha256": hashlib.sha256(content.encode()).hexdigest() if content is not None else None,
+            "status": "ok" if error is None else "error",
+            "error": error[:500] if error else None,
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "latency_ms": round(elapsed_ms, 3),
+        }
+        line = json.dumps(record, sort_keys=True) + "\n"
+        with self._log_lock:
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+                stream.write(line)
+        return elapsed_ms

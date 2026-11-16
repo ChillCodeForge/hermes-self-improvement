@@ -223,7 +223,10 @@ class ExperimentStore:
     def record_evaluation(
         self, evaluation_id: str, candidate_id: str, report: EvaluationReport,
         signature: str | None = None,
+        *,
+        decides_experiment: bool = True,
     ) -> None:
+        """Persist an evaluation; staged (SMOKE/CORE) runs pass decides_experiment=False."""
         with self._lock, self._connect() as db:
             candidate = db.execute("SELECT content_hash FROM candidates WHERE id=?", (candidate_id,)).fetchone()
             if candidate is None:
@@ -252,6 +255,8 @@ class ExperimentStore:
                     for row in report.run_observations
                 ],
             )
+            if not decides_experiment:
+                return
             db.execute(
                 "UPDATE experiments SET decision=?,reason=?,finished_at=? WHERE id=(SELECT experiment_id FROM candidates WHERE id=?)",
                 ("passed" if report.passed else "rejected", canonical_json(report.reasons), report.created_at, candidate_id),

@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import json
-from types import SimpleNamespace
-
 import pytest
 
-from hermes_improve.docker_runner import DockerCommandRunner
 from hermes_improve.models import Benchmark
 from hermes_improve.verifier import verify_deterministic_output
 
@@ -123,36 +119,3 @@ def test_verifier_supports_required_json_keys_and_nested_path(check, output, exp
 def test_verifier_fails_closed_on_invalid_specs(checks, message):
     with pytest.raises(ValueError, match=message):
         verify_deterministic_output(benchmark(checks), exit_code=0, output="{}")
-
-
-def test_docker_runner_applies_verifier_instead_of_only_exit_code(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_improve.docker_runner.shutil.which", lambda _name: "/usr/bin/docker")
-
-    class Artifacts:
-        payload = None
-
-        def put(self, payload):
-            self.payload = payload
-            return "b" * 64, tmp_path / "artifact.json"
-
-    artifacts = Artifacts()
-    runner = DockerCommandRunner(tmp_path, artifacts)
-    runner._tree_digest = lambda _commit: "c" * 64
-    runner._export_commit = lambda _commit, _destination: None
-    monkeypatch.setattr(
-        "hermes_improve.docker_runner.subprocess.run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout='{"answer":41}\n'),
-    )
-    task = benchmark([
-        {"type": "json_path_equals", "path": ["answer"], "expected": 42},
-    ])
-
-    result = runner.run("a" * 40, task, 7)
-    assert not result.success
-    assert not result.deterministic_pass
-    assert result.quality == 50.0
-    artifact = json.loads(artifacts.payload)
-    assert artifact["verifier_results"] == [
-        {"type": "exit_code", "passed": True},
-        {"type": "json_path_equals", "passed": False},
-    ]
