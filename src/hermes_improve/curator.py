@@ -1,32 +1,98 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping
+import os
+import re
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from .ingestion import contains_secret_material
-from .models import ImprovementSignal
+from .models import Candidate, CandidateType, ImprovementSignal
+
+if TYPE_CHECKING:
+    from .curator_connector import PendingSkillWrite
+    from .store import ExperimentStore
 
 
 _MAX_COUNTER = (1 << 63) - 1
+_MAX_SKILL_BYTES = 256 * 1024
+_BRAIN_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+MUTATION_KINDS = frozenset({"create", "patch", "consolidate", "archive"})
+
+
+class CuratorMutationRefused(ValueError):
+    """A Curator mutation that cannot be expressed as an evaluable candidate."""
+
+
+def validate_curator_skill_name(name: Any) -> str:
+    if (
+        not isinstance(name, str) or not name.strip() or name != name.strip()
+        or len(name) > 128 or any(ord(character) < 32 for character in name)
+        or contains_secret_material(name)
+    ):
+        raise ValueError("Curator skill names must be bounded, clean, and credential-free")
+    return name
+
+
+@dataclass(frozen=True)
+class CuratorMutation:
+    """A mutation the Curator wants to apply to a skill.
+
+    ``content`` is the complete new ``SKILL.md`` text (create, full-rewrite
+    patch, or the umbrella skill of a consolidation). A targeted patch instead
+    supplies ``old_string``/``new_string`` which are applied to the current
+    production ``SKILL.md`` read from the candidate repository's ``main``.
+    """
+
+    kind: str
+    skill: str
+    rationale: str
+    content: str | None = None
+    old_string: str | None = None
+    new_string: str | None = None
+    replace_all: bool = False
+    into: str | None = None
+    source_sessions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CuratorConversion:
+    candidate: Candidate
+    mutation_kind: str
+    unapplied: tuple[str, ...] = field(default_factory=tuple)
 
 
 class CuratorAdapter:
-    """Consumes caller-supplied Curator data; never writes production skills."""
+    """Bridges the Hermes Curator to the gated candidate path.
 
-    def __init__(self, usage_report: Callable[[], Iterable[Mapping[str, Any]]]) -> None:
+    ``signals`` turns read-only usage data into improvement signals. Mutation
+    conversion never writes production: every desired Curator change becomes an
+    immutable candidate commit on a ``candidate/<experiment-id>`` branch that
+    must still pass evaluation and promotion.
+    """
+
+    def __init__(
+        self,
+        usage_report: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
+        *,
+        repository: Path | None = None,
+        store: "ExperimentStore | None" = None,
+        benchmark_version: str | None = None,
+    ) -> None:
         self._usage_report = usage_report
+        self._repository = Path(repository).resolve() if repository is not None else None
+        self._store = store
+        self._benchmark_version = benchmark_version
 
     def signals(self) -> list[ImprovementSignal]:
+        if self._usage_report is None:
+            raise RuntimeError("CuratorAdapter was created without a usage report source")
         result = []
         for row in self._usage_report():
             if not isinstance(row, Mapping):
                 raise ValueError("Curator usage rows must be objects")
-            name = row.get("name")
-            if (
-                not isinstance(name, str) or not name.strip() or name != name.strip()
-                or len(name) > 128 or any(ord(character) < 32 for character in name)
-                or contains_secret_material(name)
-            ):
-                raise ValueError("Curator skill names must be bounded, clean, and credential-free")
+            name = validate_curator_skill_name(row.get("name"))
             use_count = _counter(row.get("use_count", 0), "use_count")
             patch_count = _counter(row.get("patch_count", 0), "patch_count")
             activity = _counter(row.get("activity_count", 0), "activity_count")
@@ -45,6 +111,153 @@ class CuratorAdapter:
                 },
             ))
         return result
+
+    def to_candidate(
+        self, mutation: CuratorMutation, *, experiment_id: str, candidate_id: str,
+    ) -> CuratorConversion:
+        """Convert a desired Curator mutation into an immutable candidate."""
+        from .candidate_builder import create_skill_candidate
+
+        if self._repository is None or self._store is None or not self._benchmark_version:
+            raise RuntimeError("mutation conversion requires a candidate repository, experiment store, and benchmark version")
+        if not isinstance(mutation, CuratorMutation) or mutation.kind not in MUTATION_KINDS:
+            raise ValueError(f"Curator mutation kind must be one of: {', '.join(sorted(MUTATION_KINDS))}")
+        skill = _brain_skill_name(mutation.skill)
+        if not isinstance(mutation.rationale, str) or not mutation.rationale.strip():
+            raise ValueError("Curator mutations require a rationale")
+        if not isinstance(mutation.replace_all, bool):
+            raise ValueError("replace_all must be boolean")
+        if mutation.kind == "archive":
+            raise CuratorMutationRefused(
+                f"archiving {skill} cannot be expressed as a candidate: the candidate builder only "
+                "creates or patches SKILL.md, so skill removal requires a manual operator change"
+            )
+        unapplied: tuple[str, ...] = ()
+        if mutation.kind == "create":
+            candidate_type, target_skill = CandidateType.SKILL_CREATE, skill
+            content = _require_content(mutation, "create")
+            hypothesis = f"Curator create {skill}: {mutation.rationale.strip()}"
+        elif mutation.kind == "patch":
+            candidate_type, target_skill = CandidateType.SKILL_PATCH, skill
+            content = self._patched_content(skill, mutation)
+            hypothesis = f"Curator patch {skill}: {mutation.rationale.strip()}"
+        else:
+            if mutation.into is None:
+                raise ValueError("consolidation requires the umbrella skill in 'into'")
+            umbrella = _brain_skill_name(mutation.into)
+            if umbrella == skill:
+                raise ValueError("a skill cannot be consolidated into itself")
+            candidate_type, target_skill = CandidateType.SKILL_PATCH, umbrella
+            content = _require_content(mutation, "consolidate")
+            hypothesis = f"Curator consolidate {skill} into {umbrella}: {mutation.rationale.strip()}"
+            unapplied = (
+                f"{skill} stays in production; archiving the absorbed skill is not a supported candidate change",
+            )
+        candidate = create_skill_candidate(
+            self._repository,
+            self._store,
+            experiment_id=experiment_id,
+            candidate_id=candidate_id,
+            candidate_type=candidate_type,
+            target=f"brain/skills/{target_skill}",
+            content=content,
+            hypothesis=hypothesis[:4000],
+            benchmark_version=self._benchmark_version,
+            source_sessions=tuple(mutation.source_sessions),
+        )
+        return CuratorConversion(candidate=candidate, mutation_kind=mutation.kind, unapplied=unapplied)
+
+    def convert_pending_write(
+        self, pending: "PendingSkillWrite", *, experiment_id: str, candidate_id: str,
+    ) -> CuratorConversion:
+        """Convert a skill write staged by Hermes' ``skills.write_approval`` gate."""
+        payload = pending.payload
+        rationale = pending.summary or f"staged {pending.action} of {pending.skill} ({pending.origin})"
+        if pending.action in {"write_file", "remove_file"} or (
+            pending.action == "patch" and payload.get("file_path") not in (None, "", "SKILL.md")
+        ):
+            raise CuratorMutationRefused(
+                "staged supporting-file writes cannot be converted: candidates currently cover SKILL.md only"
+            )
+        if pending.action == "delete":
+            absorbed_into = payload.get("absorbed_into")
+            raise CuratorMutationRefused(
+                f"staged delete of {pending.skill}"
+                + (f" (absorbed into {absorbed_into})" if absorbed_into else "")
+                + " cannot be converted: skill removal requires a manual operator change"
+            )
+        if pending.action == "create":
+            mutation = CuratorMutation("create", pending.skill, rationale, content=payload.get("content"))
+        elif pending.action == "edit" or (pending.action == "patch" and payload.get("content")):
+            mutation = CuratorMutation("patch", pending.skill, rationale, content=payload.get("content"))
+        else:
+            mutation = CuratorMutation(
+                "patch", pending.skill, rationale,
+                old_string=payload.get("old_string"), new_string=payload.get("new_string"),
+                replace_all=payload.get("replace_all", False),
+            )
+        return self.to_candidate(mutation, experiment_id=experiment_id, candidate_id=candidate_id)
+
+    def _patched_content(self, skill: str, mutation: CuratorMutation) -> str:
+        targeted = mutation.old_string is not None or mutation.new_string is not None
+        if mutation.content is not None and targeted:
+            raise ValueError("a patch supplies either full content or old_string/new_string, not both")
+        if not targeted:
+            return _require_content(mutation, "patch")
+        if not isinstance(mutation.old_string, str) or not mutation.old_string:
+            raise ValueError("targeted patch requires a non-empty old_string")
+        if not isinstance(mutation.new_string, str):
+            raise ValueError("targeted patch requires new_string")
+        if self._repository is None:
+            raise RuntimeError("targeted patches require the candidate repository")
+        current = _production_skill(self._repository, skill)
+        occurrences = current.count(mutation.old_string)
+        if occurrences == 0:
+            raise CuratorMutationRefused(f"old_string does not occur in the production SKILL.md of {skill}")
+        if occurrences > 1 and not mutation.replace_all:
+            raise CuratorMutationRefused(
+                f"old_string occurs {occurrences} times in {skill}; set replace_all for a non-unique patch"
+            )
+        return current.replace(mutation.old_string, mutation.new_string)
+
+
+def _production_skill(repository: Path, skill: str) -> str:
+    """Read the current production SKILL.md from ``main`` without touching any checkout."""
+    result = subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "-C", str(repository),
+         "show", f"refs/heads/main:brain/skills/{skill}/SKILL.md"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_OPTIONAL_LOCKS": "0",
+        },
+    )
+    if result.returncode:
+        raise CuratorMutationRefused(f"production SKILL.md for {skill} does not exist on main")
+    if len(result.stdout) > _MAX_SKILL_BYTES:
+        raise ValueError("production SKILL.md exceeds the 256 KiB limit")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("production SKILL.md is not UTF-8") from exc
+
+
+def _brain_skill_name(name: Any) -> str:
+    validate_curator_skill_name(name)
+    if not _BRAIN_SKILL_NAME.fullmatch(name):
+        raise CuratorMutationRefused(
+            f"skill name {name!r} cannot be mapped to a brain/skills/ directory component"
+        )
+    return name
+
+
+def _require_content(mutation: CuratorMutation, kind: str) -> str:
+    if not isinstance(mutation.content, str) or not mutation.content.strip():
+        raise ValueError(f"Curator {kind} mutations require complete SKILL.md content")
+    return mutation.content
 
 
 def _counter(value: Any, field_name: str) -> int:
