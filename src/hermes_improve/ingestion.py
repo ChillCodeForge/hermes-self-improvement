@@ -147,6 +147,21 @@ class SessionQueue:
                 "SELECT session_id FROM sessions WHERE status='queued' ORDER BY ingested_at LIMIT ?", (limit,)
             )]
 
+    def session_ids(self, limit: int = 1000) -> list[str]:
+        """All recorded session IDs regardless of processing status, oldest first (read-only)."""
+        if not 1 <= limit <= 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        with sqlite3.connect(self.path) as db:
+            return [row[0] for row in db.execute(
+                "SELECT session_id FROM sessions ORDER BY ingested_at, session_id LIMIT ?", (limit,)
+            )]
+
+    def status_counts(self) -> dict[str, int]:
+        with sqlite3.connect(self.path) as db:
+            return dict(db.execute(
+                "SELECT status, COUNT(*) FROM sessions GROUP BY status ORDER BY status"
+            ).fetchall())
+
     def set_status(self, session_id: str, status: str, error: str = "") -> None:
         if status not in {"queued", "processed", "excluded", "failed"}:
             raise ValueError("invalid session queue status")
