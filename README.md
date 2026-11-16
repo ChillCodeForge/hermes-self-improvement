@@ -76,7 +76,8 @@ for evaluation readiness.
 - Paired baseline/candidate evaluation, deterministic hard gates, confidence
   intervals, Ed25519-signed reports, and a Docker runner for explicit
   digest-pinned command benchmarks.
-- A skills-only Git promoter with signed manifests, atomic release-pointer
+- A Git promoter for brain candidates (skills auto-gated, other types behind
+  signed operator approval) with signed manifests, atomic release-pointer
   switching, rollback, post-promotion monitoring with read-only shadow replay
   and promoter-executed rollback (`monitor evaluate --apply`), an
   observability report (`report`), and a Laya decision-history dataset
@@ -84,6 +85,14 @@ for evaluation readiness.
 - CLI creation of immutable skill candidates in isolated Git worktrees/branches
   from operator-supplied `SKILL.md` content, with secret/path checks and atomic
   experiment persistence.
+- A `brain/` tree (skills, prompts, workflows, routing, tool-descriptions, mcp,
+  metadata, tools) with a baseline skill, per-type target path rules for all
+  12 candidate types, and `candidate create --type T --file BRAIN_PATH=FILE`
+  for any type (`docs/git-workflow.md`).
+- Protected `config/*.yaml` (promotion thresholds, per-type auto/manual gates,
+  run-count and evolution defaults), Ed25519-signed operator approvals for
+  manually gated types, `promote <experiment-id>` with SMOKE/CORE/FULL/holdout
+  evidence checks, and an append-only release audit log (`docs/promotion.md`).
 
 Hermes hook ingestion is disabled by default and requires explicit plugin
 enablement/settings. Candidate proposals are not automatically converted
@@ -501,7 +510,7 @@ initial requirement and must never replace promotion gates.
 
 ## Promotion, deployment, and rollback
 
-Skills-only V1 promotion is available through the CLI, not an HTTP service.
+Promotion is available through the CLI, not an HTTP service; see `docs/promotion.md` for the exact checks.
 The promoter creates and hashes an HMAC-signed manifest containing the
 experiment ID, candidate and baseline commits, candidate hash, benchmark and
 policy versions, Full and holdout evidence, summaries, artifact type, release
@@ -560,7 +569,9 @@ hermes-improve benchmarks add FILE --holdout-root HOLDOUT_DIR
 hermes-improve benchmarks mine <session-id>
 hermes-improve benchmarks candidates
 hermes-improve releases list
-hermes-improve promote <candidate-id> --release brain-vN
+hermes-improve releases events [--release brain-vN]
+hermes-improve approve <experiment-id> --operator NAME --rationale TEXT
+hermes-improve promote <experiment-id> [--release brain-vN] [--operator-public-key KEY]
 hermes-improve rollback <release>
 hermes-improve curator status|propose|convert-pending
 hermes-improve monitor ingest|replay|evaluate [--apply]

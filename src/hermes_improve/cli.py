@@ -13,10 +13,12 @@ from . import __version__
 from .artifacts import ArtifactStore
 from .batch_ingestion import load_batch_runner_export
 from .benchmarks import BenchmarkStore
-from .candidate_builder import create_skill_candidate
 from .curator import CuratorAdapter, CuratorMutation
 from .curator_connector import CuratorConnector
 from .decisions import DECISION_TYPES, DecisionRecorder
+from .candidate_builder import create_candidate, create_skill_candidate
+from .config import config_from_environment
+from .approvals import approve_promotion
 from .docker_runner import DockerCommandRunner
 from .hermes_plugin import HookSignalStore
 from .observability import ObservabilityLog, build_report, render_text
@@ -41,6 +43,7 @@ _MAX_CURATOR_REPORT_BYTES = 1024 * 1024
 _MAX_CURATOR_REPORT_RECORDS = 10_000
 _MAX_DREAMING_PROPOSAL_BYTES = 1024 * 1024
 _MAX_DREAMING_PROPOSALS = 5
+_MAX_CANDIDATE_FILE_BYTES = 256 * 1024
 
 
 def _paths() -> tuple[Path, Path]:
@@ -229,6 +232,44 @@ def _load_dreaming_proposal(
     return CandidateType(candidate_type), target, hypothesis
 
 
+def _load_candidate_files(specs: list[str]) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for spec in specs:
+        target, separator, local = spec.partition("=")
+        if not separator or not target or not local:
+            raise ValueError("--file expects BRAIN_PATH=LOCAL_FILE")
+        if target in files:
+            raise ValueError(f"--file names the same brain path twice: {target}")
+        with Path(local).open("rb") as source:
+            raw = source.read(_MAX_CANDIDATE_FILE_BYTES + 1)
+        if len(raw) > _MAX_CANDIDATE_FILE_BYTES:
+            raise ValueError(f"candidate file exceeds the 256 KiB limit: {local}")
+        try:
+            files[target] = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"candidate file must be UTF-8: {local}") from exc
+    return files
+
+
+def _candidate_summary(candidate: Candidate, worktree_root: Path | None) -> dict[str, object]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "experiment_id": candidate.experiment_id,
+        "candidate_type": candidate.candidate_type.value,
+        "candidate_hash": candidate.content_hash,
+        "base_commit": candidate.base_commit,
+        "commit": candidate.commit,
+        "diff_hash": hashlib.sha256(candidate.diff.encode()).hexdigest(),
+        "branch": f"candidate/{candidate.experiment_id}",
+        "worktree": (
+            str(Path(worktree_root).resolve() / candidate.experiment_id)
+            if worktree_root is not None else None
+        ),
+        "target": candidate.target,
+        "status": "awaiting_evaluation",
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -320,9 +361,22 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--repository", type=Path, required=True)
     create.add_argument("--experiment-id", required=True)
     create.add_argument("--candidate-id", required=True)
-    create.add_argument("--type", choices=["SKILL_CREATE", "SKILL_PATCH"])
+    create.add_argument("--type", choices=[kind.value for kind in CandidateType])
     create.add_argument("--target", help="skill directory under brain/skills/")
-    create.add_argument("--content", type=Path, required=True, help="file containing the new SKILL.md text")
+    create.add_argument("--content", type=Path, help="file containing the new SKILL.md text")
+    create.add_argument(
+        "--file", action="append", default=[], metavar="BRAIN_PATH=LOCAL_FILE",
+        help="write LOCAL_FILE to BRAIN_PATH in the candidate (any candidate type; repeatable)",
+    )
+    create.add_argument(
+        "--delete", action="append", default=[], metavar="BRAIN_PATH",
+        help="remove a tracked brain file in the candidate (repeatable)",
+    )
+    create.add_argument(
+        "--worktree-root", type=Path,
+        help="keep the candidate worktree at WORKTREE_ROOT/<experiment-id> (default: temporary)",
+    )
+    create.add_argument("--parent-experiment", help="experiment this candidate revises (lineage)")
     create.add_argument("--hypothesis")
     create.add_argument(
         "--proposal-file", type=Path,
@@ -334,7 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create.add_argument("--source-session", action="append", default=[])
     releases = sub.add_parser("releases")
-    releases.add_argument("release_command", choices=["list"])
+    releases.add_argument("release_command", choices=["list", "events"])
+    releases.add_argument("--release", dest="release_filter", help="limit events to one release")
     monitor = sub.add_parser("monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     observe = monitor_sub.add_parser("ingest")
@@ -354,8 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_replay.add_argument("--limit", type=int, default=20)
     monitor_replay.add_argument("--timeout", type=float, default=600.0)
     promote = sub.add_parser("promote")
-    promote.add_argument("candidate_id")
-    promote.add_argument("--release", required=True)
+    promote.add_argument("candidate_id", metavar="experiment_id", help="experiment ID (or candidate ID)")
+    promote.add_argument("--release", help="release tag brain-vN (default: next free number)")
+    promote.add_argument(
+        "--operator-public-key", type=Path, action="append", default=[],
+        help="trusted operator Ed25519 public key for manual-gate approvals (repeatable)",
+    )
     rollback = sub.add_parser("rollback")
     rollback.add_argument("release")
     for command in (promote, rollback):
@@ -365,6 +424,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--evaluator-public-key", type=Path, required=True)
     for option in ("--repository", "--release-root", "--deployment-link", "--evaluator-public-key"):
         monitor_evaluate.add_argument(option, type=Path)
+    approve = sub.add_parser("approve", help="sign an operator approval for a manually gated experiment")
+    approve.add_argument("experiment_id")
+    approve.add_argument("--operator", required=True)
+    approve.add_argument("--rationale", required=True)
     return parser
 
 
@@ -593,6 +656,32 @@ def main() -> int:
             print(json.dumps(store.show_experiment(args.experiment_id), indent=2))
     elif args.command == "candidates":
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
+    elif args.command == "candidate" and (args.file or args.delete):
+        if any(value is not None for value in (
+            args.content, args.target, args.proposal_file, args.proposal_index,
+        )):
+            raise ValueError("--file/--delete cannot be combined with --content, --target, or --proposal-file")
+        if args.type is None or args.hypothesis is None:
+            raise ValueError("--file/--delete require --type and --hypothesis")
+        config = config_from_environment()
+        candidate_type = CandidateType(args.type)
+        result = create_candidate(
+            args.repository,
+            ExperimentStore(database),
+            experiment_id=args.experiment_id,
+            candidate_id=args.candidate_id,
+            candidate_type=candidate_type,
+            files=_load_candidate_files(args.file),
+            deletions=tuple(args.delete),
+            hypothesis=args.hypothesis,
+            benchmark_version=BenchmarkStore(benchmark_root).version,
+            source_sessions=tuple(args.source_session),
+            policy_version=config.promotion.policy_version,
+            risk=config.taxonomy.candidate_risk[candidate_type],
+            worktree_root=args.worktree_root,
+            parent_experiment_id=args.parent_experiment,
+        )
+        print(json.dumps(_candidate_summary(result, args.worktree_root), indent=2))
     elif args.command == "candidate":
         if args.proposal_file is not None:
             if args.proposal_index is None:
@@ -615,6 +704,8 @@ def main() -> int:
             candidate_type = CandidateType(args.type)
             target = args.target
             hypothesis = args.hypothesis
+        if args.content is None:
+            raise ValueError("--content is required unless --file/--delete are used")
         with args.content.open("rb") as source:
             content_bytes = source.read(256 * 1024 + 1)
         if len(content_bytes) > 256 * 1024:
@@ -635,22 +726,31 @@ def main() -> int:
             hypothesis=hypothesis,
             benchmark_version=benchmark_version,
             source_sessions=tuple(args.source_session),
+            policy_version=config_from_environment().promotion.policy_version,
+            worktree_root=args.worktree_root,
+            parent_experiment_id=args.parent_experiment,
         )
         if args.proposal_file is not None:
             ObservabilityLog(database.parent / "observability.sqlite3").record_proposal_conversion(
                 result.candidate_id
             )
-        print(json.dumps({
-            "candidate_id": result.candidate_id,
-            "experiment_id": result.experiment_id,
-            "candidate_hash": result.content_hash,
-            "base_commit": result.base_commit,
-            "commit": result.commit,
-            "target": result.target,
-            "status": "awaiting_evaluation",
-        }, indent=2))
+        print(json.dumps(_candidate_summary(result, args.worktree_root), indent=2))
+    elif args.command == "releases" and args.release_command == "events":
+        print(json.dumps(ExperimentStore(database).list_release_events(args.release_filter), indent=2))
     elif args.command == "releases":
         print(json.dumps(ExperimentStore(database).list_releases(), indent=2))
+    elif args.command == "approve":
+        key_path = os.environ.get("HERMES_OPERATOR_PRIVATE_KEY")
+        if not key_path:
+            raise RuntimeError("HERMES_OPERATOR_PRIVATE_KEY must name the operator's Ed25519 private key")
+        print(json.dumps(approve_promotion(
+            ExperimentStore(database),
+            args.experiment_id,
+            operator=args.operator,
+            rationale=args.rationale,
+            private_key_pem=Path(key_path).read_bytes(),
+            policy=PromotionPolicy.from_config(config_from_environment().promotion),
+        ), indent=2))
     elif args.command == "curator":
         if args.curator_command == "status":
             print(json.dumps(_curator_status(database, _hermes_home(args.hermes_home)), indent=2))
@@ -727,7 +827,8 @@ def main() -> int:
             raise ValueError(f"monitor evaluate --apply requires {', '.join(missing)}")
         promoter = GitPromoter(
             ExperimentStore(database), args.repository, args.release_root, args.deployment_link,
-            PromotionPolicy(), args.evaluator_public_key.read_bytes(),
+            PromotionPolicy.from_config(config_from_environment().promotion),
+            args.evaluator_public_key.read_bytes(),
         )
         result = monitor.apply(
             args.release, promoter=promoter, manifest_key=manifest_key.encode(),
@@ -836,7 +937,7 @@ def main() -> int:
         evaluator = PairedEvaluator(
             access_store,
             runner,
-            PromotionPolicy(),
+            PromotionPolicy.from_config(config_from_environment().promotion),
             experiment_store=store,
             evaluator_signing_key=Path(private_key_path).read_bytes(),
             artifact_store=artifact_store,
@@ -863,13 +964,18 @@ def main() -> int:
         manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
         if manifest_key is None:
             raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
+        config = config_from_environment()
         promoter = GitPromoter(
             ExperimentStore(database),
             args.repository,
             args.release_root,
             args.deployment_link,
-            PromotionPolicy(),
+            PromotionPolicy.from_config(config.promotion),
             args.evaluator_public_key.read_bytes(),
+            operator_public_keys=[
+                path.read_bytes() for path in getattr(args, "operator_public_key", [])
+            ],
+            config_digest=config.digest,
         )
         if args.command == "promote":
             result = promoter.promote(

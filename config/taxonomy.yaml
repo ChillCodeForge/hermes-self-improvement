@@ -1,0 +1,16 @@
+# Risk class recorded on each experiment, by candidate type.
+schema_version: 1
+candidate_risk:
+  SKILL_CREATE: LOW
+  SKILL_PATCH: LOW
+  SKILL_MERGE: LOW
+  SKILL_SPLIT: LOW
+  TOOL_DESCRIPTION: MEDIUM
+  WORKFLOW: MEDIUM
+  ROUTING: MEDIUM
+  MCP_TOOL_FILTER: MEDIUM
+  MCP_CONFIG: HIGH
+  SYSTEM_PROMPT: HIGH
+  TOOL_CREATE: CRITICAL
+  TOOL_PATCH: CRITICAL
+difficulties: [easy, medium, hard]
