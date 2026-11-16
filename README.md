@@ -545,9 +545,18 @@ The deployment should use separate, least-privilege identities:
 
 Benchmark executions default to network disabled, no production credentials,
 temporary filesystem, CPU/RAM limits, timeouts, and tool-call/turn limits.
-Network access requires an explicit allowlist. These operating-system controls
-are part of the design and must be verified in deployment; they are not implied
-by application-level role names.
+Network access requires an explicit allowlist.
+
+`scripts/provision.sh --root /srv/hermes-improve --install-from .` (Linux, as
+root, idempotent) creates these users, the `hermes-ledger` group, the
+directory layout with owners, modes, and POSIX ACLs, and the signing keys,
+then runs the isolation self-check. Run every command as its role with
+`scripts/hermes-improve-as <agent|evaluator|promoter> <args>`.
+`hermes-improve security check [--role R]` verifies the real permissions
+against the expected matrix; `evaluate`, `candidate import`, `promote`, and
+`rollback` refuse to run when the boundary is violated. The permission
+matrix and the split between kernel-enforced, code-enforced, and operator
+controls are in [docs/security.md](docs/security.md).
 
 ## CLI target
 
@@ -577,13 +586,18 @@ hermes-improve curator status|propose|convert-pending
 hermes-improve monitor ingest|replay|evaluate [--apply]
 hermes-improve report [--json]
 hermes-improve decisions export|backfill
+hermes-improve security check [--role agent|evaluator|promoter] [--production PATH]
+hermes-improve candidate export <candidate-id> --repository REPO --out-dir HANDOFF
+hermes-improve candidate import <candidate-id> --handoff-dir HANDOFF --mirror MIRROR
+hermes-improve candidate sync-baseline --repository REPO --production PRODUCTION
+hermes-improve promote <candidate-id> --release brain-vN --candidate-bundle HANDOFF/<candidate-id>.bundle
 ```
 
 Some workflows require optional Qwen (REM/DEEP) or Docker (command evaluation).
 Candidate Git creation is available for operator-supplied skill text; automatic
 skill generation, a Hermes `batch_runner` execution/evaluation adapter,
 experiment evolution CLI, a bundled Hermes replay runner, production
-observation collection, and identity provisioning are not implemented.
+observation collection are not implemented.
 
 ## Phased delivery
 

@@ -25,6 +25,7 @@ from .observability import ObservabilityLog, build_report, render_text
 from .shadow_replay import CommandReplayRunner, ShadowReplayer
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue, contains_secret_material
+from .isolation import ROLES as ISOLATION_ROLES, check_isolation, enforce_isolation, load_layout, resolve_layout_path
 from .miner import mine_session
 from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
 from .evaluation_signing import report_payload
@@ -33,6 +34,7 @@ from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Spli
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
+from .role_handoff import export_candidate, import_bundle_ref, import_candidate, sync_production_baseline
 from .security import SpentHoldoutRegistry, consume_holdout_generation
 from .store import ExperimentStore
 
@@ -387,6 +389,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="zero-based candidate index in --proposal-file",
     )
     create.add_argument("--source-session", action="append", default=[])
+    export = candidate_sub.add_parser("export", help="agent: write a candidate bundle into the handoff directory")
+    export.add_argument("candidate_id")
+    export.add_argument("--repository", type=Path, required=True, help="agent-owned candidate repository")
+    export.add_argument("--out-dir", type=Path, required=True, help="handoff directory")
+    import_parser = candidate_sub.add_parser("import", help="evaluator: verify a handoff bundle into the ledger")
+    import_parser.add_argument("candidate_id")
+    import_parser.add_argument("--handoff-dir", type=Path, required=True)
+    import_parser.add_argument("--mirror", type=Path, required=True, help="evaluator-owned bare mirror repository")
+    sync = candidate_sub.add_parser("sync-baseline", help="agent: copy production main into the candidate repository")
+    sync.add_argument("--repository", type=Path, required=True)
+    sync.add_argument("--production", type=Path, required=True)
+    security = sub.add_parser("security")
+    security_sub = security.add_subparsers(dest="security_command", required=True)
+    security_check = security_sub.add_parser("check", help="verify OS isolation of the provisioned layout")
+    security_check.add_argument("--role", choices=list(ISOLATION_ROLES))
+    security_check.add_argument("--layout", type=Path, help="layout.json (default: $HERMES_IMPROVE_LAYOUT)")
+    security_check.add_argument(
+        "--production", type=Path, action="append", default=[],
+        help="additional Hermes deployment checkout that must be read-only",
+    )
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list", "events"])
     releases.add_argument("--release", dest="release_filter", help="limit events to one release")
@@ -428,6 +450,10 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("experiment_id")
     approve.add_argument("--operator", required=True)
     approve.add_argument("--rationale", required=True)
+    promote.add_argument(
+        "--candidate-bundle", type=Path,
+        help="handoff bundle to fetch the evaluated candidate branch from before promotion",
+    )
     return parser
 
 
@@ -656,6 +682,35 @@ def main() -> int:
             print(json.dumps(store.show_experiment(args.experiment_id), indent=2))
     elif args.command == "candidates":
         print(json.dumps(ExperimentStore(database).list_candidates(args.limit), indent=2))
+    elif args.command == "security":
+        layout = load_layout(args.layout or resolve_layout_path())
+        report = check_isolation(layout, args.role, production=args.production)
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0 if report.ok else 1
+    elif args.command == "candidate" and args.candidate_command == "export":
+        print(json.dumps(export_candidate(
+            ExperimentStore(database), args.repository, args.candidate_id, args.out_dir,
+        ), indent=2))
+    elif args.command == "candidate" and args.candidate_command == "sync-baseline":
+        commit = sync_production_baseline(args.repository, args.production)
+        print(json.dumps({"main": commit, "status": "synchronized"}, indent=2))
+    elif args.command == "candidate" and args.candidate_command == "import":
+        layout = enforce_isolation("evaluator")
+        _require_role_uid("evaluator")
+        if layout is not None:
+            layout.require_paths({
+                "handoff": args.handoff_dir, "ledger": database.parent,
+            })
+            if args.mirror.resolve() != layout.evaluator_mirror:
+                raise PermissionError(f"--mirror must be the provisioned evaluator mirror {layout.evaluator_mirror}")
+        imported = import_candidate(ExperimentStore(database), args.handoff_dir, args.candidate_id, args.mirror)
+        print(json.dumps({
+            "candidate_id": imported.candidate_id,
+            "experiment_id": imported.experiment_id,
+            "candidate_hash": imported.content_hash,
+            "commit": imported.commit,
+            "status": "imported_awaiting_evaluation",
+        }, indent=2))
     elif args.command == "candidate" and (args.file or args.delete):
         if any(value is not None for value in (
             args.content, args.target, args.proposal_file, args.proposal_index,
@@ -865,7 +920,18 @@ def main() -> int:
             })
         print(json.dumps({"observations": results}, indent=2))
     elif args.command == "evaluate":
+        layout = enforce_isolation("evaluator")
         _require_role_uid("evaluator")
+        if layout is not None:
+            layout.require_paths({
+                "holdout": args.holdout_root,
+                "benchmarks_public": benchmark_root,
+                "ledger": database.parent,
+            })
+            if args.repository.resolve() != layout.evaluator_mirror:
+                raise PermissionError(
+                    f"--repository must be the provisioned evaluator mirror {layout.evaluator_mirror}"
+                )
         private_key_path = os.environ.get("HERMES_EVALUATOR_PRIVATE_KEY")
         if not private_key_path:
             raise RuntimeError("HERMES_EVALUATOR_PRIVATE_KEY must name the evaluator-only Ed25519 private key")
@@ -960,11 +1026,29 @@ def main() -> int:
         )
         print(json.dumps(report_payload(report), indent=2))
     elif args.command in {"promote", "rollback"}:
+        layout = enforce_isolation("promoter")
         _require_role_uid("promoter")
+        if layout is not None:
+            layout.require_paths({
+                "production_repo": args.repository,
+                "releases": args.release_root,
+                "deployment_link": args.deployment_link,
+                "evaluator_public_key": args.evaluator_public_key,
+                "ledger": database.parent,
+            })
         manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
         if manifest_key is None:
             raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
         config = config_from_environment()
+        if args.command == "promote" and args.candidate_bundle is not None:
+            if layout is not None and args.candidate_bundle.resolve().parent != layout.path("handoff"):
+                raise PermissionError("--candidate-bundle must be inside the provisioned handoff directory")
+            pending = ExperimentStore(database).get_candidate(
+                ExperimentStore(database).resolve_promotion_candidate(args.candidate_id)
+            )
+            import_bundle_ref(
+                args.repository, args.candidate_bundle, pending["experiment_id"], pending["commit_id"],
+            )
         promoter = GitPromoter(
             ExperimentStore(database),
             args.repository,
