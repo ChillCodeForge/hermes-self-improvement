@@ -1,30 +1,45 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import math
-import os
 import re
 import shutil
-import subprocess
-import tarfile
 import tempfile
-import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from .artifacts import ArtifactStore
-from .errors import IntegrityError
 from .ingestion import redact_text
 from .models import Benchmark, RunObservation, canonical_json
-from .verifier import verify_deterministic_output
+from .sandbox import (
+    DockerSandboxExecutor,
+    NetworkPolicy,
+    SandboxLimits,
+    compute_changes,
+    export_git_commit,
+    extract_workspace_snapshot,
+    git_tree_digest,
+    unified_diff,
+    validate_argv,
+    validate_relative_path,
+)
+from .verifier import run_deterministic_verification
+from .verifiers import VerificationContext, VerifierRegistry, default_registry
 
 
 _PINNED_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 
 class DockerCommandRunner:
-    """Runs deterministic command benchmarks in a disposable isolated container."""
+    """Runs deterministic command benchmarks in disposable isolated containers.
+
+    The task command and every command-style verifier run in separate hardened
+    containers (see ``DockerSandboxExecutor``). The post-task workspace is
+    exported as a tar snapshot, extracted on the host as plain files only, and
+    inspected read-only by file/diff verifiers.
+    """
+
+    llm_influenced = False
 
     def __init__(
         self,
@@ -36,25 +51,28 @@ class DockerCommandRunner:
         memory_limit: str = "2g",
         cpu_limit: str = "1",
         max_workspace_bytes: int = 100 * 1024 * 1024,
+        network: NetworkPolicy | None = None,
+        verifier_http_allowlist: frozenset[str] = frozenset(),
+        registry: VerifierRegistry | None = None,
     ) -> None:
-        resolved = shutil.which(docker_binary)
-        if resolved is None:
-            raise RuntimeError(f"Docker executable was not found: {docker_binary}")
-        self.docker_binary = resolved
+        if not math.isfinite(default_timeout) or default_timeout <= 0 or max_workspace_bytes < 1:
+            raise ValueError("timeout and workspace limit must be positive")
+        try:
+            self.limits = SandboxLimits(
+                timeout_seconds=default_timeout, memory=memory_limit, cpus=cpu_limit,
+                max_workspace_bytes=max_workspace_bytes,
+            )
+        except ValueError as exc:
+            raise ValueError("Docker memory and CPU limits must be finite positive values") from exc
+        self.docker_binary = docker_binary
         self.repository = Path(repository).resolve()
         self.artifacts = artifacts
         self.default_timeout = default_timeout
-        self.memory_limit = memory_limit
-        self.cpu_limit = cpu_limit
-        self.max_workspace_bytes = max_workspace_bytes
-        if not math.isfinite(default_timeout) or default_timeout <= 0 or max_workspace_bytes < 1:
-            raise ValueError("timeout and workspace limit must be positive")
-        if (
-            not re.fullmatch(r"[1-9][0-9]*[kKmMgG]?", memory_limit)
-            or not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)", cpu_limit)
-            or not math.isfinite(float(cpu_limit)) or float(cpu_limit) <= 0
-        ):
-            raise ValueError("Docker memory and CPU limits must be finite positive values")
+        self.network = network or NetworkPolicy()
+        self.verifier_http_allowlist = frozenset(verifier_http_allowlist)
+        self.registry = registry or default_registry()
+        if shutil.which(docker_binary) is None:
+            raise RuntimeError(f"Docker executable was not found: {docker_binary}")
 
     def run(self, commit: str, benchmark: Benchmark, seed: int) -> RunObservation:
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
@@ -64,95 +82,81 @@ class DockerCommandRunner:
         command = environment.get("command")
         if not isinstance(image, str) or not _PINNED_IMAGE.fullmatch(image):
             raise ValueError("Docker command benchmarks require an image pinned by sha256 digest")
-        if environment.get("network_policy") != "disabled":
-            raise ValueError("Docker runner only supports network_policy=disabled")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(arg, str) and arg and "\x00" not in arg for arg in command
-        ):
+        network = self.network.for_benchmark(environment)
+        if not isinstance(command, list):
             raise ValueError("benchmark environment.command must be a non-empty argv array")
+        try:
+            argv = validate_argv(command)
+        except ValueError as exc:
+            raise ValueError("benchmark environment.command must be a non-empty argv array") from exc
         cwd = environment.get("cwd", ".")
         if not isinstance(cwd, str):
             raise ValueError("benchmark environment.cwd must be a relative path")
-        cwd_path = PurePosixPath(cwd)
-        if cwd_path.is_absolute() or any(part in {"..", ""} for part in cwd_path.parts):
-            raise ValueError("benchmark cwd must not escape the candidate workspace")
+        try:
+            cwd_path = validate_relative_path(cwd, label="benchmark cwd")
+        except ValueError as exc:
+            raise ValueError("benchmark cwd must not escape the candidate workspace") from exc
         timeout = float(environment.get("timeout_seconds", self.default_timeout))
         if not math.isfinite(timeout) or timeout <= 0 or timeout > self.default_timeout:
             raise ValueError("benchmark timeout must be positive and within the evaluator limit")
-        expected_exit = benchmark.ground_truth.get("expected_exit_code", 0)
-        if isinstance(expected_exit, bool) or not isinstance(expected_exit, int):
-            raise ValueError("ground_truth.expected_exit_code must be an integer")
-        workspace_digest = self._tree_digest(commit)
+        workspace_digest = git_tree_digest(self.repository, commit, self.limits.max_workspace_bytes)
         environment_digest = hashlib.sha256(canonical_json({
             "image": image,
             "dependency_digest": environment.get("dependency_digest"),
             "command": command,
             "cwd": cwd,
-            "network": "disabled",
+            "network": "disabled" if network.mode == "disabled" else network.describe(),
         }).encode()).hexdigest()
+        executor = DockerSandboxExecutor(image, self.limits, docker_binary=self.docker_binary, network=network)
         with tempfile.TemporaryDirectory(prefix="hermes-eval-") as temporary:
             root = Path(temporary)
             source = root / "candidate"
             source.mkdir(mode=0o755)
-            self._export_commit(commit, source)
-            cidfile = root / "container.id"
-            argv = [
-                self.docker_binary, "run", "--rm", "--pull=never",
-                "--network=none", "--read-only", "--user=65534:65534",
-                "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                "--pids-limit=128", "--memory", self.memory_limit,
-                "--cpus", self.cpu_limit, "--ipc=none",
-                "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-                "--tmpfs", "/workspace:rw,nosuid,nodev,size=128m,mode=1777",
-                "--mount", f"type=bind,source={source},target=/input,readonly",
-                "--cidfile", str(cidfile),
-                "--env", f"HERMES_EVAL_SEED={seed}",
-                "--workdir", "/workspace",
-                "--entrypoint", "/bin/sh",
-                image, "-c",
-                'cp -R /input/. /workspace/ && cd "$1" && shift && exec "$@"',
-                "hermes-eval", str(cwd_path), *command,
-            ]
-            started = time.monotonic()
-            try:
-                result = subprocess.run(
-                    argv,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=timeout,
-                    check=False,
-                    env={
-                        "PATH": os.environ.get("PATH", ""),
-                        "HOME": os.environ.get("HOME", ""),
-                        "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", ""),
-                    },
-                )
-                exit_code = result.returncode
-                output = result.stdout[-16000:]
-            except subprocess.TimeoutExpired as exc:
-                self._kill_timed_out_container(cidfile)
-                exit_code = 124
-                output = str(exc.stdout or "")[-16000:] + "\nbenchmark timed out"
-            latency_ms = (time.monotonic() - started) * 1000
-            if exit_code in {125, 126, 127}:
-                raise RuntimeError(f"Docker failed to execute benchmark: {redact_text(output)}")
-            passed, quality, verifier_results = verify_deterministic_output(
-                benchmark, exit_code=exit_code, output=output
+            export_git_commit(self.repository, commit, source)
+            result = executor.execute(
+                argv, input_root=source, cwd=str(cwd_path), timeout=timeout,
+                env={"HERMES_EVAL_SEED": str(seed)}, snapshot_dir=root / "output",
             )
-            output = redact_text(output)
+            workspace = root / "result"
+            special: tuple[str, ...] = ()
+            if result.snapshot is not None:
+                special = extract_workspace_snapshot(
+                    result.snapshot, workspace,
+                    max_bytes=self.limits.max_workspace_bytes,
+                    max_entries=self.limits.max_snapshot_entries,
+                )
+            else:
+                workspace.mkdir()
+            context = VerificationContext(
+                exit_code=result.exit_code,
+                output=result.output,
+                workspace=workspace,
+                source=source,
+                executor=executor,
+                http_allowlist=self.verifier_http_allowlist,
+                special_entries=special,
+                command_timeout=timeout,
+            )
+            verification = run_deterministic_verification(benchmark, context, self.registry)
+            changes = compute_changes(source, workspace, special)
+            diff = unified_diff(source, workspace, changes) if result.snapshot is not None else ""
+            diff_digest, _ = self.artifacts.put(redact_text(diff).encode("utf-8"))
+            output = redact_text(result.output)
             payload = json.dumps({
                 "task_id": benchmark.id,
                 "commit": commit,
                 "seed": seed,
-                "exit_code": exit_code,
-                "deterministic_pass": passed,
-                "quality": quality,
-                "verifier_results": verifier_results,
+                "exit_code": result.exit_code,
+                "timed_out": result.timed_out,
+                "deterministic_pass": verification.passed,
+                "quality": verification.quality,
+                "verifier_results": verification.details(),
+                "filesystem_changes": list(changes.entries()),
+                "diff_sha256": diff_digest,
                 "output": output,
                 "workspace_digest": workspace_digest,
                 "environment_digest": environment_digest,
+                "limits": self.limits.digest,
             }, sort_keys=True).encode()
             artifact_digest, _ = self.artifacts.put(payload)
         return RunObservation(
@@ -160,88 +164,18 @@ class DockerCommandRunner:
             commit=commit,
             seed=seed,
             environment_digest=environment_digest,
-            success=passed,
-            quality=quality,
+            success=verification.passed,
+            quality=verification.quality,
             tokens=0,
-            latency_ms=latency_ms,
-            deterministic_pass=passed,
+            latency_ms=result.duration_ms,
+            deterministic_pass=verification.passed,
             security_pass=True,
-            exit_code=exit_code,
+            exit_code=result.exit_code,
             final_output=output,
-            artifact_digests=(artifact_digest,),
+            artifact_digests=(artifact_digest, diff_digest),
+            exit_state="timeout" if result.timed_out else "exited",
+            limits_digest=self.limits.digest,
+            verifier_results=tuple(verification.summaries()),
+            filesystem_changes=changes.entries(),
+            diff_digest=diff_digest,
         )
-
-    def _tree_digest(self, commit: str) -> str:
-        output = subprocess.run(
-            ["git", "-c", "core.hooksPath=/dev/null", "-C", str(self.repository), "ls-tree", "-r", "-l", commit],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            check=False, env=self._git_env(),
-        )
-        if output.returncode:
-            raise RuntimeError(f"cannot inspect Git commit: {output.stderr.decode(errors='replace')}")
-        total = 0
-        for line in output.stdout.decode().splitlines():
-            metadata, separator, _path = line.partition("\t")
-            fields = metadata.split()
-            if not separator or len(fields) < 3:
-                raise IntegrityError("Git returned an invalid tree entry")
-            if fields[0] == "120000":
-                raise IntegrityError("candidate source archives may not contain symbolic links")
-            if len(fields) >= 4 and fields[3].isdigit():
-                total += int(fields[3])
-        if total > self.max_workspace_bytes:
-            raise IntegrityError("candidate source exceeds the configured workspace size limit")
-        return hashlib.sha256(output.stdout).hexdigest()
-
-    def _export_commit(self, commit: str, destination: Path) -> None:
-        result = subprocess.run(
-            ["git", "-c", "core.hooksPath=/dev/null", "-C", str(self.repository), "archive", "--format=tar", commit],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            check=False, env=self._git_env(),
-        )
-        if result.returncode:
-            raise RuntimeError(f"cannot export Git commit: {result.stderr.decode(errors='replace')}")
-        with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
-            root = destination.resolve()
-            for member in archive:
-                relative = PurePosixPath(member.name)
-                if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-                    raise IntegrityError(f"unsafe path in candidate archive: {member.name!r}")
-                target = root.joinpath(*relative.parts)
-                if root not in target.resolve().parents and target.resolve() != root:
-                    raise IntegrityError(f"archive path escapes candidate workspace: {member.name!r}")
-                if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True, mode=0o755)
-                    continue
-                if not member.isfile():
-                    raise IntegrityError(f"unsupported archive object: {member.name!r}")
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-                source = archive.extractfile(member)
-                if source is None:
-                    raise IntegrityError(f"archive object has no data: {member.name!r}")
-                mode = 0o755 if member.mode & 0o111 else 0o644
-                with target.open("xb") as output:
-                    shutil.copyfileobj(source, output)
-                target.chmod(mode)
-
-    def _kill_timed_out_container(self, cidfile: Path) -> None:
-        if not cidfile.exists():
-            return
-        container_id = cidfile.read_text(encoding="ascii").strip()
-        if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
-            raise IntegrityError("Docker wrote an invalid container ID file")
-        subprocess.run(
-            [self.docker_binary, "kill", container_id],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=10, check=False,
-        )
-
-    @staticmethod
-    def _git_env() -> dict[str, str]:
-        return {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_OPTIONAL_LOCKS": "0",
-        }

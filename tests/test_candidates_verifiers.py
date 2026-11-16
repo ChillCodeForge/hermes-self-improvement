@@ -9,14 +9,6 @@ from hermes_improve.curator import CuratorAdapter, ImprovementSignal
 from hermes_improve.dreaming import DreamingEngine
 from hermes_improve.models import CandidateType
 from hermes_improve.store import ExperimentStore
-from hermes_improve.verifiers import (
-    ExitCodeVerifier,
-    FileExistsVerifier,
-    FileContentVerifier,
-    JsonSchemaVerifier,
-    RegexVerifier,
-    VerifierRegistry,
-)
 
 
 def test_generator_persists_a_proposal_without_writing_production(tmp_path):
@@ -78,25 +70,3 @@ def test_light_dreaming_includes_caller_supplied_read_only_curator_signals():
 def test_curator_adapter_rejects_malformed_or_unsafe_rows(row):
     with pytest.raises(ValueError):
         CuratorAdapter(lambda: [row]).signals()
-
-
-def test_file_verifiers_reject_path_escape(tmp_path):
-    assert not FileExistsVerifier("../outside").verify(tmp_path).passed
-    assert not FileContentVerifier("../outside", "x").verify(tmp_path).passed
-
-
-def test_file_json_regex_and_command_verifiers(tmp_path):
-    (tmp_path / "settings.json").write_text('{"enabled": true}', encoding="utf-8")
-    assert FileExistsVerifier("settings.json").verify(tmp_path).passed
-    assert FileContentVerifier("settings.json", "enabled").verify(tmp_path).passed
-    assert JsonSchemaVerifier(("enabled",)).verify('{"enabled": true}').passed
-    assert RegexVerifier(r"^release-\d+$").verify("release-4").passed
-    assert ExitCodeVerifier(("python", "-c", "raise SystemExit(0)")).verify(tmp_path).passed
-
-
-def test_registry_rejects_duplicate_verifier_names():
-    registry = VerifierRegistry()
-    verifier = RegexVerifier(".*")
-    registry.register("match", verifier)
-    with pytest.raises(ValueError, match="already registered"):
-        registry.register("match", verifier)

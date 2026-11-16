@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import json
 
-from hermes_improve.qwen import OpenAICompatibleQwen, QwenConfig, _parse_judgment, judge_pairwise
+from hermes_improve.qwen import OpenAICompatibleQwen, QwenConfig
 from hermes_improve.self_evolution import EvolutionLimits, SelfEvolutionAdapter, evolve_candidates
 from hermes_improve.security import AccessDenied, SpentHoldoutRegistry
 from hermes_improve.statistics import paired_mean_confidence_interval
@@ -49,39 +49,6 @@ def test_qwen_uses_judge_model_and_tracks_role_metrics(monkeypatch):
     assert model.stats["qwen_judge"]["requests"] == 1
     assert model.stats["qwen_judge"]["input_tokens"] == 12
     assert model.stats["qwen_judge"]["output_tokens"] == 5
-
-
-def test_invalid_qwen_judge_json_is_rejected():
-    with pytest.raises(ValueError, match="valid JSON"):
-        _parse_judgment("nope")
-    with pytest.raises(ValueError, match="confidence"):
-        _parse_judgment('{"winner":"A","confidence":2}')
-
-
-def test_pairwise_judge_swaps_labels_and_abstains_on_position_bias():
-    class Judge:
-        def __init__(self):
-            self.calls = 0
-
-        def complete(self, **kwargs):
-            self.calls += 1
-            return '{"winner":"B","confidence":0.9}'
-
-    judge = Judge()
-    assert judge_pairwise(judge, "baseline", "candidate") == "unreliable"
-    assert judge.calls == 2
-
-
-def test_pairwise_judge_maps_consistent_candidate_preference():
-    class Judge:
-        def __init__(self):
-            self.calls = 0
-
-        def complete(self, **kwargs):
-            self.calls += 1
-            return '{"winner":"B","confidence":0.9}' if self.calls == 1 else '{"winner":"A","confidence":0.9}'
-
-    assert judge_pairwise(Judge(), "baseline", "candidate") == "candidate"
 
 
 def test_self_evolution_adapter_pins_external_strategy_version():

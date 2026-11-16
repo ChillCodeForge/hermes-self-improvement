@@ -34,6 +34,8 @@ def benchmark(identifier, split, cluster, suites):
 
 
 class FixtureRunner:
+    llm_influenced = False
+
     def __init__(self, *, bad_commit=None):
         self.calls = []
         self.bad_commit = bad_commit
@@ -46,13 +48,14 @@ class FixtureRunner:
             commit=commit,
             seed=seed,
             environment_digest="fixture-digest",
-            success=True,
+            success=commit != self.bad_commit,
             quality=10 if is_candidate else 5,
             tokens=100,
             latency_ms=20,
             deterministic_pass=commit != self.bad_commit,
             security_pass=True,
             tool_calls=2,
+            verifier_results=({"type": "unit-test", "passed": commit != self.bad_commit},),
         )
 
 

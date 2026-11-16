@@ -1,13 +1,75 @@
+"""Deterministic verification of one benchmark run through the verifier registry."""
+
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from .models import Benchmark, canonical_json
+from .models import Benchmark
+from .verifiers import (
+    MAX_CHECKS,
+    ExitCodeVerifier,
+    VerificationContext,
+    VerificationResult,
+    VerifierRegistry,
+    default_registry,
+)
 
 
-_MAX_CHECKS = 64
+@dataclass(frozen=True)
+class DeterministicVerification:
+    passed: bool
+    quality: float
+    results: tuple[VerificationResult, ...]
+
+    def summaries(self) -> list[dict[str, Any]]:
+        return [result.summary() for result in self.results]
+
+    def details(self) -> list[dict[str, Any]]:
+        return [{**result.summary(), "detail": result.detail} for result in self.results]
+
+
+def expected_exit_code(benchmark: Benchmark) -> int:
+    expected = benchmark.ground_truth.get("expected_exit_code", 0)
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        raise ValueError("ground_truth.expected_exit_code must be an integer")
+    return expected
+
+
+def has_deterministic_verification(benchmark: Benchmark) -> bool:
+    checks = benchmark.verification.get("deterministic", [])
+    return isinstance(checks, list) and bool(checks)
+
+
+def build_verifiers(benchmark: Benchmark, registry: VerifierRegistry | None = None) -> tuple:
+    """Create the benchmark's verifiers; an implicit exit-code check is always included."""
+    registry = registry or default_registry()
+    expected_exit = expected_exit_code(benchmark)
+    verifiers = list(registry.build(benchmark.verification.get("deterministic", [])))
+    exit_checks = [item for item in verifiers if isinstance(item, ExitCodeVerifier)]
+    for check in exit_checks:
+        if check.expected != expected_exit:
+            raise ValueError("exit_code verifier must match ground_truth.expected_exit_code")
+    if not exit_checks:
+        if len(verifiers) >= MAX_CHECKS:
+            raise ValueError(f"at most {MAX_CHECKS} effective deterministic checks are supported")
+        verifiers.insert(0, ExitCodeVerifier(expected_exit))
+    return tuple(verifiers)
+
+
+def run_deterministic_verification(
+    benchmark: Benchmark,
+    context: VerificationContext,
+    registry: VerifierRegistry | None = None,
+) -> DeterministicVerification:
+    verifiers = build_verifiers(benchmark, registry)
+    results = tuple(verifier.verify(context) for verifier in verifiers)
+    passed_count = sum(result.passed for result in results)
+    return DeterministicVerification(
+        passed=passed_count == len(results),
+        quality=100.0 * passed_count / len(results),
+        results=results,
+    )
 
 
 def verify_deterministic_output(
@@ -16,120 +78,8 @@ def verify_deterministic_output(
     exit_code: int,
     output: str,
 ) -> tuple[bool, float, list[dict[str, Any]]]:
-    """Run bounded, declarative checks against captured command output."""
-    expected_exit = benchmark.ground_truth.get("expected_exit_code", 0)
-    if isinstance(expected_exit, bool) or not isinstance(expected_exit, int):
-        raise ValueError("ground_truth.expected_exit_code must be an integer")
-
-    raw_checks = benchmark.verification.get("deterministic", [])
-    if not isinstance(raw_checks, list) or len(raw_checks) > _MAX_CHECKS:
-        raise ValueError(f"verification.deterministic must be an array of at most {_MAX_CHECKS} checks")
-
-    checks: list[tuple[str, Any, Any]] = []
-    has_exit_check = False
-    for raw in raw_checks:
-        if isinstance(raw, str):
-            check_type, expected, path = raw, None, None
-        elif isinstance(raw, Mapping):
-            check_type = raw.get("type")
-            expected = raw.get("expected")
-            path = raw.get("path")
-        else:
-            raise ValueError("deterministic checks must be names or objects")
-        if not isinstance(check_type, str):
-            raise ValueError("deterministic check objects require a string type")
-        if check_type == "exit_code":
-            has_exit_check = True
-            if expected is None:
-                if isinstance(raw, Mapping) and "expected" in raw:
-                    raise ValueError("exit_code verifier expected value must be an integer")
-                expected = expected_exit
-            if isinstance(expected, bool) or not isinstance(expected, int):
-                raise ValueError("exit_code verifier expected value must be an integer")
-            if expected != expected_exit:
-                raise ValueError("exit_code verifier must match ground_truth.expected_exit_code")
-        elif check_type in {"output_exact", "output_contains", "output_not_contains"}:
-            if not isinstance(expected, str):
-                raise ValueError(f"{check_type} verifier expected value must be a string")
-        elif check_type == "json_output_equals":
-            if not isinstance(raw, Mapping) or "expected" not in raw:
-                raise ValueError("json_output_equals verifier requires an expected value")
-        elif check_type == "json_required_keys":
-            if (
-                not isinstance(expected, list) or not expected
-                or len(expected) > _MAX_CHECKS
-                or not all(isinstance(key, str) and key for key in expected)
-                or len(set(expected)) != len(expected)
-            ):
-                raise ValueError("json_required_keys verifier requires a non-empty array of unique strings")
-        elif check_type == "json_path_exists":
-            if not isinstance(path, list) or not path:
-                raise ValueError("json_path_exists verifier requires a non-empty path array")
-            if any(isinstance(part, bool) or not isinstance(part, (str, int)) for part in path):
-                raise ValueError("json_path_exists path elements must be strings or integers")
-        elif check_type == "json_path_equals":
-            if not isinstance(path, list) or not path:
-                raise ValueError("json_path_equals verifier requires a non-empty path array")
-            if any(isinstance(part, bool) or not isinstance(part, (str, int)) for part in path):
-                raise ValueError("json_path_equals path elements must be strings or integers")
-            if not isinstance(raw, Mapping) or "expected" not in raw:
-                raise ValueError("json_path_equals verifier requires an expected value")
-        else:
-            raise ValueError(f"unsupported deterministic verifier: {check_type!r}")
-        checks.append((check_type, expected, path))
-
-    if not has_exit_check and len(checks) >= _MAX_CHECKS:
-        raise ValueError(f"at most {_MAX_CHECKS} effective deterministic checks are supported")
-    if not has_exit_check:
-        checks.insert(0, ("exit_code", expected_exit, None))
-
-    results: list[dict[str, Any]] = []
-    for check_type, expected, path in checks:
-        passed = _check(check_type, expected, path, exit_code, output)
-        results.append({"type": check_type, "passed": passed})
-    passed_count = sum(result["passed"] for result in results)
-    return passed_count == len(results), 100.0 * passed_count / len(results), results
-
-
-def _check(check_type: str, expected: Any, path: Any, exit_code: int, output: str) -> bool:
-    if check_type == "exit_code":
-        return exit_code == expected
-    if check_type == "output_exact":
-        return output == expected
-    if check_type == "output_contains":
-        return expected in output
-    if check_type == "output_not_contains":
-        return expected not in output
-
-    try:
-        parsed = json.loads(output, parse_constant=_reject_nonstandard_constant)
-    except (ValueError, TypeError):
-        return False
-    if check_type == "json_output_equals":
-        return canonical_json(parsed) == canonical_json(expected)
-    if check_type == "json_required_keys":
-        return isinstance(parsed, Mapping) and all(key in parsed for key in expected)
-    if check_type == "json_path_exists":
-        found, _value = _resolve_path(parsed, path)
-        return found
-    if check_type == "json_path_equals":
-        found, value = _resolve_path(parsed, path)
-        if not found:
-            return False
-        return canonical_json(value) == canonical_json(expected)
-    raise AssertionError(f"unhandled verifier {check_type!r}")
-
-
-def _resolve_path(value: Any, path: list[Any]) -> tuple[bool, Any]:
-    for part in path:
-        if isinstance(value, Mapping) and isinstance(part, str) and part in value:
-            value = value[part]
-        elif isinstance(value, list) and isinstance(part, int) and 0 <= part < len(value):
-            value = value[part]
-        else:
-            return False, None
-    return True, value
-
-
-def _reject_nonstandard_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant: {value}")
+    """Run output-only checks; workspace or command checks raise a configuration error."""
+    outcome = run_deterministic_verification(
+        benchmark, VerificationContext(exit_code=exit_code, output=output)
+    )
+    return outcome.passed, outcome.quality, outcome.summaries()
