@@ -14,6 +14,7 @@ from .batch_ingestion import load_batch_runner_export
 from .benchmarks import BenchmarkStore
 from .candidate_builder import create_candidate, create_skill_candidate
 from .config import config_from_environment
+from .approvals import approve_promotion
 from .curator import CuratorAdapter
 from .docker_runner import DockerCommandRunner
 from .dreaming import DreamingEngine
@@ -334,14 +335,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create.add_argument("--source-session", action="append", default=[])
     releases = sub.add_parser("releases")
-    releases.add_argument("release_command", choices=["list"])
+    releases.add_argument("release_command", choices=["list", "events"])
+    releases.add_argument("--release", dest="release_filter", help="limit events to one release")
     monitor = sub.add_parser("monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     observe = monitor_sub.add_parser("ingest")
     observe.add_argument("observations", type=Path)
     promote = sub.add_parser("promote")
-    promote.add_argument("candidate_id")
-    promote.add_argument("--release", required=True)
+    promote.add_argument("candidate_id", metavar="experiment_id", help="experiment ID (or candidate ID)")
+    promote.add_argument("--release", help="release tag brain-vN (default: next free number)")
+    promote.add_argument(
+        "--operator-public-key", type=Path, action="append", default=[],
+        help="trusted operator Ed25519 public key for manual-gate approvals (repeatable)",
+    )
     rollback = sub.add_parser("rollback")
     rollback.add_argument("release")
     for command in (promote, rollback):
@@ -349,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--release-root", type=Path, required=True)
         command.add_argument("--deployment-link", type=Path, required=True)
         command.add_argument("--evaluator-public-key", type=Path, required=True)
+    approve = sub.add_parser("approve", help="sign an operator approval for a manually gated experiment")
+    approve.add_argument("experiment_id")
+    approve.add_argument("--operator", required=True)
+    approve.add_argument("--rationale", required=True)
     return parser
 
 
@@ -578,8 +588,22 @@ def main() -> int:
             parent_experiment_id=args.parent_experiment,
         )
         print(json.dumps(_candidate_summary(result, args.worktree_root), indent=2))
+    elif args.command == "releases" and args.release_command == "events":
+        print(json.dumps(ExperimentStore(database).list_release_events(args.release_filter), indent=2))
     elif args.command == "releases":
         print(json.dumps(ExperimentStore(database).list_releases(), indent=2))
+    elif args.command == "approve":
+        key_path = os.environ.get("HERMES_OPERATOR_PRIVATE_KEY")
+        if not key_path:
+            raise RuntimeError("HERMES_OPERATOR_PRIVATE_KEY must name the operator's Ed25519 private key")
+        print(json.dumps(approve_promotion(
+            ExperimentStore(database),
+            args.experiment_id,
+            operator=args.operator,
+            rationale=args.rationale,
+            private_key_pem=Path(key_path).read_bytes(),
+            policy=PromotionPolicy.from_config(config_from_environment().promotion),
+        ), indent=2))
     elif args.command == "monitor":
         observations = _load_observations(args.observations)
         monitor = ReleaseMonitor(database.parent / "monitoring.sqlite3", ExperimentStore(database))
@@ -669,7 +693,7 @@ def main() -> int:
         evaluator = PairedEvaluator(
             access_store,
             runner,
-            PromotionPolicy(),
+            PromotionPolicy.from_config(config_from_environment().promotion),
             experiment_store=store,
             evaluator_signing_key=Path(private_key_path).read_bytes(),
             artifact_store=artifact_store,
@@ -696,13 +720,18 @@ def main() -> int:
         manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
         if manifest_key is None:
             raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
+        config = config_from_environment()
         promoter = GitPromoter(
             ExperimentStore(database),
             args.repository,
             args.release_root,
             args.deployment_link,
-            PromotionPolicy(),
+            PromotionPolicy.from_config(config.promotion),
             args.evaluator_public_key.read_bytes(),
+            operator_public_keys=[
+                path.read_bytes() for path in getattr(args, "operator_public_key", [])
+            ],
+            config_digest=config.digest,
         )
         if args.command == "promote":
             result = promoter.promote(

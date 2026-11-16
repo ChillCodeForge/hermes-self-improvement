@@ -11,6 +11,7 @@ from .errors import IntegrityError
 from .ingestion import contains_secret_material
 from .miner import BenchmarkCandidate
 from .models import Candidate, EvaluationReport, candidate_digest, canonical_json, utc_now
+from .models import RELEASE_TRANSITIONS, ReleaseStatus
 
 
 class ExperimentStore:
@@ -140,6 +141,7 @@ class ExperimentStore:
             ):
                 if column not in benchmark_candidate_columns:
                     db.execute(f"ALTER TABLE benchmark_candidates ADD COLUMN {column} {definition}")
+            db.executescript(_PROMOTION_AUDIT_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30)
@@ -442,7 +444,7 @@ class ExperimentStore:
         self, release_id: str, experiment_id: str, candidate_hash: str,
         status: str, manifest: dict[str, Any],
     ) -> None:
-        if status not in {"PROVISIONAL", "STABLE", "ROLLED_BACK"}:
+        if status not in {item.value for item in ReleaseStatus}:
             raise ValueError("invalid release status")
         with self._lock, self._connect() as db:
             db.execute(
@@ -456,7 +458,7 @@ class ExperimentStore:
             )
 
     def update_release_status(self, release_id: str, status: str) -> None:
-        if status not in {"PROVISIONAL", "STABLE", "ROLLED_BACK"}:
+        if status not in {item.value for item in ReleaseStatus}:
             raise ValueError("invalid release status")
         with self._lock, self._connect() as db:
             cursor = db.execute("UPDATE releases SET status=? WHERE id=?", (status, release_id))
@@ -515,3 +517,258 @@ class ExperimentStore:
             result = dict(row)
             result["manifest"] = json.loads(result.pop("manifest_json"))
             return result
+
+    # --- Promotion evidence, operator approvals and release audit (WP-A) ---
+
+    def candidate_evaluations(self, candidate_id: str) -> list[dict[str, Any]]:
+        """All evaluation runs of a candidate, oldest first, with task results
+        and run observations (the evidence a promoter must re-verify)."""
+        with self._connect() as db:
+            if db.execute("SELECT 1 FROM candidates WHERE id=?", (candidate_id,)).fetchone() is None:
+                raise KeyError(candidate_id)
+            runs = []
+            for evaluation in db.execute(
+                "SELECT * FROM evaluation_runs WHERE candidate_id=? ORDER BY created_at, rowid",
+                (candidate_id,),
+            ).fetchall():
+                results = [
+                    {**dict(row), "result": json.loads(row["result_json"])}
+                    for row in db.execute(
+                        "SELECT * FROM task_results WHERE evaluation_id=? ORDER BY task_id",
+                        (evaluation["id"],),
+                    )
+                ]
+                observations = [
+                    json.loads(row["observation_json"])
+                    for row in db.execute(
+                        """SELECT observation_json FROM run_observations
+                           WHERE evaluation_id=? ORDER BY task_id,commit_id,seed""",
+                        (evaluation["id"],),
+                    )
+                ]
+                runs.append({
+                    "evaluation": dict(evaluation),
+                    "task_results": results,
+                    "run_observations": observations,
+                })
+            return runs
+
+    def resolve_promotion_candidate(self, identifier: str) -> str:
+        """Resolve an experiment ID (preferred) or a candidate ID to a candidate ID."""
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise ValueError("promotion requires an experiment or candidate ID")
+        with self._connect() as db:
+            by_experiment = [
+                row["id"] for row in db.execute(
+                    "SELECT id FROM candidates WHERE experiment_id=? ORDER BY created_at", (identifier,)
+                )
+            ]
+            experiment = db.execute("SELECT 1 FROM experiments WHERE id=?", (identifier,)).fetchone()
+            by_candidate = db.execute("SELECT id FROM candidates WHERE id=?", (identifier,)).fetchone()
+        if experiment is not None:
+            if len(by_experiment) != 1:
+                raise ValueError(
+                    f"experiment {identifier!r} has {len(by_experiment)} candidates; promote by candidate ID"
+                )
+            if by_candidate is not None and by_candidate["id"] != by_experiment[0]:
+                raise ValueError(f"identifier {identifier!r} is ambiguous between an experiment and a candidate")
+            return by_experiment[0]
+        if by_candidate is not None:
+            return by_candidate["id"]
+        raise KeyError(identifier)
+
+    def record_promotion_approval(self, payload: dict[str, Any], signature: str) -> int:
+        """Append a signed operator approval. Approvals are never updated or deleted."""
+        required = {
+            "schema_version", "purpose", "experiment_id", "candidate_id", "candidate_hash",
+            "candidate_type", "policy_version", "operator", "rationale",
+            "operator_key_fingerprint", "approved_at",
+        }
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ValueError("promotion approval payload has an invalid field set")
+        if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{128}", signature):
+            raise ValueError("promotion approval signature must be a hex Ed25519 signature")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidate = db.execute(
+                "SELECT experiment_id, content_hash, candidate_type FROM candidates WHERE id=?",
+                (payload["candidate_id"],),
+            ).fetchone()
+            if candidate is None:
+                raise KeyError(payload["candidate_id"])
+            if (
+                candidate["experiment_id"] != payload["experiment_id"]
+                or candidate["content_hash"] != payload["candidate_hash"]
+                or candidate["candidate_type"] != payload["candidate_type"]
+            ):
+                raise IntegrityError("approval does not match the immutable candidate record")
+            cursor = db.execute(
+                """INSERT INTO promotion_approvals
+                   (experiment_id,candidate_id,candidate_hash,policy_version,operator,
+                    key_fingerprint,payload_json,signature,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (payload["experiment_id"], payload["candidate_id"], payload["candidate_hash"],
+                 payload["policy_version"], payload["operator"], payload["operator_key_fingerprint"],
+                 canonical_json(payload), signature, utc_now()),
+            )
+            return int(cursor.lastrowid)
+
+    def list_promotion_approvals(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            return [
+                {
+                    "id": row["id"],
+                    "payload": json.loads(row["payload_json"]),
+                    "signature": row["signature"],
+                    "created_at": row["created_at"],
+                }
+                for row in db.execute(
+                    "SELECT * FROM promotion_approvals WHERE experiment_id=? ORDER BY id", (experiment_id,)
+                )
+            ]
+
+    def record_promotion_release(
+        self, release_id: str, experiment_id: str, candidate_hash: str,
+        manifest: dict[str, Any], *, actor: str = "promoter",
+    ) -> None:
+        """Record a promoted release as PROVISIONAL, mark the experiment
+        promoted, and append the audit event in one transaction."""
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """INSERT INTO releases (id,experiment_id,candidate_hash,status,manifest_json,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (release_id, experiment_id, candidate_hash, ReleaseStatus.PROVISIONAL.value,
+                 canonical_json(manifest), utc_now()),
+            )
+            db.execute(
+                "UPDATE experiments SET decision='promoted',finished_at=? WHERE id=?",
+                (utc_now(), experiment_id),
+            )
+            self._append_release_event(
+                db, release_id, "PROMOTED", None, ReleaseStatus.PROVISIONAL.value,
+                {"actor": actor, "experiment_id": experiment_id, "candidate_hash": candidate_hash,
+                 "candidate_commit": manifest.get("candidate_commit"),
+                 "baseline_commit": manifest.get("baseline_commit")},
+            )
+
+    def record_rollback(
+        self, active_commit: str, target_release_id: str, detail: dict[str, Any],
+    ) -> str | None:
+        """Mark the release owning ``active_commit`` ROLLED_BACK and re-activate
+        ``target_release_id`` as PROVISIONAL, with audit events, atomically.
+        Returns the rolled-back release ID (``None`` if the commit had none)."""
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            target = db.execute("SELECT status FROM releases WHERE id=?", (target_release_id,)).fetchone()
+            if target is None:
+                raise KeyError(target_release_id)
+            active_ids = [
+                row["id"] for row in db.execute("SELECT id,manifest_json FROM releases")
+                if json.loads(row["manifest_json"]).get("candidate_commit") == active_commit
+            ]
+            if len(active_ids) > 1:
+                raise ValueError("multiple release records claim the active Git commit")
+            rolled_back = active_ids[0] if active_ids else None
+            if rolled_back is not None:
+                previous = db.execute("SELECT status FROM releases WHERE id=?", (rolled_back,)).fetchone()
+                db.execute("UPDATE releases SET status='ROLLED_BACK' WHERE id=?", (rolled_back,))
+                self._append_release_event(
+                    db, rolled_back, "ROLLED_BACK", previous["status"], ReleaseStatus.ROLLED_BACK.value,
+                    {**detail, "reactivated_release": target_release_id},
+                )
+            db.execute("UPDATE releases SET status='PROVISIONAL' WHERE id=?", (target_release_id,))
+            self._append_release_event(
+                db, target_release_id, "REACTIVATED", target["status"], ReleaseStatus.PROVISIONAL.value,
+                {**detail, "rolled_back_release": rolled_back},
+            )
+            return rolled_back
+
+    def transition_release_status(
+        self, release_id: str, new_status: str, *, expected_status: str, reason: str,
+        actor: str = "operator",
+    ) -> None:
+        """Compare-and-set a release status along RELEASE_TRANSITIONS, with an audit event."""
+        try:
+            new = ReleaseStatus(new_status)
+            expected = ReleaseStatus(expected_status)
+        except ValueError as exc:
+            raise ValueError("invalid release status") from exc
+        if new not in RELEASE_TRANSITIONS[expected]:
+            raise ValueError(f"release status transition {expected.value} -> {new.value} is not allowed")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2048:
+            raise ValueError("release status transitions require a reason up to 2048 characters")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE releases SET status=? WHERE id=? AND status=?",
+                (new.value, release_id, expected.value),
+            )
+            if cursor.rowcount != 1:
+                if db.execute("SELECT 1 FROM releases WHERE id=?", (release_id,)).fetchone() is None:
+                    raise KeyError(release_id)
+                raise ValueError(f"release {release_id!r} is not in status {expected.value}")
+            self._append_release_event(
+                db, release_id, "STATUS_CHANGED", expected.value, new.value,
+                {"actor": actor, "reason": reason.strip()},
+            )
+
+    def list_release_events(self, release_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM release_events"
+        parameters: tuple[Any, ...] = ()
+        if release_id is not None:
+            query += " WHERE release_id=?"
+            parameters = (release_id,)
+        with self._connect() as db:
+            return [
+                {**dict(row), "detail": json.loads(row["detail_json"])}
+                for row in db.execute(query + " ORDER BY id", parameters)
+            ]
+
+    @staticmethod
+    def _append_release_event(
+        db: sqlite3.Connection, release_id: str, event: str,
+        from_status: str | None, to_status: str | None, detail: dict[str, Any],
+    ) -> None:
+        db.execute(
+            """INSERT INTO release_events (release_id,event,from_status,to_status,detail_json,created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (release_id, event, from_status, to_status, canonical_json(detail), utc_now()),
+        )
+
+
+_PROMOTION_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS promotion_approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id TEXT NOT NULL REFERENCES experiments(id),
+    candidate_id TEXT NOT NULL REFERENCES candidates(id),
+    candidate_hash TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    key_fingerprint TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS promotion_approvals_append_only_update
+BEFORE UPDATE ON promotion_approvals
+BEGIN SELECT RAISE(ABORT, 'promotion approvals are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS promotion_approvals_append_only_delete
+BEFORE DELETE ON promotion_approvals
+BEGIN SELECT RAISE(ABORT, 'promotion approvals are append-only'); END;
+CREATE TABLE IF NOT EXISTS release_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    release_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS release_events_append_only_update
+BEFORE UPDATE ON release_events
+BEGIN SELECT RAISE(ABORT, 'release events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS release_events_append_only_delete
+BEFORE DELETE ON release_events
+BEGIN SELECT RAISE(ABORT, 'release events are append-only'); END;
+"""
