@@ -30,7 +30,8 @@ controlled Git-backed process.
 > against the real CLI and trajectory schema with a fixture, but has not been
 > run against a live Hermes install and model endpoint.
 > The repository still lacks the curated 20–50 real-task benchmark corpus,
-> tested external GEPA/DSPy/self-evolution integrations, a live Qwen service,
+> tested DSPy/`hermes-agent-self-evolution` integrations (GEPA optimize is
+> integrated behind a pinned optional extra), a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
 > collector, and a verified end-to-end Hermes skill improvement deployment.
 > Holdout access capabilities, the spent-state ledger, and UID checks do not
@@ -444,6 +445,18 @@ progress stalls; do not overfit to 100% of the benchmark suite. Dreaming may
 produce at most five candidates in one run and never writes production or
 promotes.
 
+**Implemented (`evolution_loop.py`, `hermes-improve evolve`):** the loop above
+with those defaults (overridable through a mapping or `--settings` JSON). Every
+variant is a new immutable candidate commit with recorded `parent_id` and
+`lineage_id`; identical variants are deduplicated by content hash and failed
+ones are retained. The generator sees detailed TRAIN feedback, aggregate
+VALIDATION/REGRESSION feedback and never holdout data; holdout runs only for
+finalists and yields a pass/fail bit. If that bit is fed back into a further
+mutation (explicit opt-in), the lineage's holdout generation is first marked
+spent. Strategies: built-in `qwen_optimizer`, and optional GEPA (`gepa.optimize`
+with this evaluator as metric; `pip install '.[gepa]'`, pinned `gepa==0.1.4`). The loop only proposes;
+promotion stays with the policy and the promoter. See `docs/dreaming.md`.
+
 ## Session ingestion and Dreaming
 
 The current `ingest EXPORT.json` CLI accepts a manual session export, redacts
@@ -471,12 +484,20 @@ Dreaming has three stages:
 - **DEEP (implemented proposal API, optional local Qwen):** turn supplied
   hypotheses into at most five path-filtered proposals. It does not write
   candidate commits or promote changes.
+- **Candidate generation (implemented, optional local Qwen):**
+  `hermes-improve candidate generate` lets the `qwen_optimizer` role write the
+  SKILL.md text for up to five selected DEEP proposals; content must pass
+  secret, protected-path and override-phrase checks and is committed only as a
+  candidate branch awaiting evaluation.
 
 All archived sessions, user and assistant text, tool output, repositories,
 websites, logs, and errors are **untrusted evidence**, never instructions.
-Prompt-injection content must not alter system behavior or protected policy. Current
-prompt-injection safeguards are bounded projections and path filtering, not a
-complete defense.
+Prompt-injection content must not alter system behavior or protected policy.
+Role prompts live in `prompts/dreaming/` and `prompts/optimizer/` and must carry
+the UNTRUSTED EVIDENCE framing; every model payload is escaped JSON inside a
+nonce-delimited envelope. Explicit injection tests cover promotion, config
+edits and holdout reads. These safeguards reduce, but cannot eliminate, the
+risk that model-written text is wrong; evaluation and policy remain the gate.
 
 ## Local model configuration
 
@@ -580,7 +601,9 @@ hermes-improve ingest
 hermes-improve ingest-batch RUN/trajectories.jsonl
 hermes-improve dream
 hermes-improve candidate create --help
+hermes-improve candidate generate --repository REPO --proposal-file DEEP.json --proposal-index N
 hermes-improve candidates list
+hermes-improve evolve <candidate-id> --repository REPO [--strategy qwen|gepa|gepa-proposer] [--max-generations N]
 hermes-improve evaluate <candidate-id>
 hermes-improve experiments list
 hermes-improve experiments show <id>
