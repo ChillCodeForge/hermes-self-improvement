@@ -348,6 +348,8 @@ class GenerationReport:
     improved: int
     best_candidate_id: str
     best_core_score: float
+    # Candidates the strategy had screened on CORE through the oracle (e.g. GEPA's metric calls).
+    strategy_screened: int = 0
 
 
 @dataclass(frozen=True)
@@ -408,6 +410,58 @@ class _RunState:
     finalized: set[str] = field(default_factory=set)
     generations: list[GenerationReport] = field(default_factory=list)
     finalists: list[FinalistReport] = field(default_factory=list)
+    strategy_screened: dict[str, tuple[Candidate, StageFeedback]] = field(default_factory=dict)
+
+
+class ScreeningOracle:
+    """Generator-facing metric: commits text as a candidate and returns its filtered CORE feedback.
+
+    Strategies that run their own inner search (GEPA) use this as their metric.
+    It exposes only :class:`StageFeedback` (TRAIN detail, VALIDATION/REGRESSION
+    aggregates), never the gateway, benchmark stores or holdout, and it draws
+    from the run's ``max_candidates_total`` budget. It returns ``None`` for text
+    that was already generated in an earlier run, is rejected by the content
+    checks, or exceeds the budget.
+    """
+
+    def __init__(self, loop: "EvolutionLoop", state: _RunState, parent: _Variant) -> None:
+        self._loop = loop
+        self._state = state
+        self._parent = parent
+        self._labels = 0
+        self.screened = 0
+
+    def evaluate_content(self, content: str) -> StageFeedback | None:
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("oracle content must be non-empty text")
+        state = self._state
+        digest = skill_content_digest(content)
+        known = {item.digest: item.core_feedback for item in (state.parent, state.best, *state.improved)}
+        if digest in known:
+            return known[digest]
+        if digest in state.strategy_screened:
+            return state.strategy_screened[digest][1]
+        if self._loop.store.find_generated_variant(state.root.target, digest) is not None:
+            return None
+        if state.created >= self._loop.config.max_candidates_total:
+            return None
+        label = f"s{self._labels}"
+        self._labels += 1
+        candidate = self._loop._create_variant(
+            state, self._parent, content, "screened by the strategy's inner search", label,
+        )
+        if candidate is None:
+            return None
+        core = self._loop.gateway.screen(candidate, "CORE", self._loop.config.core_seeds)
+        self._loop.store.update_generated_variant(
+            state.root.target, digest,
+            status="core_no_improvement" if core.gates_passed else "core_rejected",
+            reason="screened by the strategy's inner search; not selected as a proposal",
+            scores={"core": core.score},
+        )
+        state.strategy_screened[digest] = (candidate, core.feedback)
+        self.screened += 1
+        return core.feedback
 
 
 class EvolutionLoop:
@@ -524,6 +578,10 @@ class EvolutionLoop:
             state.generation += 1
             parent = state.parent
             count = min(config.candidates_per_generation, remaining)
+            oracle = ScreeningOracle(self, state, parent)
+            bind = getattr(self.strategy, "bind_screening_oracle", None)
+            if callable(bind):
+                bind(oracle)
             proposals = self.strategy.propose(MutationRequest(
                 target=state.root.target,
                 candidate_type=state.root.candidate_type,
@@ -549,8 +607,10 @@ class EvolutionLoop:
                 parent_candidate_id=parent.candidate.candidate_id,
                 best_candidate_id=state.best.candidate.candidate_id,
                 best_core_score=state.best.core_score,
+                strategy_screened=oracle.screened,
                 **counters,
             ))
+            state.strategy_screened.clear()
             if not proposals:
                 return "optimizer_exhausted"
             if generation_feedback:
@@ -579,48 +639,22 @@ class EvolutionLoop:
     ) -> None:
         target = state.root.target
         digest = skill_content_digest(proposal.content)
-        if self.store.find_generated_variant(target, digest) is not None:
+        screened = state.strategy_screened.get(digest)
+        if screened is not None:
+            # Created and CORE-screened during this generation through the strategy's oracle.
+            candidate, cached_core = state.strategy_screened.pop(digest)
+        elif self.store.find_generated_variant(target, digest) is not None:
             counters["duplicates"] += 1
             state.no_improvement_candidates += 1
             return
-        experiment_id = f"{state.run_id}-g{state.generation:02d}-v{index}"
-        candidate_id = f"{experiment_id}-c"
-        origin = f"evolution:{state.run_id}"
-        try:
-            check_generated_skill_content(proposal.content)
-            candidate = create_skill_candidate(
-                self.repository,
-                self.store,
-                experiment_id=experiment_id,
-                candidate_id=candidate_id,
-                candidate_type=state.root.candidate_type,
-                target=target,
-                content=proposal.content,
-                hypothesis=(
-                    f"Evolution {state.run_id} generation {state.generation} variant {index} "
-                    f"of {parent.candidate.candidate_id}: {' '.join(proposal.rationale.split())}"
-                )[:4000],
-                benchmark_version=self.gateway.benchmark_version,
-                source_sessions=state.source_sessions,
-            )
-        except ValueError as exc:
-            self.store.record_generated_variant(
-                target=target, content_sha256=digest, origin=origin, generation=state.generation,
-                status="rejected", parent_candidate_id=parent.candidate.candidate_id, reason=str(exc),
-            )
-            counters["rejected"] += 1
-            state.no_improvement_candidates += 1
-            return
-        self.store.link_experiment_lineage(
-            experiment_id, parent_id=parent.candidate.experiment_id, lineage_id=state.lineage_id,
-        )
-        self.store.record_generated_variant(
-            target=target, content_sha256=digest, origin=origin, generation=state.generation,
-            status="created", parent_candidate_id=parent.candidate.candidate_id,
-            candidate_id=candidate.candidate_id,
-        )
-        state.created += 1
-        counters["created"] += 1
+        else:
+            cached_core = None
+            candidate = self._create_variant(state, parent, proposal.content, proposal.rationale, f"v{index}")
+            if candidate is None:
+                counters["rejected"] += 1
+                state.no_improvement_candidates += 1
+                return
+            counters["created"] += 1
         smoke = self.gateway.screen(candidate, "SMOKE", self.config.smoke_seeds)
         generation_feedback.append(smoke.feedback)
         if not smoke.gates_passed or smoke.score < parent.smoke_score:
@@ -632,8 +666,11 @@ class EvolutionLoop:
             state.no_improvement_candidates += 1
             return
         counters["smoke_passed"] += 1
-        core = self.gateway.screen(candidate, "CORE", self.config.core_seeds)
-        counters["core_evaluated"] += 1
+        if cached_core is not None:
+            core = StageResult(cached_core)
+        else:
+            core = self.gateway.screen(candidate, "CORE", self.config.core_seeds)
+            counters["core_evaluated"] += 1
         generation_feedback.append(core.feedback)
         scores = {"smoke": smoke.score, "core": core.score}
         if not core.gates_passed:
@@ -656,6 +693,48 @@ class EvolutionLoop:
         state.improved.append(variant)
         state.no_improvement_candidates = 0
         counters["improved"] += 1
+
+    def _create_variant(
+        self, state: _RunState, parent: _Variant, content: str, rationale: str, label: str,
+    ) -> Candidate | None:
+        """Commit generated text as a new immutable candidate; rejected text is recorded, not retried."""
+        target = state.root.target
+        digest = skill_content_digest(content)
+        experiment_id = f"{state.run_id}-g{state.generation:02d}-{label}"
+        origin = f"evolution:{state.run_id}"
+        try:
+            check_generated_skill_content(content)
+            candidate = create_skill_candidate(
+                self.repository,
+                self.store,
+                experiment_id=experiment_id,
+                candidate_id=f"{experiment_id}-c",
+                candidate_type=state.root.candidate_type,
+                target=target,
+                content=content,
+                hypothesis=(
+                    f"Evolution {state.run_id} generation {state.generation} {label} "
+                    f"of {parent.candidate.candidate_id}: {' '.join(rationale.split())}"
+                )[:4000],
+                benchmark_version=self.gateway.benchmark_version,
+                source_sessions=state.source_sessions,
+            )
+        except ValueError as exc:
+            self.store.record_generated_variant(
+                target=target, content_sha256=digest, origin=origin, generation=state.generation,
+                status="rejected", parent_candidate_id=parent.candidate.candidate_id, reason=str(exc),
+            )
+            return None
+        self.store.link_experiment_lineage(
+            experiment_id, parent_id=parent.candidate.experiment_id, lineage_id=state.lineage_id,
+        )
+        self.store.record_generated_variant(
+            target=target, content_sha256=digest, origin=origin, generation=state.generation,
+            status="created", parent_candidate_id=parent.candidate.candidate_id,
+            candidate_id=candidate.candidate_id,
+        )
+        state.created += 1
+        return candidate
 
     def _finalize(self, state: _RunState) -> None:
         pending = [item for item in state.improved if item.candidate.candidate_id not in state.finalized]

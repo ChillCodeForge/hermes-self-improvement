@@ -22,7 +22,7 @@ from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
 from .evolution_loop import EvaluationGateway, EvolutionConfig, EvolutionLoop
-from .gepa_adapter import SUPPORTED_GEPA_VERSION, GepaStrategy
+from .gepa_adapter import SUPPORTED_GEPA_VERSION, GepaOptimizeStrategy, GepaStrategy
 from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Split
 from .optimizer import ModelMutationStrategy
 from .policy import PromotionPolicy
@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     evolve = sub.add_parser("evolve", help="iteratively evolve a skill candidate (generator + screening only)")
     evolve.add_argument("candidate_id")
     evolve.add_argument("--repository", type=Path, required=True)
-    evolve.add_argument("--strategy", choices=["qwen", "gepa"], default="qwen")
+    evolve.add_argument("--strategy", choices=["qwen", "gepa", "gepa-proposer"], default="qwen")
     evolve.add_argument("--settings", type=Path, help="JSON object with evolution setting overrides")
     evolve.add_argument("--max-generations", type=int)
     evolve.add_argument("--candidates-per-generation", type=int)
@@ -517,8 +517,8 @@ def main() -> int:
                 overrides[key] = getattr(args, key)
         config = EvolutionConfig.from_mapping(overrides)
         model = OpenAICompatibleQwen(QwenConfig.from_env())
-        if args.strategy == "gepa":
-            strategy = GepaStrategy(model)
+        if args.strategy in {"gepa", "gepa-proposer"}:
+            strategy = GepaOptimizeStrategy(model) if args.strategy == "gepa" else GepaStrategy(model)
             expected_version = f"gepa-{SUPPORTED_GEPA_VERSION}"
         else:
             strategy = ModelMutationStrategy(model)

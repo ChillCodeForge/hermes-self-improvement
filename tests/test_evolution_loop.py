@@ -270,3 +270,29 @@ def _digest(content):
     from hermes_improve.prompting import skill_content_digest
 
     return skill_content_digest(content)
+
+
+def test_store_lineage_link_is_one_time_and_variants_are_append_only(tmp_path):
+    fixture = evolution_fixture(tmp_path)
+    store = fixture.store
+    for experiment in ("child", "other"):
+        store.create_experiment(
+            experiment, lineage_id=experiment, hypothesis="h", candidate_type="SKILL_PATCH", target=TARGET,
+            risk="LOW", baseline_commit="b", benchmark_version="v", policy_version="1",
+        )
+    with pytest.raises(ValueError, match="parent's lineage"):
+        store.link_experiment_lineage("child", parent_id="root-exp", lineage_id="other")
+    store.link_experiment_lineage("child", parent_id="root-exp", lineage_id="root-exp")
+    with pytest.raises(ValueError, match="already assigned"):
+        store.link_experiment_lineage("child", parent_id="other", lineage_id="other")
+    with pytest.raises(KeyError):
+        store.link_experiment_lineage("other", parent_id="missing", lineage_id="root-exp")
+
+    digest = "a" * 64
+    store.record_generated_variant(target=TARGET, content_sha256=digest, origin="test", generation=1, status="created")
+    with pytest.raises(ValueError, match="already recorded"):
+        store.record_generated_variant(target=TARGET, content_sha256=digest, origin="test", generation=2, status="created")
+    with pytest.raises(ValueError, match="transition"):
+        store.update_generated_variant(TARGET, digest, status="root")
+    with pytest.raises(ValueError, match="SHA-256"):
+        store.find_generated_variant(TARGET, "not-a-digest")

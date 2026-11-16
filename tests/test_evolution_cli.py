@@ -65,7 +65,7 @@ def test_evolve_cli_rejects_unknown_settings_before_any_model_call(tmp_path, mon
 def test_evolve_cli_gepa_strategy_requires_pinned_package(tmp_path, monkeypatch):
     fixture = evolution_fixture(tmp_path, with_holdout=False)
     _wire(monkeypatch, tmp_path, ScriptedOptimizerModel([]))
-    monkeypatch.setattr(cli.GepaStrategy, "__init__", _raise_version_error)
+    monkeypatch.setattr(cli.GepaOptimizeStrategy, "__init__", _raise_version_error)
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo), "--strategy", "gepa",
     ])

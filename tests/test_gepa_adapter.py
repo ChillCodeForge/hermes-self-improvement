@@ -3,13 +3,16 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import re
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
-from evolution_doubles import ScriptedOptimizerModel, evolution_fixture
+from evolution_doubles import HOLDOUT_PROMPT, VALIDATION_PROMPT, evolution_fixture
 from hermes_improve.evolution_loop import EvolutionConfig, EvolutionLoop
 from hermes_improve.gepa_adapter import (
     SUPPORTED_GEPA_VERSION,
+    GepaOptimizeStrategy,
     GepaStrategy,
     GepaUnavailableError,
     GepaVersionError,
@@ -65,7 +68,8 @@ class FencedReflectionModel:
 
     def complete(self, *, role, system_prompt, user_payload):
         self.calls.append({"role": role, "system_prompt": system_prompt, "user_payload": user_payload})
-        return f"Here is the rewrite:\n```markdown\n{self.bodies.pop(0)}\n```"
+        body = self.bodies.pop(0) if len(self.bodies) > 1 else self.bodies[0]
+        return f"Here is the rewrite:\n```markdown\n{body}\n```"
 
 
 def _request(count=2):
@@ -161,3 +165,123 @@ def test_real_gepa_package_signature_contract():
     payload = model.calls[0]["user_payload"]
     assert payload.count("<<<UNTRUSTED EVIDENCE") == 2
     assert "Old steps." in payload and json.dumps("Fix test")[1:-1] in payload
+
+
+@dataclass
+class ContractEvaluationBatch:
+    """CONTRACT FIXTURE of gepa 0.1.4 ``EvaluationBatch`` fields used by the adapter."""
+
+    outputs: list
+    scores: list
+    trajectories: list | None = None
+
+
+def contract_gepa_optimize(
+    *, seed_candidate, trainset, valset, adapter, reflection_lm, reflection_prompt_template,
+    max_metric_calls, reflection_minibatch_size, seed, **_ignored,
+):
+    """CONTRACT FIXTURE of the gepa 0.1.4 ``optimize`` flow the adapter relies on.
+
+    Seed valset evaluation, then repeated: minibatch evaluate with traces,
+    ``make_reflective_dataset``, reflective proposal through the prompt template,
+    minibatch acceptance by score sum, full valset evaluation of accepted
+    candidates, and a ``max_metric_calls`` budget counted per evaluated example.
+    """
+    calls = 0
+    candidates = [seed_candidate]
+    val_scores = []
+
+    def evaluate(batch, candidate, traces=False):
+        nonlocal calls
+        calls += len(batch)
+        return adapter.evaluate(batch, candidate, capture_traces=traces)
+
+    val_scores.append(sum(evaluate(valset, seed_candidate).scores) / len(valset))
+    current = seed_candidate
+    step = 0
+    while calls + reflection_minibatch_size * 2 + len(valset) <= max_metric_calls:
+        batch = [trainset[(step + index) % len(trainset)] for index in range(reflection_minibatch_size)]
+        step += 1
+        before = evaluate(batch, current, traces=True)
+        dataset = adapter.make_reflective_dataset(current, before, ["skill"])["skill"]
+        samples = "\n\n".join(
+            f"# Example {number}\n" + "".join(f"## {key}\n{value}\n\n" for key, value in record.items())
+            for number, record in enumerate(dataset, 1)
+        )
+        prompt = reflection_prompt_template.replace("<curr_param>", current["skill"]).replace("<side_info>", samples)
+        reply = reflection_lm(prompt).strip()
+        text = reply[reply.find("```") + 3: reply.rfind("```")]
+        text = text.split("\n", 1)[1].strip() if "\n" in text else text.strip()
+        proposal = {"skill": text}
+        after = evaluate(batch, proposal)
+        if sum(after.scores) > sum(before.scores):
+            candidates.append(proposal)
+            val_scores.append(sum(evaluate(valset, proposal).scores) / len(valset))
+            current = proposal
+    return SimpleNamespace(candidates=candidates, val_aggregate_scores=val_scores, total_metric_calls=calls)
+
+
+def _optimize_loop(fixture, strategy, **overrides):
+    return EvolutionLoop(
+        repository=fixture.repo, store=fixture.store, gateway=fixture.gateway(), strategy=strategy,
+        expected_strategy_version=f"gepa-{SUPPORTED_GEPA_VERSION}",
+        config=EvolutionConfig.from_mapping({"max_generations": 1, **overrides}),
+    )
+
+
+def test_gepa_optimize_uses_project_evaluator_as_metric_and_loop_gates(tmp_path):
+    fixture = evolution_fixture(tmp_path)
+    model = FencedReflectionModel(["gepa step quality=4", "gepa step quality=6", "gepa step quality=6"])
+    strategy = GepaOptimizeStrategy(
+        model, max_metric_calls=12, optimize=contract_gepa_optimize,
+        evaluation_batch=ContractEvaluationBatch, installed_version=SUPPORTED_GEPA_VERSION,
+    )
+    report = _optimize_loop(fixture, strategy, candidates_per_generation=2).run(fixture.root_id)
+
+    generation = report.generations[0]
+    assert report.strategy == "gepa-optimize"
+    assert generation.strategy_screened == 2 and generation.core_evaluated == 0
+    assert generation.improved == 1 and report.best_core_score == 6
+    assert [item.holdout for item in report.finalists] == ["passed"]
+    best = fixture.store.show_experiment(report.finalists[0].experiment_id)
+    assert best["lineage_id"] == "root-exp" and best["parent_id"] == "root-exp"
+    for call in model.calls:
+        assert call["role"] == "qwen_optimizer"
+        assert HOLDOUT_PROMPT not in call["user_payload"] and VALIDATION_PROMPT not in call["user_payload"]
+        assert "validation-task" not in call["user_payload"]
+    assert fixture.store.list_releases() == []
+
+
+def test_gepa_optimize_budget_duplicates_and_missing_oracle(tmp_path):
+    fixture = evolution_fixture(tmp_path)
+    strategy = GepaOptimizeStrategy(
+        FencedReflectionModel(["root skill quality=1", "budget quality=5", "budget quality=7"]),
+        max_metric_calls=12, optimize=contract_gepa_optimize,
+        evaluation_batch=ContractEvaluationBatch, installed_version=SUPPORTED_GEPA_VERSION,
+    )
+    with pytest.raises(RuntimeError, match="screening oracle"):
+        strategy.propose(_request(count=1))
+    report = _optimize_loop(fixture, strategy, max_candidates_total=1).run(fixture.root_id)
+    assert report.candidates_created == 1
+    assert report.generations[0].strategy_screened == 1
+    with pytest.raises(ValueError, match="both optimize and evaluation_batch"):
+        GepaOptimizeStrategy(FencedReflectionModel([]), optimize=contract_gepa_optimize)
+    with pytest.raises(GepaVersionError):
+        GepaOptimizeStrategy(
+            FencedReflectionModel([]), optimize=contract_gepa_optimize,
+            evaluation_batch=ContractEvaluationBatch, installed_version="0.1.3",
+        )
+
+
+def test_real_gepa_optimize_runs_through_project_adapter(tmp_path):
+    """Runs only where the optional extra is installed (pip install '.[gepa]')."""
+    pytest.importorskip("gepa", reason="optional gepa extra not installed")
+    fixture = evolution_fixture(tmp_path)
+    model = FencedReflectionModel([f"real gepa quality={value}" for value in range(4, 30)])
+    report = _optimize_loop(
+        fixture, GepaOptimizeStrategy(model, max_metric_calls=10), candidates_per_generation=1,
+    ).run(fixture.root_id)
+    assert report.generations[0].strategy_screened >= 1
+    assert report.best_core_score > report.root_core_score
+    assert all(HOLDOUT_PROMPT not in call["user_payload"] for call in model.calls)
+    assert all(call["user_payload"].count("<<<UNTRUSTED EVIDENCE") == 2 for call in model.calls)
