@@ -76,6 +76,23 @@ class CandidateType(StrEnum):
     TOOL_PATCH = "TOOL_PATCH"
 
 
+class ReleaseStatus(StrEnum):
+    CANDIDATE = "CANDIDATE"
+    PROVISIONAL = "PROVISIONAL"
+    STABLE = "STABLE"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
+# Allowed release status transitions (spec section 29). A promoted release
+# starts PROVISIONAL; rollback re-activates an earlier release as PROVISIONAL.
+RELEASE_TRANSITIONS: Mapping[ReleaseStatus, frozenset[ReleaseStatus]] = {
+    ReleaseStatus.CANDIDATE: frozenset({ReleaseStatus.PROVISIONAL}),
+    ReleaseStatus.PROVISIONAL: frozenset({ReleaseStatus.STABLE, ReleaseStatus.ROLLED_BACK}),
+    ReleaseStatus.STABLE: frozenset({ReleaseStatus.ROLLED_BACK}),
+    ReleaseStatus.ROLLED_BACK: frozenset({ReleaseStatus.PROVISIONAL}),
+}
+
+
 @dataclass(frozen=True)
 class Benchmark:
     schema_version: int

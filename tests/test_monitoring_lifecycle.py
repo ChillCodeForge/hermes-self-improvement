@@ -47,13 +47,13 @@ def _healthy(release_id, task, **overrides):
 def test_release_status_transitions_are_validated(tmp_path):
     store = ExperimentStore(tmp_path / "db.sqlite3")
     _release(store)
-    with pytest.raises(ValueError, match="cannot change from PROVISIONAL to CANDIDATE"):
+    with pytest.raises(ValueError, match="PROVISIONAL -> CANDIDATE is not allowed"):
         store.set_release_status("brain-v1", "CANDIDATE")
     assert store.set_release_status("brain-v1", "STABLE") == "PROVISIONAL"
     assert store.set_release_status("brain-v1", "STABLE") == "STABLE"
     store.set_release_status("brain-v1", "ROLLED_BACK")
-    with pytest.raises(ValueError, match="cannot change"):
-        store.set_release_status("brain-v1", "PROVISIONAL")
+    with pytest.raises(ValueError, match="ROLLED_BACK -> STABLE is not allowed"):
+        store.set_release_status("brain-v1", "STABLE")
     with pytest.raises(ValueError, match="invalid release status"):
         store.set_release_status("brain-v1", "LIVE")
     with pytest.raises(KeyError):

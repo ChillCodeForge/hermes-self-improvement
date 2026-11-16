@@ -1,0 +1,13 @@
+# Logical Qwen roles. Only environment-variable names are configured here;
+# no model name or version is hardcoded.
+schema_version: 1
+endpoint_env:
+  base_url: QWEN_BASE_URL
+  api_key: QWEN_API_KEY
+  timeout: QWEN_TIMEOUT
+  max_concurrency: QWEN_MAX_CONCURRENCY
+roles:
+  qwen_solver: {model_env: QWEN_MODEL}
+  qwen_optimizer: {model_env: QWEN_MODEL}
+  qwen_dreamer: {model_env: QWEN_MODEL}
+  qwen_judge: {model_env: QWEN_JUDGE_MODEL, fallback_model_env: QWEN_MODEL}

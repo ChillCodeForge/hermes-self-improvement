@@ -1,0 +1,32 @@
+# Protected promotion policy. Read only from the operator's protected checkout
+# (HERMES_IMPROVE_CONFIG); candidate diffs touching config/ are rejected.
+# Defaults are identical to hermes_improve.config.PromotionConfig.
+schema_version: 1
+policy_version: "1"
+thresholds:
+  max_critical_regressions: 0
+  max_high_regressions: 0
+  max_medium_regression_rate: 0.01
+  min_quality_delta: 3.0
+  max_category_drop: 2.0
+  max_token_increase_ratio: 0.1
+  max_latency_increase_ratio: 0.15
+# auto   = may promote after the full evidence gate
+# manual = additionally requires an Ed25519-signed operator approval
+# Unlocking a type means changing its gate here (and normally bumping
+# policy_version so earlier evaluations no longer match).
+promotion_gates:
+  SKILL_CREATE: auto
+  SKILL_PATCH: auto
+  SKILL_MERGE: auto
+  SKILL_SPLIT: auto
+  TOOL_DESCRIPTION: manual
+  WORKFLOW: manual
+  ROUTING: manual
+  MCP_TOOL_FILTER: manual
+  MCP_CONFIG: manual
+  SYSTEM_PROMPT: manual
+  TOOL_CREATE: manual
+  TOOL_PATCH: manual
+# FULL and SEALED_HOLDOUT are mandatory and cannot be removed.
+required_evidence_suites: [SMOKE, CORE, FULL, SEALED_HOLDOUT]

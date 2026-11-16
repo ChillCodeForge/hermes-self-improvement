@@ -4,15 +4,20 @@ from dataclasses import dataclass
 from collections import defaultdict
 import math
 from statistics import mean
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from .models import CandidateType, EvaluationReport, Split, TaskOutcome
 from .statistics import paired_mean_confidence_interval
+
+if TYPE_CHECKING:
+    from .config import PromotionConfig
 
 
 @dataclass(frozen=True)
 class PromotionPolicy:
     version: str = "1"
+    max_critical_regressions: int = 0
+    max_high_regressions: int = 0
     max_medium_regression_rate: float = 0.01
     min_quality_delta: float = 3.0
     max_category_drop: float = 2.0
@@ -24,6 +29,45 @@ class PromotionPolicy:
         CandidateType.SKILL_MERGE,
         CandidateType.SKILL_SPLIT,
     })
+    required_evidence_suites: tuple[str, ...] = ("SMOKE", "CORE", "FULL", "SEALED_HOLDOUT")
+
+    def __post_init__(self) -> None:
+        suites = self.required_evidence_suites
+        if (
+            not isinstance(suites, tuple)
+            or any(item not in {"SMOKE", "CORE", "FULL", "SEALED_HOLDOUT"} for item in suites)
+            or not {"FULL", "SEALED_HOLDOUT"} <= set(suites)
+        ):
+            raise ValueError("required evidence suites must include FULL and SEALED_HOLDOUT")
+        if not isinstance(self.auto_promotable_types, frozenset) or not all(
+            isinstance(item, CandidateType) for item in self.auto_promotable_types
+        ):
+            raise ValueError("auto-promotable types must be a frozenset of CandidateType")
+        for name in ("max_critical_regressions", "max_high_regressions"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    @classmethod
+    def from_config(cls, config: "PromotionConfig") -> "PromotionPolicy":
+        """Build the policy from protected configuration (``config/promotion.yaml``)."""
+        return cls(
+            version=config.policy_version,
+            max_critical_regressions=config.max_critical_regressions,
+            max_high_regressions=config.max_high_regressions,
+            max_medium_regression_rate=config.max_medium_regression_rate,
+            min_quality_delta=config.min_quality_delta,
+            max_category_drop=config.max_category_drop,
+            max_token_increase_ratio=config.max_token_increase_ratio,
+            max_latency_increase_ratio=config.max_latency_increase_ratio,
+            auto_promotable_types=config.auto_promotable_types,
+            required_evidence_suites=tuple(config.required_evidence_suites),
+        )
+
+    def requires_manual_approval(self, candidate_type: CandidateType) -> bool:
+        if not isinstance(candidate_type, CandidateType):
+            raise ValueError("candidate type must be a CandidateType")
+        return candidate_type not in self.auto_promotable_types
 
     def assess(
         self,
@@ -81,9 +125,9 @@ class PromotionPolicy:
             reasons.append("security verifier failed")
         if any(not row.deterministic_pass for row in rows):
             reasons.append("deterministic verifier failed")
-        if any(row.critical_regressions for row in rows):
+        if sum(row.critical_regressions for row in rows) > self.max_critical_regressions:
             reasons.append("critical regression detected")
-        if any(row.high_regressions for row in rows):
+        if sum(row.high_regressions for row in rows) > self.max_high_regressions:
             reasons.append("high regression detected")
         if final_rows:
             if not any(row.suite.upper() == "FULL" and row.split is not Split.SEALED_HOLDOUT for row in final_rows):

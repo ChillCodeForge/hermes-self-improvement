@@ -12,14 +12,20 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Sequence
 
+from .approvals import load_public_key, public_key_fingerprint, verify_promotion_approval
 from .errors import IntegrityError, PolicyRejected
 from .evaluation_signing import verify_report_signature
-from .models import CandidateType, canonical_json, utc_now
+from .models import CandidateType, Split, TaskOutcome, canonical_json, utc_now
 from .policy import PromotionPolicy
-from .skill_paths import validate_skill_target
 from .store import ExperimentStore
+from .target_paths import (
+    assert_changed_paths_match_target,
+    find_case_collisions,
+    is_protected_repository_path,
+    parse_target,
+)
 
 
 _SAFE_NAME = re.compile(r"^brain-v[1-9][0-9]*$")
@@ -28,11 +34,12 @@ _GIT_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 class GitPromoter:
-    """Promotes an evaluated skills-only Git commit using an atomic symlink.
+    """Promotes an evaluated brain candidate commit using an atomic symlink.
 
     Candidate contents are read via `git archive` and are never executed by the
     promoter. This still must run under the dedicated least-privilege promoter
-    Unix identity described in the deployment design.
+    Unix identity described in the deployment design. All promotions and
+    rollbacks against one release root are serialized by an exclusive lock.
     """
 
     def __init__(
@@ -43,6 +50,8 @@ class GitPromoter:
         deployment_link: Path,
         policy: PromotionPolicy,
         evaluator_public_key: bytes,
+        operator_public_keys: Sequence[bytes] = (),
+        config_digest: str | None = None,
     ) -> None:
         self.store = store
         self.repository = Path(repository).resolve()
@@ -50,6 +59,18 @@ class GitPromoter:
         self.deployment_link = Path(deployment_link).absolute()
         self.policy = policy
         self.evaluator_public_key = evaluator_public_key
+        self.operator_public_keys = tuple(
+            load_public_key(key, role="operator approval") for key in operator_public_keys
+        )
+        if self.operator_public_keys:
+            evaluator_fingerprint = public_key_fingerprint(
+                load_public_key(evaluator_public_key, role="evaluator")
+            )
+            if any(public_key_fingerprint(key) == evaluator_fingerprint for key in self.operator_public_keys):
+                raise ValueError("operator approval keys must differ from the evaluator signing key")
+        if config_digest is not None and not re.fullmatch(r"[0-9a-f]{64}", config_digest):
+            raise ValueError("config digest must be a SHA-256 hex digest")
+        self.config_digest = config_digest
         self.release_root.mkdir(parents=True, exist_ok=True)
         self.deployment_link.parent.mkdir(parents=True, exist_ok=True)
         if self.deployment_link.exists() and not self.deployment_link.is_symlink():
@@ -57,69 +78,181 @@ class GitPromoter:
 
     def promote(
         self,
-        candidate_id: str,
+        identifier: str,
         *,
-        release_name: str,
+        release_name: str | None = None,
         manifest_key: bytes,
     ) -> dict[str, Any]:
-        if not _SAFE_NAME.fullmatch(release_name):
+        """Promote the candidate of experiment ``identifier`` (or a candidate ID).
+
+        ``release_name`` defaults to the next free ``brain-vN``.
+        """
+        if release_name is not None and not _SAFE_NAME.fullmatch(release_name):
             raise ValueError("release name must match brain-vN")
         if len(manifest_key) < 32:
             raise ValueError("manifest signing key must contain at least 32 bytes")
         lock_path = self.release_root / ".promotion.lock"
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            return self._promote_locked(candidate_id, release_name, manifest_key)
+            candidate_id = self.store.resolve_promotion_candidate(identifier)
+            name = release_name or self._next_release_name()
+            return self._promote_locked(candidate_id, name, manifest_key)
+
+    def _next_release_name(self) -> str:
+        numbers = [0]
+        names = [row["id"] for row in self.store.list_releases()]
+        names += self._git(
+            "for-each-ref", "--format=%(refname:strip=2)", "refs/tags/"
+        ).decode().split()
+        names += [path.name.split(".", 1)[0] for path in self.release_root.iterdir()]
+        for name in names:
+            if _SAFE_NAME.fullmatch(name):
+                numbers.append(int(name.removeprefix("brain-v")))
+        return f"brain-v{max(numbers) + 1}"
+
+    def _verified_runs(self, candidate_id: str, candidate: dict[str, Any], latest_id: str) -> list[dict[str, Any]]:
+        """Signature-verify every evaluation run that counts as evidence.
+
+        The latest run must match the current candidate hash, benchmark
+        manifest and policy version. Earlier runs are used only when they match
+        the same identity; a matching run with a bad signature is tampering.
+        """
+        runs = self.store.candidate_evaluations(candidate_id)
+        if not runs or runs[-1]["evaluation"]["id"] != latest_id:
+            raise IntegrityError("evaluation history is inconsistent with the latest evaluation")
+        usable = []
+        for index, run in enumerate(runs):
+            evaluation = run["evaluation"]
+            latest = index == len(runs) - 1
+            if evaluation["candidate_hash"] != candidate["content_hash"]:
+                if latest:
+                    raise IntegrityError("evaluated candidate hash differs from immutable candidate record")
+                continue
+            if evaluation["policy_version"] != self.policy.version:
+                if latest:
+                    raise PolicyRejected("evaluation policy version differs from current promotion policy")
+                continue
+            if evaluation["benchmark_version"] != candidate["experiment_benchmark_version"]:
+                if latest:
+                    raise IntegrityError("evaluation benchmark version differs from experiment manifest")
+                continue
+            if not evaluation["signature"]:
+                raise IntegrityError("evaluation has no trusted evaluator signature")
+            signed_evaluation = {
+                "candidate_id": candidate_id,
+                "candidate_hash": evaluation["candidate_hash"],
+                "benchmark_version": evaluation["benchmark_version"],
+                "policy_version": evaluation["policy_version"],
+                "outcomes": [
+                    item["result"] for item in sorted(run["task_results"], key=lambda item: item["task_id"])
+                ],
+                "passed": bool(evaluation["passed"]),
+                "reasons": json.loads(evaluation["reasons"]),
+                "created_at": evaluation["created_at"],
+                "metrics": json.loads(evaluation["metrics_json"]),
+                "run_observations": [
+                    {**item, "artifact_digests": item.get("artifact_digests", [])}
+                    for item in sorted(
+                        run["run_observations"],
+                        key=lambda row: (row["task_id"], row["commit"], row["seed"]),
+                    )
+                ],
+            }
+            verify_report_signature(signed_evaluation, evaluation["signature"], self.evaluator_public_key)
+            usable.append(run)
+        return usable
+
+    @staticmethod
+    def _suite_of(item: dict[str, Any]) -> str:
+        result = item["result"]
+        suite = str(result.get("suite", "")).upper()
+        if str(item["split"]) == Split.SEALED_HOLDOUT.value:
+            return "SEALED_HOLDOUT"
+        if suite == "SEALED_HOLDOUT":
+            raise IntegrityError("sealed holdout evidence must come from the SEALED_HOLDOUT split")
+        return suite
+
+    def _check_evidence(self, candidate_id: str, candidate: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, str]:
+        latest = runs[-1]
+        latest_suites = {self._suite_of(item) for item in latest["task_results"]}
+        if "FULL" not in latest_suites or "SEALED_HOLDOUT" not in latest_suites:
+            raise PolicyRejected("Full and sealed holdout task evidence are both required")
+        newest_by_suite: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        for run in reversed(runs):
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for item in run["task_results"]:
+                grouped.setdefault(self._suite_of(item), []).append(item["result"])
+            for suite, rows in grouped.items():
+                newest_by_suite.setdefault(suite, (run["evaluation"]["id"], rows))
+        evidence_runs: dict[str, str] = {}
+        for suite in self.policy.required_evidence_suites:
+            if suite not in newest_by_suite:
+                raise PolicyRejected(f"required {suite} evidence is missing")
+            run_id, rows = newest_by_suite[suite]
+            if any(row.get("security_pass") is not True for row in rows):
+                raise PolicyRejected(f"security verifier failed in {suite} evidence")
+            if any(row.get("deterministic_pass") is not True for row in rows):
+                raise PolicyRejected(f"deterministic verifier failed in {suite} evidence")
+            if sum(int(row.get("critical_regressions", 0)) for row in rows) > self.policy.max_critical_regressions:
+                raise PolicyRejected(f"critical regression in {suite} evidence")
+            if sum(int(row.get("high_regressions", 0)) for row in rows) > self.policy.max_high_regressions:
+                raise PolicyRejected(f"high regression in {suite} evidence")
+            if any(row.get("baseline_success") and not row.get("candidate_success") for row in rows):
+                raise PolicyRejected(f"{suite} evidence shows a task-success regression")
+            evidence_runs[suite] = run_id
+        try:
+            final_outcomes = [
+                TaskOutcome(**{
+                    **item["result"],
+                    "split": Split(item["result"]["split"]),
+                    "categories": tuple(item["result"]["categories"]),
+                })
+                for item in latest["task_results"]
+                if self._suite_of(item) in {"FULL", "SEALED_HOLDOUT"}
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise IntegrityError(f"stored task outcome cannot be re-assessed: {exc}") from exc
+        reassessment = self.policy.assess(
+            candidate_id, candidate["content_hash"], candidate["experiment_benchmark_version"], final_outcomes,
+        )
+        if not reassessment.passed:
+            raise PolicyRejected(
+                "regression policy rejects the evaluated Full/holdout evidence: "
+                + "; ".join(reassessment.reasons)
+            )
+        return evidence_runs
 
     def _promote_locked(self, candidate_id: str, release_name: str, manifest_key: bytes) -> dict[str, Any]:
         evidence = self.store.promotion_evidence(candidate_id)
         candidate = evidence["candidate"]
         evaluation = evidence["evaluation"]
-        results = evidence["task_results"]
         if candidate["experiment_decision"] != "passed" or not evaluation["passed"]:
             raise PolicyRejected("candidate does not have a passing completed evaluation")
         if evaluation["candidate_hash"] != candidate["content_hash"]:
             raise IntegrityError("evaluated candidate hash differs from immutable candidate record")
         if not evaluation["signature"]:
             raise IntegrityError("evaluation has no trusted evaluator signature")
-        signed_evaluation = {
-            "candidate_id": candidate_id,
-            "candidate_hash": evaluation["candidate_hash"],
-            "benchmark_version": evaluation["benchmark_version"],
-            "policy_version": evaluation["policy_version"],
-            "outcomes": [item["result"] for item in sorted(results, key=lambda item: item["task_id"])],
-            "passed": bool(evaluation["passed"]),
-            "reasons": json.loads(evaluation["reasons"]),
-            "created_at": evaluation["created_at"],
-            "metrics": json.loads(evaluation["metrics_json"]),
-            "run_observations": [
-                {**item, "artifact_digests": item.get("artifact_digests", [])}
-                for item in sorted(
-                    evidence["run_observations"],
-                    key=lambda row: (row["task_id"], row["commit"], row["seed"]),
-                )
-            ],
-        }
-        verify_report_signature(
-            signed_evaluation, evaluation["signature"], self.evaluator_public_key
-        )
-        if evaluation["policy_version"] != self.policy.version:
-            raise PolicyRejected("evaluation policy version differs from current promotion policy")
-        if evaluation["benchmark_version"] != candidate["experiment_benchmark_version"]:
-            raise IntegrityError("evaluation benchmark version differs from experiment manifest")
-        self.policy.authorize_type(CandidateType(candidate["candidate_type"]))
-        suites = {
-            str(item["result"].get("suite", "")).upper()
-            for item in results
-        }
-        splits = {str(item["split"]) for item in results}
-        if "FULL" not in suites or "SEALED_HOLDOUT" not in suites or "SEALED_HOLDOUT" not in splits:
-            raise PolicyRejected("Full and sealed holdout task evidence are both required")
+        runs = self._verified_runs(candidate_id, candidate, evaluation["id"])
+        if candidate["experiment_policy_version"] != self.policy.version:
+            raise PolicyRejected("experiment policy version differs from current promotion policy")
+        evidence_runs = self._check_evidence(candidate_id, candidate, runs)
+        candidate_type = CandidateType(candidate["candidate_type"])
+        experiment_id = str(candidate["experiment_id"])
+        approval = None
+        if self.policy.requires_manual_approval(candidate_type):
+            approval = verify_promotion_approval(
+                self.store.list_promotion_approvals(experiment_id),
+                experiment_id=experiment_id,
+                candidate_id=candidate_id,
+                candidate_hash=candidate["content_hash"],
+                candidate_type=candidate_type,
+                policy_version=self.policy.version,
+                operator_public_keys=self.operator_public_keys,
+            )
         evaluation_metrics = json.loads(evaluation["metrics_json"])
 
         baseline = str(candidate["baseline_commit"])
         commit = str(candidate["commit_id"])
-        experiment_id = str(candidate["experiment_id"])
         if not _SAFE_EXPERIMENT.fullmatch(experiment_id):
             raise IntegrityError("experiment ID is not a safe Git branch component")
         if not _GIT_OBJECT.fullmatch(baseline) or not _GIT_OBJECT.fullmatch(commit):
@@ -134,22 +267,32 @@ class GitPromoter:
             raise IntegrityError("production Git ref has changed since evaluation")
         self._git("merge-base", "--is-ancestor", baseline, commit)
         actual_diff = self._git("diff", "--no-ext-diff", "--no-textconv", "--binary", baseline, commit)
-        if hashlib.sha256(actual_diff).hexdigest() != candidate["diff_hash"]:
+        diff_hash = hashlib.sha256(actual_diff).hexdigest()
+        if diff_hash != candidate["diff_hash"]:
             raise IntegrityError("candidate diff differs from the evaluated diff")
         changed_paths = self._git("diff", "--name-only", "-z", baseline, commit).decode().split("\0")
         changed_paths = [path for path in changed_paths if path]
-        if not changed_paths or any(not path.startswith("brain/skills/") for path in changed_paths):
-            raise PolicyRejected("automatic promotion is restricted to brain/skills/ paths")
+        protected = sorted(path for path in changed_paths if is_protected_repository_path(path))
+        if protected:
+            raise PolicyRejected(f"candidate diff touches protected paths: {', '.join(protected)}")
+        if not changed_paths or any(not path.startswith("brain/") for path in changed_paths):
+            raise PolicyRejected("promotion is restricted to brain/ paths")
         target = str(candidate["target"])
         try:
-            target_path = validate_skill_target(target).as_posix()
+            parse_target(candidate_type, target)
         except ValueError as exc:
-            raise PolicyRejected("candidate target is not a safe skills-only directory") from exc
-        if any(
-            path != target_path and not path.startswith(f"{target_path}/")
-            for path in changed_paths
-        ):
-            raise PolicyRejected("changed paths do not match a safe skills-only candidate target")
+            raise PolicyRejected(
+                f"candidate target is not a safe {candidate_type.value} brain target: {exc}"
+            ) from exc
+        try:
+            assert_changed_paths_match_target(candidate_type, target, changed_paths)
+        except ValueError as exc:
+            raise PolicyRejected(f"changed paths do not match the candidate target: {exc}") from exc
+        tree_paths = [
+            path for path in self._git("ls-tree", "-r", "-z", "--name-only", commit).decode().split("\0") if path
+        ]
+        if find_case_collisions(tree_paths):
+            raise PolicyRejected("candidate tree contains paths that collide case-insensitively")
         if self._ref_exists(f"refs/tags/{release_name}"):
             raise ValueError(f"release tag already exists: {release_name}")
         destination = self.release_root / release_name
@@ -166,7 +309,6 @@ class GitPromoter:
             self._extract_archive(commit, staging)
             os.chmod(staging, 0o555)
             os.replace(staging, destination)
-            diff_hash = hashlib.sha256(actual_diff).hexdigest()
             manifest_body = {
                 "schema_version": 1,
                 "experiment_id": experiment_id,
@@ -176,8 +318,10 @@ class GitPromoter:
                 "baseline_commit": baseline,
                 "benchmark_version": evaluation["benchmark_version"],
                 "policy_version": evaluation["policy_version"],
+                "config_digest": self.config_digest,
                 "full_suite_passed": True,
                 "holdout_passed": True,
+                "evidence_runs": evidence_runs,
                 "regression_summary": json.loads(evaluation["reasons"]),
                 "security_passed": True,
                 "baseline_metrics": {
@@ -188,6 +332,9 @@ class GitPromoter:
                     "correction_rate": evaluation_metrics["baseline_correction_rate"],
                 },
                 "artifact_type": candidate["candidate_type"],
+                "target": target,
+                "promotion_gate": "manual" if approval is not None else "auto",
+                "approval": approval,
                 "changed_paths": changed_paths,
                 "diff_sha256": diff_hash,
                 "release_target": release_name,
@@ -199,6 +346,11 @@ class GitPromoter:
 
             self._git("update-ref", production_ref, commit, baseline)
             branch_updated = True
+            deployed_diff = self._git(
+                "diff", "--no-ext-diff", "--no-textconv", "--binary", baseline, production_ref,
+            )
+            if hashlib.sha256(deployed_diff).hexdigest() != candidate["diff_hash"]:
+                raise IntegrityError("deployed diff differs from the evaluated diff")
             object_format = self._git("rev-parse", "--show-object-format").decode().strip()
             zero_oid_length = {"sha1": 40, "sha256": 64}.get(object_format)
             if zero_oid_length is None:
@@ -207,8 +359,8 @@ class GitPromoter:
             tag_created = True
             self._switch_link(destination)
             deployed = True
-            self.store.record_release(
-                release_name, experiment_id, candidate["content_hash"], "PROVISIONAL",
+            self.store.record_promotion_release(
+                release_name, experiment_id, candidate["content_hash"],
                 {**manifest, "manifest_path": str(manifest_path), "deployment_path": str(destination)},
             )
             return manifest
@@ -229,6 +381,12 @@ class GitPromoter:
                 shutil.rmtree(staging)
 
     def rollback(self, release_name: str, *, manifest_key: bytes) -> str:
+        """Re-activate an earlier release; returns the commit that was active.
+
+        Moves ``main`` back to the release commit and switches the deployment
+        symlink atomically. Release tags and manifests are never modified; the
+        status change is appended to the release audit log.
+        """
         if not _SAFE_NAME.fullmatch(release_name):
             raise ValueError("release name must match brain-vN")
         if len(manifest_key) < 32:
@@ -252,7 +410,7 @@ class GitPromoter:
                 raise IntegrityError("release manifest signature or digest verification failed")
             manifest["manifest_sha256"] = digest
             manifest["signature_hmac_sha256"] = signature
-            if target_release["manifest"].get("candidate_commit") != target_commit:
+            if manifest.get("candidate_commit") != target_commit:
                 raise IntegrityError("release database and signed manifest disagree")
             current = self._git("rev-parse", "--verify", "refs/heads/main").decode().strip()
             if current == target_commit:
@@ -262,7 +420,13 @@ class GitPromoter:
             self._git("update-ref", "refs/heads/main", target_commit, current)
             try:
                 self._switch_link(target_path)
-                self.store.transition_rollback(current, release_name)
+                self.store.record_rollback(current, release_name, {
+                    "actor": "promoter",
+                    "previous_commit": current,
+                    "activated_commit": target_commit,
+                    "previous_deployment": old_link,
+                    "activated_deployment": str(target_path),
+                })
             except BaseException:
                 self._restore_link(old_link)
                 self._git("update-ref", "refs/heads/main", current, target_commit)
