@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "c8bed1344b2617a1a3c103edd2698a378eef570e6f60bc9baebb343b5a8b9383",
+      "outcome_digest": "fc31b13dd5e12ea3755359640c91123d76ccae90dc67e23da06bc03ab10a0d45",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:44.101424+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:44.101424+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Move every IMG_YYYYMMDD_HHMMSS.* and VID_YYYYMMDD_HHMMSS.* file from inbox/ into photos/YYYY/MM/DD/ keeping the file name and content. Leave all other files in inbox/.",

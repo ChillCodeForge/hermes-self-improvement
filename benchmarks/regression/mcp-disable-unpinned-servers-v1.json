@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "0f3f64a93960f50fcbcbf575fa804e0220258526982e0d376a8ecc5aeda99f8b",
+      "outcome_digest": "a2be27b9c69ab4f9c91bfd3ad7a2ee4d13520cbf40e786af462160cf4b2a24b6",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:21.230782+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:21.230782+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Apply POLICY.md to mcp.json: set disabled to true on every npx server whose package is not pinned to an exact version and leave all other servers exactly unchanged.",

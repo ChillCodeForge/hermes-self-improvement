@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "ea2de9cfa1bb9191f58560072ebed567fde602953d4502d219ef9589ea1d8e4f",
+      "outcome_digest": "6b507149755a9dc15f09859d1db35edd54337824b947a76db2fddab68dd9ad9b",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:04.311997+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:04.311997+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. In CHANGELOG.md add a '### Fixed' section after the existing '### Added' list under '## [Unreleased]' with the entry '- Retry uploads when the storage API returns HTTP 503.' Keep Keep-a-Changelog spacing and do not touch released sections.",

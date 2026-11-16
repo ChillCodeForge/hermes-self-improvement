@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "b36ba3a44639d6c4065c131de14917abb437d8732a00b4aa2010bcc3d2999ff8",
+      "outcome_digest": "318ef44f8a452b4c6d0e3399fe982c52bffe2c8971672f826483e301bed02c86",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:06.854398+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:06.854398+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Replace the content between the options markers in README.md with a Markdown table '| Option | Default | Description |' built from cli-options.json in file order; wrap option names and non-null defaults in backticks and write '-' for null defaults.",

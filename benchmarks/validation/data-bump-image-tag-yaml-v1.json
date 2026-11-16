@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "589235cb97cad9dcaf1c0e77efaf1ffa1ba01bd4fd646a2ca94be8aec5601d0b",
+      "outcome_digest": "f9f1dd2e2f69033de9be57c1957708305555dc4d9af4d009b96c76c8f2588eaf",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:45.750140+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:45.750140+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. In deploy.yaml change only the api service image tag from 1.4.2 to 1.5.0. Keep the worker image, comments and formatting exactly as they are.",

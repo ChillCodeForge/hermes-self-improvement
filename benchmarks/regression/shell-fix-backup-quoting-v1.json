@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "4e576a2db4b56954d268af560a9a1e16d2054b4653592ecfdbb8b40801a6a13a",
+      "outcome_digest": "f15675c196028a120abc0ac9a50533dc6dcae7e166375f48890faf1e3a7d5d37",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:41.598458+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:41.598458+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. backup.sh SOURCE_DIR DEST_DIR breaks when directory or file names contain spaces. Fix its quoting so it copies every regular file of SOURCE_DIR to DEST_DIR/<name>.bak, skips subdirectories and keeps the same command-line interface.",

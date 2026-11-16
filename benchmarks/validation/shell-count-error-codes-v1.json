@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "7f2398e22a43f858cbaa6bbcad645ffb219719f19aea3fa89849579b38070771",
+      "outcome_digest": "c000ac39e76788f574df32398ed065db5c650ad45f06e0d7dc726e3015fd9046",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:39.102853+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:39.102853+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. From app.log, count ERROR lines (not WARN) per code=... value and write error-summary.txt with one '<count> <code>' line per code, sorted by count descending and then code ascending.",

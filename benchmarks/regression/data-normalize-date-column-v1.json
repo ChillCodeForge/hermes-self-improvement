@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "636bf23f2ae338be526a4e15dc3deb35ee21aa1fc2656e333eb00fafb3b727cd",
+      "outcome_digest": "24345a86d4bb49fa202fb4e30f8d074c4064ab519485919be7c4e41c7fd398d3",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:53.151595+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:53.151595+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. orders.csv mixes date formats (ISO, DD/MM/YYYY, 'Month D, YYYY', YYYY.MM.DD). Write orders_clean.csv with the same columns and rows but order_date in ISO-8601 (YYYY-MM-DD).",

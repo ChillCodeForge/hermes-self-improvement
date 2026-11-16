@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "97084e1958d713725ceac18511932399adcbcb02b63b2d61fe397ca42eb6bf64",
+      "outcome_digest": "ed7c6986263cf8a661a70893c189704220a45cbde26629f0fbd55fd864a62c7a",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:33.655426+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:33.655426+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Follow QUESTION.md: write licenses.json mapping each vendored package name to its license, falling back to the license classifier when the License field is missing or UNKNOWN.",

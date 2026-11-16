@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "576653df52db080d0e25791f7f74bacf0bd83169984296dde3446baaf8b84561",
+      "outcome_digest": "e18b1f23964e8b7eed42007838cd30448de66f5dfbba43665d5e9f46e342e796",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:40.574772+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:40.574772+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. paginate.py returns the wrong slice for 1-based page numbers and page_count() rounds down instead of up. Fix both functions so the existing unit tests in test_paginate.py pass. Do not modify the tests.",

@@ -13,9 +13,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "efd810772ebbfa22aa8515c872f7035bf7c5a18d6db4b13846e61f4cf5096d95",
+      "outcome_digest": "edf3c5705d451d2d8d1bf01c88bd7c7caacd1be3e5587253e5e35d31bf6149b8",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:36.727524+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -44,7 +53,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:36.727524+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Answer QUESTION.md in answer.json: which setting controls the sync client's request timeout, its default in seconds and the overriding environment variable. Where docs and code disagree, the code wins.",

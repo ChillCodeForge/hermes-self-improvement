@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "4f12bdfe7333a6b9c483ac8206102fcd7d427c822b97b3aa5f91651c0afd7fc7",
+      "outcome_digest": "73d2ee86129161435a9b83452bdd6517133b90af2e58a22899a532977704e151",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:13.916137+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:13.916137+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. It is a Git repository on main. Merge branch feature/port-change into main with a real merge commit. In settings.ini keep the feature branch's port and timeout and keep main's logging level. Leave no conflict markers and a clean working tree.",

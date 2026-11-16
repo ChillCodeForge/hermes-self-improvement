@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "e9763b111576c71ad5b4714ef83af0d7029a94c569246ee45ec05953b7bb359e",
+      "outcome_digest": "8a17fceff3aee0bee00b1e3949f1d774d88354f0cc18476fabc68b21eba0e128",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:58.625913+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:58.625913+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Pin every FROM image in services/*/Dockerfile to the digest listed for it in pins.txt (image@sha256:...), keeping build stage names and all other lines unchanged.",

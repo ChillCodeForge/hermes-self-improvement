@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "1ffbbf9c73480fcce65ae63b7b6406d0f74613cefc2b768aa91011564556f105",
+      "outcome_digest": "6be3095003c1890e72f54280cf423ea8c3a414ca0778c993e2de94b0cb13b938",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:01.944797+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:01.944797+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Add the resources block required by POLICY.md to each container in deployment.yaml, directly after its image line and in the exact shape and values the policy prescribes.",

@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "5f7d330438b1892343ff382872d3ff62aa055cd9de62ae4e5b1ad759cea6ac4e",
+      "outcome_digest": "910384179e38683da624de6b70b6960587412cc1a32b5756c837d619821cb61e",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:27.315598+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:27.315598+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Apply POLICY.md to mcp.json: give the files server a tools.include allowlist with its read-only tools in alphabetical order and leave the other server unchanged.",

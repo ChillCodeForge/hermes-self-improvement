@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "7e99b5b01a5abcdcb0d5162966da5a0325f8abb6fe2a748d5aa8b00bf7fb2ac2",
+      "outcome_digest": "b924ccbf08db9210c544635c1f8b802fb093a0e88636edd3548220bd487ec536",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:50.534740+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:50.534740+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Write merged.json by deep-merging override.json into base.json: nested objects merge recursively, scalars and arrays from the override replace base values, and a null in the override deletes that key. Do not modify the input files.",

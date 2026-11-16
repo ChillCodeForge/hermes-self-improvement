@@ -14,9 +14,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "359585a126c7f8f6d1875f14a56287648a44e762a394e4fe3631bfe5ce1fb119",
+      "outcome_digest": "5d811c7ea17bae68b303109ac54c68cbd901069d227534e9c875f3318bb96c37",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:09.797881+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -45,7 +54,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:09.797881+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. docs/setup.md was renamed to docs/installation.md and docs/guide/usage.md to docs/guide/using-the-cli.md. Update every relative link under docs/ (keeping anchors) so none is broken, without renaming files or changing other text.",

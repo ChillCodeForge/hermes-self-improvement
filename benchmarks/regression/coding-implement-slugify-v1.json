@@ -15,9 +15,18 @@
     ]
   },
   "eligibility": {
-    "class": "SOFT_BENCHMARK",
-    "replay_verified": false,
-    "reproducibility_score": 0.85
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "b6f25cf715b3fb27fa327c0c5f27dc59fb006bd84cd2f5331fb99d61e531272e",
+      "outcome_digest": "d79244cc4ff8fde0597a6abe7f2f5a634a14b1206d6fb103adfb5ed397de7d3b",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:43.723534+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
   },
   "environment": {
     "command": [
@@ -46,7 +55,8 @@
   },
   "source": {
     "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
-    "type": "manual"
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:43.723534+00:00"
   },
   "task": {
     "prompt": "The workspace is the current directory. Implement textutil.slugify() according to its docstring (ASCII-folded lowercase slug, single hyphens, length limit without trailing hyphen) so that test_textutil.py passes. Leave the tests unchanged.",
