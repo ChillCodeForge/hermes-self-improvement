@@ -1,0 +1,105 @@
+{
+  "benchmark": {
+    "cluster_id": "data-bump-image-tag-yaml",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/data-transform*",
+      "skills/*-data-transform*",
+      "tools/data-transform*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "589235cb97cad9dcaf1c0e77efaf1ffa1ba01bd4fd646a2ca94be8aec5601d0b",
+      "outcome_digest": "f9f1dd2e2f69033de9be57c1957708305555dc4d9af4d009b96c76c8f2588eaf",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:45.750140+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/data-bump-image-tag-yaml",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:82145f2c08b1fe08bc242ce7faec1a32468ce097fe26bf6c4f4a83cf89608a65",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/data-bump-image-tag-yaml",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "data-bump-image-tag-yaml",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:45.750140+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. In deploy.yaml change only the api service image tag from 1.4.2 to 1.5.0. Keep the worker image, comments and formatting exactly as they are.",
+    "title": "Bump the API image tag in a deployment file"
+  },
+  "taxonomy": {
+    "categories": [
+      "data-transform"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "yaml",
+      "text-editing"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 3,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

@@ -141,3 +141,19 @@ def test_environment_selects_config_and_ignores_working_directory(tmp_path, monk
 def test_policy_cannot_drop_mandatory_evidence_suites():
     with pytest.raises(ValueError, match="FULL and SEALED_HOLDOUT"):
         PromotionPolicy(required_evidence_suites=("SMOKE", "FULL"))
+
+
+def test_taxonomy_categories_match_the_benchmark_schema(tmp_path):
+    from hermes_improve.benchmark_schema import DIFFICULTIES, TAXONOMY_CATEGORIES
+
+    loaded = load_config(_copy(tmp_path))
+    assert loaded.taxonomy.categories == TAXONOMY_CATEGORIES
+    assert default_config().taxonomy.categories == TAXONOMY_CATEGORIES
+    assert loaded.taxonomy.difficulties == DIFFICULTIES
+
+
+def test_taxonomy_categories_are_required_and_validated(tmp_path):
+    directory = _copy(tmp_path)
+    _replace(directory / "taxonomy.yaml", "categories: [coding,", "categories: [Coding,")
+    with pytest.raises(ConfigError, match="categories"):
+        load_config(directory)

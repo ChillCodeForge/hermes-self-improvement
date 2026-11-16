@@ -29,17 +29,29 @@ def _git(repository, *args):
     ).stdout.strip()
 
 
-def _benchmark(identifier, split, suites):
+_PROMPTS = {
+    "smoke-task": "Repair the broken quoting in the nightly backup shell script",
+    "smoke-unrelated": "Translate the onboarding glossary into a sorted YAML mapping",
+    "core-task": "Add pagination limits to the audit log query helper",
+    "full-task": "Pin every container base image in the deployment manifests",
+    "holdout-task": "Rotate the expiring TLS certificate referenced by the proxy unit",
+}
+
+
+def _benchmark(identifier, split, suites, impact_areas=None):
     return {
         "schema_version": 1, "id": identifier, "version": 1,
         "source": {"type": "test", "provenance": "unit-test"},
-        "task": {"title": identifier, "prompt": f"Complete {identifier}"},
+        "task": {"title": identifier, "prompt": _PROMPTS[identifier]},
         "taxonomy": {"categories": ["skills"], "difficulty": "easy", "required_capabilities": []},
         "environment": {"type": "fixture"},
         "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0, "replay_verified": True},
         "verification": {"deterministic": ["exit_code"], "subjective": []},
         "ground_truth": {"type": "test", "confidence": 1.0},
-        "benchmark": {"split": split, "suites": suites, "cluster_id": identifier, "criticality": "normal"},
+        "benchmark": {
+            "split": split, "suites": suites, "cluster_id": identifier, "criticality": "normal",
+            **({"impact_areas": impact_areas} if impact_areas else {}),
+        },
         "security": {"sanitized": True, "contains_secrets": False},
     }
 
@@ -71,8 +83,15 @@ def setup(tmp_path, monkeypatch):
     public_root.mkdir()
     holdout_root = tmp_path / "holdout"
     holdout_root.mkdir()
-    for identifier, suites in (("smoke-task", ["SMOKE"]), ("core-task", ["CORE"]), ("full-task", ["FULL"])):
-        (public_root / f"{identifier}.json").write_text(json.dumps(_benchmark(identifier, "REGRESSION", suites)))
+    for identifier, suites, areas in (
+        ("smoke-task", ["SMOKE"], ["skills/demo*"]),
+        ("smoke-unrelated", ["SMOKE"], ["skills/unrelated*"]),
+        ("core-task", ["CORE"], None),
+        ("full-task", ["FULL"], None),
+    ):
+        (public_root / f"{identifier}.json").write_text(
+            json.dumps(_benchmark(identifier, "REGRESSION", suites, areas))
+        )
     (holdout_root / "holdout-task.json").write_text(
         json.dumps(_benchmark("holdout-task", "SEALED_HOLDOUT", ["SEALED_HOLDOUT"]))
     )
@@ -135,7 +154,10 @@ def setup(tmp_path, monkeypatch):
             PromotionPolicy.from_config(config.promotion), public,
         )
 
-    return {"evaluate": evaluate, "promoter": promoter, "store": store, "candidate": candidate, "runner": runner}
+    return {
+        "evaluate": evaluate, "promoter": promoter, "store": store, "candidate": candidate, "runner": runner,
+        "benchmark_store": BenchmarkStore(public_root, holdout_root=holdout_root),
+    }
 
 
 def test_staged_cli_evaluations_satisfy_promotion_evidence(setup):
@@ -171,3 +193,27 @@ def test_run_policy_follows_scoring_config():
         1, 2, 3, 5, 5,
     )
     assert policy == RunPolicy()
+
+
+def test_evaluate_selects_impact_scoped_suite_and_records_manifest_digests(setup):
+    from hermes_improve.suites import ImpactScope, suite_manifest
+
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("FULL")
+    runs = setup["store"].candidate_evaluations("cand-e2e")
+    smoke, full = (json.loads(run["evaluation"]["metrics_json"])["suite_selection"] for run in runs)
+    # brain/skills/demo narrows SMOKE to the task whose impact_areas match skills/demo.
+    assert smoke["task_ids"] == ["smoke-task"]
+    assert smoke["impact"]["target_areas"] == ["skills/demo"]
+    assert {task for _, task, _ in setup["runner"].calls} >= {"smoke-task"}
+    assert "smoke-unrelated" not in {task for _, task, _ in setup["runner"].calls}
+    assert smoke["holdout_manifest_digest"] is None
+    # FULL ignores impact and adds the sealed holdout with its own manifest digest.
+    assert full["task_ids"] == ["full-task"] and full["holdout_manifest_digest"].startswith("sha256:")
+    store = setup["benchmark_store"]
+    selected = [item for item in store.validate() if item.id == "smoke-task"]
+    expected = suite_manifest(
+        selected, suite="SMOKE", benchmark_version=store.version,
+        impact=ImpactScope(target_areas=frozenset({"skills/demo"})),
+    )
+    assert smoke["suite_manifest_digest"] == expected["digest"]

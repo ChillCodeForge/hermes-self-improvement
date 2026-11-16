@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import replace
 import math
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 from .artifacts import ArtifactStore
 from .benchmarks import BenchmarkStore
@@ -108,6 +108,7 @@ class PairedEvaluator:
         seeds: Iterable[int] | None = None,
         holdout_grant: HoldoutGrant | None = None,
         evaluation_id: str | None = None,
+        suite_selection: Mapping[str, Any] | None = None,
     ) -> EvaluationReport:
         if candidate.base_commit != baseline_commit:
             raise IntegrityError("candidate base commit does not match requested baseline")
@@ -214,6 +215,7 @@ class PairedEvaluator:
             **report.metrics,
             "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
             "suite": suite.upper(),
+            "suite_selection": dict(suite_selection) if suite_selection is not None else None,
             "run_policy": {
                 **self.run_policy.describe(),
                 "llm_influenced": llm_influenced,

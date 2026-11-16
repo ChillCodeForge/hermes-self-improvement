@@ -1,0 +1,106 @@
+{
+  "benchmark": {
+    "cluster_id": "research-aggregate-latency-results",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/research*",
+      "skills/*-research*",
+      "tools/research*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "c7f22d8d8968008e02e99832b96ea5f0e1c5ca53aa1514bb15c8dc41a804e80c",
+      "outcome_digest": "e5ea49cff437b26e4634f4115afda2c89ab986f2bfa5b09a983877c665674900",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:30.418593+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/research-aggregate-latency-results",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:4681f58572f443d935d119a63dbc048868eea6eec8d47523f9688475477e9ab7",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/research-aggregate-latency-results",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "research-aggregate-latency-results",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:30.418593+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Follow QUESTION.md: aggregate results/*.json into report.json with per-model mean latency of successful runs, success rate and the fastest sufficiently reliable model.",
+    "title": "Aggregate benchmark latency results"
+  },
+  "taxonomy": {
+    "categories": [
+      "research"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "python",
+      "json",
+      "statistics"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 5,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

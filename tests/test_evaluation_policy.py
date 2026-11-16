@@ -225,6 +225,8 @@ def test_subjective_task_uses_blind_judge_and_baseline_preference_blocks(tmp_pat
 def test_judge_preference_never_promotes_on_its_own(tmp_path):
     holdout = record("essay-holdout", split="SEALED_HOLDOUT", suites=("SEALED_HOLDOUT",), deterministic=False,
                      subjective=["names the root cause"])
+    # A distinct prompt: near-duplicate tasks across splits are rejected as leakage.
+    holdout["task"]["prompt"] = "Summarize why the nightly backup job silently skipped encrypted volumes"
     store, access = store_with(
         tmp_path, [record("essay", deterministic=False, subjective=["names the root cause"])], [holdout],
     )

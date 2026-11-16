@@ -510,3 +510,17 @@ def test_corpus_loader_reads_the_pinned_split_after_path_replacement(tmp_path):
         os.close(root_fd)
 
     assert [row.id for row in rows] == ["existing-task"]
+
+
+def test_loader_skips_public_fixture_and_manifest_directories(tmp_path):
+    root = tmp_path / "benchmarks"
+    (root / "train").mkdir(parents=True)
+    (root / "train" / "task.json").write_text(json.dumps(data("task", "TRAIN", "c1")))
+    for reserved in ("fixtures", "manifests"):
+        nested = root / reserved / "nested"
+        nested.mkdir(parents=True)
+        # Not benchmark records: loading them would fail schema validation.
+        (nested / "payload.json").write_text(json.dumps({"not": "a benchmark"}))
+        (root / reserved / "notes.yaml").write_text("anything: true\n")
+    store = BenchmarkStore(root)
+    assert [item.id for item in store.validate()] == ["task"]

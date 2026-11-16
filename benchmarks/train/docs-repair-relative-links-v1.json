@@ -1,0 +1,104 @@
+{
+  "benchmark": {
+    "cluster_id": "docs-repair-relative-links",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/docs*",
+      "skills/*-docs*",
+      "tools/docs*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "359585a126c7f8f6d1875f14a56287648a44e762a394e4fe3631bfe5ce1fb119",
+      "outcome_digest": "5d811c7ea17bae68b303109ac54c68cbd901069d227534e9c875f3318bb96c37",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:09.797881+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/docs-repair-relative-links",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:caf32259a971d8697b0faecfd5485d13d0d2da0a51af78845646aed15ee59865",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/docs-repair-relative-links",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "docs-repair-relative-links",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:09.797881+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. docs/setup.md was renamed to docs/installation.md and docs/guide/usage.md to docs/guide/using-the-cli.md. Update every relative link under docs/ (keeping anchors) so none is broken, without renaming files or changing other text.",
+    "title": "Repair links after documentation renames"
+  },
+  "taxonomy": {
+    "categories": [
+      "docs"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "markdown",
+      "link-checking"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 5,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

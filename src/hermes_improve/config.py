@@ -120,6 +120,10 @@ class ScoringConfig:
 class TaxonomyConfig:
     candidate_risk: Mapping[CandidateType, str] = DEFAULT_CANDIDATE_RISK
     difficulties: tuple[str, ...] = ("easy", "medium", "hard")
+    # Benchmark task categories; must equal benchmark_schema.TAXONOMY_CATEGORIES.
+    categories: tuple[str, ...] = (
+        "coding", "git", "shell", "data-transform", "docs", "devops", "research", "mcp",
+    )
 
 
 @dataclass(frozen=True)
@@ -406,7 +410,7 @@ def _parse_scoring(document: Mapping[str, Any]) -> ScoringConfig:
 
 
 def _parse_taxonomy(document: Mapping[str, Any]) -> TaxonomyConfig:
-    _exact_keys(document, "taxonomy.yaml", {"schema_version", "candidate_risk", "difficulties"})
+    _exact_keys(document, "taxonomy.yaml", {"schema_version", "candidate_risk", "difficulties", "categories"})
     _schema(document, "taxonomy.yaml")
     difficulties = document["difficulties"]
     if (
@@ -415,10 +419,18 @@ def _parse_taxonomy(document: Mapping[str, Any]) -> TaxonomyConfig:
         or len(set(difficulties)) != len(difficulties)
     ):
         raise ConfigError("taxonomy.yaml difficulties must be unique lowercase identifiers")
+    categories = document["categories"]
+    if (
+        not isinstance(categories, list) or not categories
+        or any(not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", item) for item in categories)
+        or len(set(categories)) != len(categories)
+    ):
+        raise ConfigError("taxonomy.yaml categories must be unique lowercase identifiers")
     return TaxonomyConfig(
         candidate_risk=_candidate_type_mapping(
             document["candidate_risk"], "taxonomy.yaml candidate_risk", RISK_LEVELS),
         difficulties=tuple(difficulties),
+        categories=tuple(categories),
     )
 
 
@@ -498,6 +510,7 @@ def _default_documents() -> dict[str, Any]:
             "schema_version": 1,
             "candidate_risk": {kind.value: risk for kind, risk in taxonomy.candidate_risk.items()},
             "difficulties": list(taxonomy.difficulties),
+            "categories": list(taxonomy.categories),
         },
         "models.yaml": {
             "schema_version": 1,

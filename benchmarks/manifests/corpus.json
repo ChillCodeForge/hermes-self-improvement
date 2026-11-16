@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "benchmark_version": "sha256:c401810318984735de0b47bfe0f9260a6988da215861be36b3d5c0b9fbbd656e",
+  "record_count": 26,
+  "counts": {
+    "split": {
+      "REGRESSION": 8,
+      "TRAIN": 10,
+      "VALIDATION": 8
+    },
+    "category": {
+      "coding": 3,
+      "data-transform": 4,
+      "devops": 3,
+      "docs": 3,
+      "git": 4,
+      "mcp": 3,
+      "research": 3,
+      "shell": 3
+    },
+    "difficulty": {
+      "easy": 11,
+      "hard": 2,
+      "medium": 13
+    },
+    "suite": {
+      "CORE": 23,
+      "FULL": 26,
+      "SMOKE": 14
+    },
+    "eligibility": {
+      "HARD_BENCHMARK": 26
+    }
+  },
+  "records": [
+    {
+      "id": "coding-fix-duration-parser",
+      "version": 1,
+      "digest": "17afd91fdc5edf63e1aab9a7f845b6e0d708f5f029e1a681849e9422ae43fb82",
+      "split": "VALIDATION",
+      "cluster_id": "coding-fix-duration-parser",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "coding-fix-pagination-bug",
+      "version": 1,
+      "digest": "636be627d5c52d0e7761b7bead706551e0f2893c5d7bd3d637f2843c072dd1c3",
+      "split": "TRAIN",
+      "cluster_id": "coding-fix-pagination-bug",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "coding-implement-slugify",
+      "version": 1,
+      "digest": "d46aa947780e8aca7712e6a3a56e88eb9cb0023c0a554799cefc71f306805f4e",
+      "split": "REGRESSION",
+      "cluster_id": "coding-implement-slugify",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "data-bump-image-tag-yaml",
+      "version": 1,
+      "digest": "88e5e7bb49360fb11f2e09e040db6f5238c6237222eaecc99d4d7a7909cb483e",
+      "split": "VALIDATION",
+      "cluster_id": "data-bump-image-tag-yaml",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "data-csv-to-typed-json",
+      "version": 1,
+      "digest": "d58da22be02bb44c204e847fa2bb0d2f41e3fba2fa22e289863af9c54c1e018f",
+      "split": "TRAIN",
+      "cluster_id": "data-csv-to-typed-json",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "data-deep-merge-config",
+      "version": 1,
+      "digest": "9ceba9d4ec9ef47aee99692d050457a60248caf76fe9f125c00b4d9ecada5f43",
+      "split": "TRAIN",
+      "cluster_id": "data-deep-merge-config",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "data-normalize-date-column",
+      "version": 1,
+      "digest": "d391cca2a1eef4466346bae526a89dfd13742a35732aa639253f05f9553bafe0",
+      "split": "REGRESSION",
+      "cluster_id": "data-normalize-date-column",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "devops-harden-systemd-unit",
+      "version": 1,
+      "digest": "596d3961b6e8a19e8de34141ff44661c36550c729d5ad8388872edaccfff6701",
+      "split": "REGRESSION",
+      "cluster_id": "devops-harden-systemd-unit",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "devops-pin-base-images",
+      "version": 1,
+      "digest": "fae77477da731d6c21948aca1bdff2272ee5b3f94228677367690a915b52ed27",
+      "split": "TRAIN",
+      "cluster_id": "devops-pin-base-images",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "devops-set-resource-limits",
+      "version": 1,
+      "digest": "eddd1c1285447ed4ef1eb36afb3d2d6435bf33292f845b008c3eaa30730c4e87",
+      "split": "VALIDATION",
+      "cluster_id": "devops-set-resource-limits",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "docs-add-changelog-entry",
+      "version": 1,
+      "digest": "91cc10a5231ad83f8c8b60ea4b0a0eea65033cbe5bfd885e651fb2fc2c471bd6",
+      "split": "REGRESSION",
+      "cluster_id": "docs-add-changelog-entry",
+      "suites": [
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "docs-render-options-table",
+      "version": 1,
+      "digest": "0a18b191a15ce9dac49b3404b036f8723dba3574c0fae56b5e641bc48729844a",
+      "split": "VALIDATION",
+      "cluster_id": "docs-render-options-table",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "docs-repair-relative-links",
+      "version": 1,
+      "digest": "ce2e8fdb9a561b176a7a4d8a5f986ea8c137caa1273b368968d6b41891dbbf91",
+      "split": "TRAIN",
+      "cluster_id": "docs-repair-relative-links",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "git-annotated-release-tag",
+      "version": 1,
+      "digest": "f4c6ac25c26af23a5546898a474c5f76b20960ee98218a338560d676bf378758",
+      "split": "TRAIN",
+      "cluster_id": "git-annotated-release-tag",
+      "suites": [
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "git-resolve-merge-conflict",
+      "version": 1,
+      "digest": "6d1e34b305bc715a8f7e16a298a5719f17809a533c497e6aace22bec0ee99150",
+      "split": "TRAIN",
+      "cluster_id": "git-resolve-merge-conflict",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "git-revert-faulty-commit",
+      "version": 1,
+      "digest": "929141d6dc1d53f08924d78832a57157683570692a95dd3adb609658beaf0719",
+      "split": "VALIDATION",
+      "cluster_id": "git-revert-faulty-commit",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "git-squash-fixup-commits",
+      "version": 1,
+      "digest": "5e081ef098a78ed7614b3192f869615ee63d777235d2768d3b6f841f59fce2c1",
+      "split": "REGRESSION",
+      "cluster_id": "git-squash-fixup-commits",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "mcp-disable-unpinned-servers",
+      "version": 1,
+      "digest": "cb91b724e8ea0f00a32ed8babbdd1d20c205290f3d1a94702261c23a69813d0c",
+      "split": "REGRESSION",
+      "cluster_id": "mcp-disable-unpinned-servers",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "mcp-repair-tool-input-schema",
+      "version": 1,
+      "digest": "be067024c2f919572c1d4695895dc3756ce7c3367144487a627c64356bffaf95",
+      "split": "VALIDATION",
+      "cluster_id": "mcp-repair-tool-input-schema",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "mcp-restrict-tool-allowlist",
+      "version": 1,
+      "digest": "4205aa22ab4bc429a6ce189abfbea7536d0c6081c4623a1129f716a1d9dba20c",
+      "split": "TRAIN",
+      "cluster_id": "mcp-restrict-tool-allowlist",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "research-aggregate-latency-results",
+      "version": 1,
+      "digest": "c306fe78e1acddc5af3fcf85f05bab63ef564c93838be95bd7457d5e28ca05ec",
+      "split": "TRAIN",
+      "cluster_id": "research-aggregate-latency-results",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "research-collect-package-licenses",
+      "version": 1,
+      "digest": "04f613c00e01c455c2ca5e56c8be6783c480cb67f539051d1081c304759f9654",
+      "split": "VALIDATION",
+      "cluster_id": "research-collect-package-licenses",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "research-locate-config-default",
+      "version": 1,
+      "digest": "581bf97893fe197583951883b96be9c4312c3dda079a20a28d50de7891c19df5",
+      "split": "REGRESSION",
+      "cluster_id": "research-locate-config-default",
+      "suites": [
+        "FULL"
+      ]
+    },
+    {
+      "id": "shell-count-error-codes",
+      "version": 1,
+      "digest": "e70e2e16085a1098426eac4f29621046c824c9c02151f7590b0f2c4dff7b0590",
+      "split": "VALIDATION",
+      "cluster_id": "shell-count-error-codes",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "shell-fix-backup-quoting",
+      "version": 1,
+      "digest": "702f6f37bdc828d506f49a8acc2fa56d823beab8301b89f9bb42f49d0c367a47",
+      "split": "REGRESSION",
+      "cluster_id": "shell-fix-backup-quoting",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "shell-organize-photos-by-date",
+      "version": 1,
+      "digest": "e4182e23c6f5df3afedb6ea68a98af32b721de63141e0251a24bdb77abd2364b",
+      "split": "TRAIN",
+      "cluster_id": "shell-organize-photos-by-date",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    }
+  ],
+  "digest": "sha256:5128e02db7ab6cdb45ebf6776cc8fd70e2378b59e7f553281dfe309981596347"
+}

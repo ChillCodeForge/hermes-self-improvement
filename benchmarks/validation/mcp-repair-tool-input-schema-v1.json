@@ -1,0 +1,104 @@
+{
+  "benchmark": {
+    "cluster_id": "mcp-repair-tool-input-schema",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/mcp*",
+      "skills/*-mcp*",
+      "tools/mcp*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "77bb0c124f313f8b0666ec69416a3d70cb342f83fe324332d1f6b306c7141452",
+      "outcome_digest": "e0023dafbc1757acbf3c7373155274b8f1c0dd3b256a0f5296f46c3674f40c39",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:24.258613+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/mcp-repair-tool-input-schema",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:0efafa1584a1ddaf55c2a2ad3513d5656116a563a35dc9641682b8bdd2be9f10",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/mcp-repair-tool-input-schema",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "mcp-repair-tool-input-schema",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:24.258613+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Fix tools/create_ticket.json as described in ISSUE.md so its inputSchema is a valid JSON Schema: define the required priority enum, make labels an array of strings and reject unknown arguments, without changing name, description or title.",
+    "title": "Repair an invalid MCP tool input schema"
+  },
+  "taxonomy": {
+    "categories": [
+      "mcp"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "mcp-tools",
+      "json-schema"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 8,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

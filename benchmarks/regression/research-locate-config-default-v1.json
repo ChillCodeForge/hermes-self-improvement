@@ -1,0 +1,103 @@
+{
+  "benchmark": {
+    "cluster_id": "research-locate-config-default",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/research*",
+      "skills/*-research*",
+      "tools/research*"
+    ],
+    "split": "REGRESSION",
+    "suites": [
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "efd810772ebbfa22aa8515c872f7035bf7c5a18d6db4b13846e61f4cf5096d95",
+      "outcome_digest": "edf3c5705d451d2d8d1bf01c88bd7c7caacd1be3e5587253e5e35d31bf6149b8",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:36.727524+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/research-locate-config-default",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:2df5b0792ea6d5d8cad97c53719503b0675677fe1a0271d3db69910cae872260",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/research-locate-config-default",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "research-locate-config-default",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:36.727524+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Answer QUESTION.md in answer.json: which setting controls the sync client's request timeout, its default in seconds and the overriding environment variable. Where docs and code disagree, the code wins.",
+    "title": "Find the sync timeout setting and its real default"
+  },
+  "taxonomy": {
+    "categories": [
+      "research"
+    ],
+    "difficulty": "hard",
+    "required_capabilities": [
+      "code-reading",
+      "documentation"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 4,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

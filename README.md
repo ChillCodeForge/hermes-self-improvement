@@ -29,7 +29,8 @@ controlled Git-backed process.
 > `batch_runner` execution adapter (`HermesBatchRunner`) exists and is tested
 > against the real CLI and trajectory schema with a fixture, but has not been
 > run against a live Hermes install and model endpoint.
-> The repository still lacks the curated 20–50 real-task benchmark corpus,
+> The repository ships a curated, replay-verified 26-task command benchmark
+> corpus, but no corpus mined from real Hermes sessions. It also still lacks
 > tested DSPy/`hermes-agent-self-evolution` integrations (GEPA optimize is
 > integrated behind a pinned optional extra), a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
@@ -51,9 +52,9 @@ pytest
 
 The default benchmark directory is `benchmarks/`; the database defaults to
 `~/.hermes-improve/experiments.sqlite3`. Override them with
-`HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The included sample task
-is a schema fixture, not one of the 20–50 curated real-task benchmarks required
-for evaluation readiness.
+`HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The `benchmarks/` tree holds
+26 curated deterministic command benchmarks (train/validation/regression) with
+fixtures under `benchmarks/fixtures/`; see `docs/benchmarking.md`.
 
 ### Implemented in this repository
 
@@ -71,29 +72,26 @@ for evaluation readiness.
   included.
 - An opt-in Hermes entry-point plugin that reads finalized transcript messages
   from SessionDB and queues redacted exports under the active Hermes home.
-- JSON benchmark validation, split/cluster leakage checks, separate holdout
-  roots, conservative lexical near-duplicate split checks, SQLite
-  experiment/evaluation/release metadata, and content-addressed artifacts.
-<<<<<<< HEAD
-- Paired baseline/candidate evaluation, deterministic hard gates, confidence
-  intervals, Ed25519-signed reports, and a Docker runner for explicit
-  digest-pinned command benchmarks.
-- A Git promoter for brain candidates (skills auto-gated, other types behind
-  signed operator approval) with signed manifests, atomic release-pointer
-  switching, rollback, post-promotion monitoring with read-only shadow replay
-  and promoter-executed rollback (`monitor evaluate --apply`), an
-  observability report (`report`), and a Laya decision-history dataset
-  (`decisions export`).
-=======
+- JSON/YAML benchmark records with a Pydantic schema (`benchmarks schema`),
+  split/cluster leakage checks, lexical near-duplicate and MinHash similarity
+  cluster checks, a nine-factor reproducibility score and eligibility
+  classifier, impact-aware SMOKE/CORE/FULL/holdout suite selection with
+  digest-pinned manifests, Docker replay reproducibility checks
+  (`benchmarks replay`), operator-managed sealed-holdout generation rotation
+  (`benchmarks holdout rotate`), SQLite experiment/evaluation/release
+  metadata, and content-addressed artifacts.
 - Paired baseline/candidate evaluation with a run-count policy per suite,
   15 spec-driven deterministic verifiers, a blind pairwise judge that can only
   block, paired deltas with CI95 and effect sizes, efficiency metrics,
   Ed25519-signed reports, a Docker runner for digest-pinned command benchmarks
   (network off by default, optional internal allowlist network) and a Hermes
   `batch_runner` adapter. See `docs/evaluation.md`.
-- A skills-only Git promoter with signed manifests, atomic release-pointer
-  switching, rollback, and a monitoring decision API.
->>>>>>> feat/wpC-evaluation
+- A Git promoter for brain candidates (skills auto-gated, other types behind
+  signed operator approval) with signed manifests, atomic release-pointer
+  switching, rollback, post-promotion monitoring with read-only shadow replay
+  and promoter-executed rollback (`monitor evaluate --apply`), an
+  observability report (`report`), and a Laya decision-history dataset
+  (`decisions export`).
 - CLI creation of immutable skill candidates in isolated Git worktrees/branches
   from operator-supplied `SKILL.md` content, with secret/path checks and atomic
   experiment persistence.
@@ -643,7 +641,7 @@ phase begins.
 | Phase | Deliverable | Current repository status | Exit criteria |
 |---|---|---|---|
 | **0 — Discovery** | Inspect actual Hermes, Curator, Self-Evolution, DSPy/GEPA, and Qwen versions/APIs; document reuse, risks, and adapters | Initial findings are documented; several external APIs and endpoints remain unverified | Evidence-backed discovery and reuse matrix; no assumption treated as an integration |
-| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components are implemented; the curated 20–50-task corpus and repeated real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
+| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components and a curated, replay-verified 26-task command corpus are implemented; agent runs on that corpus and repeated real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
 | **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Skills-only promotion and rollback are implemented; separate OS identities, filesystem protection, and a verified production deployment remain | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
 | **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | Strategy and optimization APIs exist; external adapters and automatic skill generation are not integrated | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
 | **4 — Session ingestion** | Post-session hook/export, redaction, metadata extraction, ingestion queue | JSON and trajectory ingestion plus an opt-in finalize plugin are implemented; live Hermes session finalization remains unverified | Completed sessions enter the queue without heavy analysis in the user path |

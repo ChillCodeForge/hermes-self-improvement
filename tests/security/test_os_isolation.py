@@ -90,7 +90,7 @@ def layout_root():
     (root / "holdout" / "sealed-task.json").write_text('{"secret": "holdout"}\n')
     (root / "config" / "promotion.yaml").write_text("min_quality_delta: 3\n")
     (root / "benchmarks" / "public" / "train").mkdir()
-    shutil.copy(REPO / "benchmarks" / "train" / "example-smoke.json", root / "benchmarks" / "public" / "train")
+    shutil.copy(REPO / "benchmarks" / "train" / "coding-fix-pagination-bug-v1.json", root / "benchmarks" / "public" / "train")
     provision(root)  # normalizes the newly added files
     yield root
     shutil.rmtree(base)
@@ -155,7 +155,7 @@ def test_agent_cannot_tamper_with_config_policy_ground_truth_or_evaluator_code(l
     policy = layout_root / "config" / "promotion.yaml"
     for target in (
         policy, layout_root / "config" / "layout.json", layout_root / "config" / "roles" / "promoter.env",
-        layout_root / "benchmarks" / "public" / "train" / "example-smoke.json",
+        layout_root / "benchmarks" / "public" / "train" / "coding-fix-pagination-bug-v1.json",
     ):
         assert denied(as_user(AGENT, "sh", "-c", f"echo tampered >> {target}"))
         assert denied(as_user(AGENT, "chmod", "666", target))

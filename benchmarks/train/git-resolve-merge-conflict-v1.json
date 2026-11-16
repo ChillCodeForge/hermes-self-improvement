@@ -1,0 +1,104 @@
+{
+  "benchmark": {
+    "cluster_id": "git-resolve-merge-conflict",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git*",
+      "skills/*-git*",
+      "tools/git*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "4f12bdfe7333a6b9c483ac8206102fcd7d427c822b97b3aa5f91651c0afd7fc7",
+      "outcome_digest": "73d2ee86129161435a9b83452bdd6517133b90af2e58a22899a532977704e151",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:13.916137+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": "benchmarks/fixtures/git-resolve-merge-conflict",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "input_data": "sha256:4c7c7729420c86cb5ed0f155d7a3c95cbf32a8bc84189711de7aceb39bd45341",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/git-resolve-merge-conflict",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "git-resolve-merge-conflict",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:13.916137+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. It is a Git repository on main. Merge branch feature/port-change into main with a real merge commit. In settings.ini keep the feature branch's port and timeout and keep main's logging level. Leave no conflict markers and a clean working tree.",
+    "title": "Merge a feature branch and resolve the settings conflict"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "git-cli",
+      "merge"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 7,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

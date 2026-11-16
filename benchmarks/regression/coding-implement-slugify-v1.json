@@ -1,0 +1,106 @@
+{
+  "benchmark": {
+    "cluster_id": "coding-implement-slugify",
+    "criticality": "high",
+    "impact_areas": [
+      "skills/coding*",
+      "skills/*-coding*",
+      "tools/coding*"
+    ],
+    "split": "REGRESSION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "b6f25cf715b3fb27fa327c0c5f27dc59fb006bd84cd2f5331fb99d61e531272e",
+      "outcome_digest": "d79244cc4ff8fde0597a6abe7f2f5a634a14b1206d6fb103adfb5ed397de7d3b",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:23:43.723534+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/coding-implement-slugify",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:037ff26a72fab5555a3178859ab74c5c6ab7d95ce73b19aae449d654ab53914d",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/coding-implement-slugify",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "coding-implement-slugify",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:23:43.723534+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Implement textutil.slugify() according to its docstring (ASCII-folded lowercase slug, single hyphens, length limit without trailing hyphen) so that test_textutil.py passes. Leave the tests unchanged.",
+    "title": "Implement slugify for article URLs"
+  },
+  "taxonomy": {
+    "categories": [
+      "coding"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "python",
+      "unit-tests",
+      "unicode"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 4,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

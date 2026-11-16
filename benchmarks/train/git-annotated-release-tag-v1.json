@@ -1,0 +1,104 @@
+{
+  "benchmark": {
+    "cluster_id": "git-annotated-release-tag",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git*",
+      "skills/*-git*",
+      "tools/git*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "85b0c7d487facaec555808818688f5709f9df675",
+      "environment_digest": "7177e915950ec571659c81333d5fb0f73d5324d23fa5421257130a590daf35b0",
+      "outcome_digest": "8d52f326dc4dd716f4b93aff0002df74a8bebcf9bea111e746174aa93447fb01",
+      "passed": true,
+      "replayed_at": "2026-11-16T19:24:11.941401+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": "benchmarks/fixtures/git-annotated-release-tag",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "input_data": "sha256:4b1ccf9d07eff680fa6052bd4fd431aea2cef821a7e5d7da6b3c8a70ae8b27ed",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/git-annotated-release-tag",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "git-annotated-release-tag",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-16T19:24:11.941401+00:00"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Create an annotated tag v1.2.0 with message 'Release 1.2.0' on the commit that bumped VERSION to 1.2.0 (not on HEAD). Do not create other tags or new commits.",
+    "title": "Tag the 1.2.0 release commit"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "git-cli",
+      "release"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 7,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}
