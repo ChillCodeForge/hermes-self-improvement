@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from . import __version__
@@ -21,10 +22,14 @@ from .miner import mine_session
 from .monitoring import ProductionObservation, ReleaseMonitor
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
+from .hermes_runner import HermesBatchRunner, HermesModelConfig
+from .judge import PairwiseJudge
 from .models import Benchmark, Candidate, CandidateType, Eligibility, Role, Split
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .qwen import OpenAICompatibleQwen, QwenConfig
+from .run_policy import RunPolicy
+from .sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits
 from .security import SpentHoldoutRegistry, consume_holdout_generation
 from .store import ExperimentStore
 
@@ -212,6 +217,61 @@ def _load_dreaming_proposal(
     return CandidateType(candidate_type), target, hypothesis
 
 
+def select_suite_benchmarks(benchmarks: list[Benchmark], suite: str) -> tuple[list[str], list[str]]:
+    """Hard benchmarks of a suite; FULL additionally includes every sealed holdout task."""
+    suite = suite.upper()
+    if suite not in {"SMOKE", "CORE", "FULL"}:
+        raise ValueError(f"unsupported evaluation suite: {suite!r}")
+    hard = [item for item in benchmarks if Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK]
+    suite_ids = [
+        item.id for item in hard
+        if item.split is not Split.SEALED_HOLDOUT
+        and suite in {str(name).upper() for name in item.benchmark.get("suites", [])}
+    ]
+    holdout_ids = [item.id for item in hard if item.split is Split.SEALED_HOLDOUT] if suite == "FULL" else []
+    if not suite_ids:
+        raise ValueError(f"no HARD_BENCHMARK tasks are assigned to suite {suite}")
+    if suite == "FULL" and not holdout_ids:
+        raise ValueError("promotion evaluation requires at least one FULL and one sealed holdout benchmark")
+    return suite_ids, holdout_ids
+
+
+def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
+    """Construct the sandboxed benchmark runner selected on the command line."""
+    limits = SandboxLimits(
+        timeout_seconds=args.timeout, max_turns=args.max_turns, max_tool_calls=args.max_tool_calls,
+    )
+    network = NetworkPolicy()
+    if args.network is not None or args.network_allow:
+        network = NetworkPolicy("allowlist", args.network, frozenset(args.network_allow))
+    http_allowlist = frozenset(args.verifier_http_allow)
+    if args.runner == "docker":
+        return DockerCommandRunner(
+            args.repository, artifact_store, default_timeout=args.timeout, network=network,
+            verifier_http_allowlist=http_allowlist,
+        )
+    if args.hermes_agent_dir is None or not args.model or not args.model_base_url:
+        raise ValueError("--runner hermes requires --hermes-agent-dir, --model and --model-base-url")
+    if network.mode != "disabled":
+        raise ValueError("--runner hermes executes agent tools with networking disabled only")
+
+    def executor_factory(benchmark: Benchmark) -> DockerSandboxExecutor:
+        return DockerSandboxExecutor(str(benchmark.environment.get("container_image")), limits)
+
+    return HermesBatchRunner(
+        args.repository, artifact_store,
+        hermes_agent_dir=args.hermes_agent_dir,
+        model=HermesModelConfig(
+            model=args.model, base_url=args.model_base_url, api_key_env=args.model_api_key_env,
+        ),
+        executor_factory=executor_factory,
+        python_executable=args.hermes_python,
+        limits=limits,
+        fixtures_root=args.fixtures_root,
+        verifier_http_allowlist=http_allowlist,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -251,7 +311,25 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("candidate_id")
     evaluate.add_argument("--repository", type=Path, required=True)
     evaluate.add_argument("--holdout-root", type=Path, required=True)
-    evaluate.add_argument("--seeds", default="1")
+    evaluate.add_argument(
+        "--suite", choices=["SMOKE", "CORE", "FULL"], default="FULL",
+        help="FULL also evaluates the sealed holdout; SMOKE/CORE are staged, non-deciding runs",
+    )
+    evaluate.add_argument("--seeds", help="explicit comma-separated seeds; default derives them from the run policy")
+    evaluate.add_argument("--runner", choices=["docker", "hermes"], default="docker")
+    evaluate.add_argument("--timeout", type=float, default=120, help="per-run sandbox timeout in seconds")
+    evaluate.add_argument("--max-turns", type=int, default=30)
+    evaluate.add_argument("--max-tool-calls", type=int, default=200)
+    evaluate.add_argument("--network", help="dedicated internal Docker network for allowlisted benchmarks")
+    evaluate.add_argument("--network-allow", action="append", default=[], metavar="HOST:PORT")
+    evaluate.add_argument("--verifier-http-allow", action="append", default=[], metavar="HOST:PORT")
+    evaluate.add_argument("--hermes-agent-dir", type=Path, help="Hermes source checkout containing batch_runner.py")
+    evaluate.add_argument("--hermes-python", default=sys.executable)
+    evaluate.add_argument("--model")
+    evaluate.add_argument("--model-base-url")
+    evaluate.add_argument("--model-api-key-env")
+    evaluate.add_argument("--fixtures-root", type=Path)
+    evaluate.add_argument("--judge", action="store_true", help="enable the qwen_judge role (QWEN_* environment)")
     experiments = sub.add_parser("experiments")
     experiment_sub = experiments.add_subparsers(dest="experiment_command", required=True)
     listing = experiment_sub.add_parser("list")
@@ -567,52 +645,44 @@ def main() -> int:
             holdout_root=holdout_root,
         )
         benchmarks = access_store.validate()
-        full_ids = [
-            item.id for item in benchmarks
-            if item.split is not Split.SEALED_HOLDOUT
-            and Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK
-            and "FULL" in {str(suite).upper() for suite in item.benchmark.get("suites", [])}
-        ]
-        holdout_ids = [
-            item.id for item in benchmarks
-            if item.split is Split.SEALED_HOLDOUT
-            and Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK
-        ]
-        if not full_ids or not holdout_ids:
-            raise ValueError("promotion evaluation requires at least one FULL and one sealed holdout benchmark")
-        try:
-            seeds = [int(value) for value in args.seeds.split(",")]
-        except ValueError as exc:
-            raise ValueError("--seeds must be comma-separated integers") from exc
-        if not seeds or any(value < 0 for value in seeds):
-            raise ValueError("--seeds must contain non-negative integers")
-        security_access = access_store.access
-        grant = security_access.evaluator_holdout_grant(Role.EVALUATOR)
+        suite = args.suite
+        suite_ids, holdout_ids = select_suite_benchmarks(benchmarks, suite)
+        seeds = None
+        if args.seeds is not None:
+            try:
+                seeds = [int(value) for value in args.seeds.split(",")]
+            except ValueError as exc:
+                raise ValueError("--seeds must be comma-separated integers") from exc
+            if not seeds or any(value < 0 for value in seeds):
+                raise ValueError("--seeds must contain non-negative integers")
+        grant = access_store.access.evaluator_holdout_grant(Role.EVALUATOR) if holdout_ids else None
         artifact_store = ArtifactStore(database.parent / "artifacts")
-        runner = DockerCommandRunner(args.repository, artifact_store)
         evaluator = PairedEvaluator(
             access_store,
-            runner,
+            build_runner(args, artifact_store),
             PromotionPolicy(),
             experiment_store=store,
             evaluator_signing_key=Path(private_key_path).read_bytes(),
             artifact_store=artifact_store,
+            run_policy=RunPolicy(),
+            judge=PairwiseJudge(OpenAICompatibleQwen(QwenConfig.from_env())) if args.judge else None,
         )
-        experiment = store.show_experiment(stored_candidate["experiment_id"])
-        consume_holdout_generation(
-            SpentHoldoutRegistry(str(database)),
-            [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT],
-            experiment["lineage_id"],
-        )
+        if holdout_ids:
+            experiment = store.show_experiment(stored_candidate["experiment_id"])
+            consume_holdout_generation(
+                SpentHoldoutRegistry(str(database)),
+                [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT],
+                experiment["lineage_id"],
+            )
         report = evaluator.evaluate(
             candidate,
             baseline_commit=stored_candidate["base_commit"],
-            benchmark_ids=full_ids + holdout_ids,
+            benchmark_ids=suite_ids + holdout_ids,
             seeds=seeds,
-            suite="FULL",
+            suite=suite,
             benchmark_version=access_store.version,
             holdout_grant=grant,
-            evaluation_id=f"eval-{args.candidate_id}-{__import__('uuid').uuid4().hex}",
+            evaluation_id=f"eval-{suite.lower()}-{args.candidate_id}-{__import__('uuid').uuid4().hex}",
         )
         print(json.dumps(report_payload(report), indent=2))
     elif args.command in {"promote", "rollback"}:

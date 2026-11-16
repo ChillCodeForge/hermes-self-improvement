@@ -246,7 +246,8 @@ class PairedEvaluator:
                     self.experiment_store.record_artifact(digest, str(artifact_path))
             signature = sign_report(report, self.evaluator_signing_key)
             self.experiment_store.record_evaluation(
-                evaluation_id, candidate.candidate_id, report, signature=signature
+                evaluation_id, candidate.candidate_id, report, signature=signature,
+                decides_experiment=suite.upper() in {"FULL", "SEALED_HOLDOUT"},
             )
         return report
 
