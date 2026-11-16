@@ -29,7 +29,9 @@ controlled Git-backed process.
 > `batch_runner` execution adapter is wired; existing
 > `trajectories.jsonl` output can be imported as untrusted evidence, while the
 > Docker runner handles declared command benchmarks only.
-> The repository still lacks the curated 20–50 real-task benchmark corpus,
+> The repository ships a curated, replay-verified 26-task command benchmark
+> corpus, but no corpus mined from real Hermes sessions and no Hermes runtime
+> adapter that lets the agent itself solve those tasks. It also still lacks
 > tested external GEPA/DSPy/self-evolution integrations, a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
 > collector, and a verified end-to-end Hermes skill improvement deployment.
@@ -50,9 +52,9 @@ pytest
 
 The default benchmark directory is `benchmarks/`; the database defaults to
 `~/.hermes-improve/experiments.sqlite3`. Override them with
-`HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The included sample task
-is a schema fixture, not one of the 20–50 curated real-task benchmarks required
-for evaluation readiness.
+`HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The `benchmarks/` tree holds
+26 curated deterministic command benchmarks (train/validation/regression) with
+fixtures under `benchmarks/fixtures/`; see `docs/benchmarking.md`.
 
 ### Implemented in this repository
 
@@ -70,9 +72,14 @@ for evaluation readiness.
   included.
 - An opt-in Hermes entry-point plugin that reads finalized transcript messages
   from SessionDB and queues redacted exports under the active Hermes home.
-- JSON benchmark validation, split/cluster leakage checks, separate holdout
-  roots, conservative lexical near-duplicate split checks, SQLite
-  experiment/evaluation/release metadata, and content-addressed artifacts.
+- JSON/YAML benchmark records with a Pydantic schema (`benchmarks schema`),
+  split/cluster leakage checks, lexical near-duplicate and MinHash similarity
+  cluster checks, a nine-factor reproducibility score and eligibility
+  classifier, impact-aware SMOKE/CORE/FULL/holdout suite selection with
+  digest-pinned manifests, Docker replay reproducibility checks
+  (`benchmarks replay`), operator-managed sealed-holdout generation rotation
+  (`benchmarks holdout rotate`), SQLite experiment/evaluation/release
+  metadata, and content-addressed artifacts.
 - Paired baseline/candidate evaluation, deterministic hard gates, confidence
   intervals, Ed25519-signed reports, and a Docker runner for explicit
   digest-pinned command benchmarks.
