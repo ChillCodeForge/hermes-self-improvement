@@ -77,7 +77,10 @@ for evaluation readiness.
   intervals, Ed25519-signed reports, and a Docker runner for explicit
   digest-pinned command benchmarks.
 - A skills-only Git promoter with signed manifests, atomic release-pointer
-  switching, rollback, and a monitoring decision API.
+  switching, rollback, post-promotion monitoring with read-only shadow replay
+  and promoter-executed rollback (`monitor evaluate --apply`), an
+  observability report (`report`), and a Laya decision-history dataset
+  (`decisions export`).
 - CLI creation of immutable skill candidates in isolated Git worktrees/branches
   from operator-supplied `SKILL.md` content, with secret/path checks and atomic
   experiment persistence.
@@ -479,8 +482,9 @@ the deterministic promotion gate. No live endpoint has been validated.
 
 SQLite is the current experiment store. It persists
 experiments, candidates, evaluation runs, task results, regressions, artifacts,
-and releases. A decisions table is present but has no public recording API.
-Structured decision history is future work, not an active Laya integration.
+and releases. A `decision_history` table with a recording, ground-truth
+backfill, and JSONL export API collects Laya training data (see
+`docs/laya-future.md`); no Laya model exists.
 An experiment records IDs and lineage; hypothesis and source sessions;
 candidate type, target, and risk; baseline/candidate commits and hash;
 benchmark and policy versions; model/environment digests and seeds; per-task
@@ -558,12 +562,16 @@ hermes-improve benchmarks candidates
 hermes-improve releases list
 hermes-improve promote <candidate-id> --release brain-vN
 hermes-improve rollback <release>
+hermes-improve curator status|propose|convert-pending
+hermes-improve monitor ingest|replay|evaluate [--apply]
+hermes-improve report [--json]
+hermes-improve decisions export|backfill
 ```
 
 Some workflows require optional Qwen (REM/DEEP) or Docker (command evaluation).
 Candidate Git creation is available for operator-supplied skill text; automatic
 skill generation, a Hermes `batch_runner` execution/evaluation adapter,
-experiment evolution CLI, replay management, Curator integration, production
+experiment evolution CLI, a bundled Hermes replay runner, production
 observation collection, and identity provisioning are not implemented.
 
 ## Phased delivery
@@ -582,8 +590,8 @@ phase begins.
 | **5 — Benchmark miner** | Eligibility classes and reproducibility scoring | Mining proposals and operator review are implemented; proposals still require separate benchmark authoring and admission | Reproducible tasks are distinguished from Dreaming-only evidence |
 | **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact/lexical leakage checks and spent markers are implemented; semantic clustering and holdout rotation remain absent | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
-| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Validated caller-supplied read-only signals are implemented; a live Curator connector is absent | No Curator bypass around candidate evaluation and Git |
-| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Monitoring API marks releases stable when policy passes and recommends—but does not execute—rollback; bounded JSONL ingestion exists, while production collection remains absent | Regression triggers an auditable rollback decision |
+| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion are implemented and tested against fixtures in the real format; archive/delete conversion is refused | No Curator bypass around candidate evaluation and Git |
+| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; production collection and a Hermes replay runner remain absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous
 learning. Later candidate types, observability expansion, and Laya are gated on
@@ -643,7 +651,9 @@ Reports should cover:
 - **Production:** brain version, provisional/stable status, regressions, rollback
   count
 
-These are observability goals, not currently available dashboards.
+`hermes-improve report` computes these sections from persisted state and
+prints `no data` where no source exists (GPU runtime: `unavailable`; judge
+uncertainty is not persisted yet). There is no dashboard.
 
 ## Initial completion criteria
 
