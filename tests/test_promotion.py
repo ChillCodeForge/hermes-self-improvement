@@ -635,6 +635,7 @@ def test_cli_approve_and_promote_by_experiment_id(tmp_path, monkeypatch, capsys)
     (tmp_path / "operator.pub").write_bytes(operator_public)
     (tmp_path / "evaluator.pub").write_bytes(evaluator_public)
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    monkeypatch.setenv("HERMES_IMPROVE_ISOLATION", "unprovisioned")
     monkeypatch.delenv("HERMES_IMPROVE_CONFIG", raising=False)
     monkeypatch.setenv("HERMES_OPERATOR_PRIVATE_KEY", str(tmp_path / "operator.pem"))
     monkeypatch.setattr(sys, "argv", [
