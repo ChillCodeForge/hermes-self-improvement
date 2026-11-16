@@ -1,0 +1,95 @@
+{
+  "benchmark": {
+    "cluster_id": "mcp-disable-unpinned-servers",
+    "criticality": "critical",
+    "impact_areas": [
+      "skills/mcp*",
+      "skills/*-mcp*",
+      "tools/mcp*"
+    ],
+    "split": "REGRESSION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/mcp-disable-unpinned-servers",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:0030ce024d520d5ac348e84ed753a38087ccf1f31c82e68d5a57594207006489",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/mcp-disable-unpinned-servers",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "mcp-disable-unpinned-servers",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Apply POLICY.md to mcp.json: set disabled to true on every npx server whose package is not pinned to an exact version and leave all other servers exactly unchanged.",
+    "title": "Disable MCP servers launched from unpinned packages"
+  },
+  "taxonomy": {
+    "categories": [
+      "mcp"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "mcp-config",
+      "supply-chain"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 7,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

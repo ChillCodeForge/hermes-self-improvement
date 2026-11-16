@@ -1,0 +1,95 @@
+{
+  "benchmark": {
+    "cluster_id": "devops-pin-base-images",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/devops*",
+      "skills/*-devops*",
+      "tools/devops*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/devops-pin-base-images",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:7f0bb028ed1452cc15ed8cbbb0f0e8de2cc1997006e6e8fa33757c95424d025d",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/devops-pin-base-images",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "devops-pin-base-images",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Pin every FROM image in services/*/Dockerfile to the digest listed for it in pins.txt (image@sha256:...), keeping build stage names and all other lines unchanged.",
+    "title": "Pin Dockerfile base images by digest"
+  },
+  "taxonomy": {
+    "categories": [
+      "devops"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "dockerfile",
+      "supply-chain"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 3,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

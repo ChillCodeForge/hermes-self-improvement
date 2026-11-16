@@ -1,0 +1,5 @@
+[
+  {"name": "--config", "default": "hermes.toml", "description": "Path to the configuration file."},
+  {"name": "--dry-run", "default": null, "description": "Print planned changes without writing."},
+  {"name": "--jobs", "default": "4", "description": "Number of parallel workers."}
+]

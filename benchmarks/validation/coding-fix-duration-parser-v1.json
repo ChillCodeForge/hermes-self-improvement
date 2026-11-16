@@ -1,0 +1,95 @@
+{
+  "benchmark": {
+    "cluster_id": "coding-fix-duration-parser",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/coding*",
+      "skills/*-coding*",
+      "tools/coding*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/coding-fix-duration-parser",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:de7b27b59e18be3ebc767c1f0ba474392d807a975811e2f184c478e215a73b9d",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/coding-fix-duration-parser",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "coding-fix-duration-parser",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. durations.parse_duration() silently ignores malformed text such as '5x', '30m1h' or '1h 30m'. Rewrite it so it accepts only h, m and s parts in that order, each at most once, raises ValueError otherwise, and makes test_durations.py pass without editing the tests.",
+    "title": "Make the duration parser reject malformed input"
+  },
+  "taxonomy": {
+    "categories": [
+      "coding"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "python",
+      "unit-tests",
+      "regex"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 4,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

@@ -1,0 +1,94 @@
+{
+  "benchmark": {
+    "cluster_id": "devops-harden-systemd-unit",
+    "criticality": "high",
+    "impact_areas": [
+      "skills/devops*",
+      "skills/*-devops*",
+      "tools/devops*"
+    ],
+    "split": "REGRESSION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/devops-harden-systemd-unit",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:37206672525432b20b0f2ae3b760aa5e942f73c1fbcdff0e920412e1bba27ddf",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/devops-harden-systemd-unit",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "devops-harden-systemd-unit",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Add NoNewPrivileges=yes, ProtectSystem=strict, ProtectHome=yes, PrivateTmp=yes and ReadWritePaths=/var/lib/report-worker to the [Service] section of report-worker.service without duplicating keys or changing ExecStart, User, Restart or other sections.",
+    "title": "Harden the report worker systemd unit"
+  },
+  "taxonomy": {
+    "categories": [
+      "devops"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "systemd",
+      "hardening"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 9,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

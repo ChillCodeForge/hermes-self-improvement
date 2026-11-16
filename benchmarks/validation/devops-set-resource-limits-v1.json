@@ -1,0 +1,94 @@
+{
+  "benchmark": {
+    "cluster_id": "devops-set-resource-limits",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/devops*",
+      "skills/*-devops*",
+      "tools/devops*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/devops-set-resource-limits",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:e898e3f5b93e219e95a68f09cd3027e1cc352d5a5a442bad1a2a32a64eb986fb",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/devops-set-resource-limits",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "devops-set-resource-limits",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Add the resources block required by POLICY.md to each container in deployment.yaml, directly after its image line and in the exact shape and values the policy prescribes.",
+    "title": "Apply the container resource policy"
+  },
+  "taxonomy": {
+    "categories": [
+      "devops"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "kubernetes",
+      "yaml"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 3,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "calendar": {"command": "npx", "args": ["-y", "@acme/calendar-mcp@2.4.1"]},
+    "browser": {"command": "npx", "args": ["-y", "@acme/browser-mcp"]},
+    "notes": {"command": "npx", "args": ["-y", "notes-mcp@latest", "--readonly"]},
+    "search": {"command": "npx", "args": ["-y", "search-mcp@1.0.0"]},
+    "metrics": {"command": "npx", "args": ["-y", "metrics-mcp@^3.1.0"]},
+    "local": {"command": "/opt/mcp/local-server", "args": []}
+  }
+}

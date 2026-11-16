@@ -1,0 +1,95 @@
+{
+  "benchmark": {
+    "cluster_id": "docs-render-options-table",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/docs*",
+      "skills/*-docs*",
+      "tools/docs*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/docs-render-options-table",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:6ced9cd2d2dfa08422ba1a06b2f809e0bfa4ab1ca775bb26cba13e4bb1391915",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/docs-render-options-table",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "docs-render-options-table",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Replace the content between the options markers in README.md with a Markdown table '| Option | Default | Description |' built from cli-options.json in file order; wrap option names and non-null defaults in backticks and write '-' for null defaults.",
+    "title": "Render the CLI options table into the README"
+  },
+  "taxonomy": {
+    "categories": [
+      "docs"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "markdown",
+      "json"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 3,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

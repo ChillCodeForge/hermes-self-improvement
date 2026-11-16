@@ -1,0 +1,95 @@
+{
+  "benchmark": {
+    "cluster_id": "mcp-restrict-tool-allowlist",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/mcp*",
+      "skills/*-mcp*",
+      "tools/mcp*"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/mcp-restrict-tool-allowlist",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:c6a140fe66df548df6341a3d7eeeafb2571099c2415122660b6c951a9f62ad4c",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/mcp-restrict-tool-allowlist",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "mcp-restrict-tool-allowlist",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Apply POLICY.md to mcp.json: give the files server a tools.include allowlist with its read-only tools in alphabetical order and leave the other server unchanged.",
+    "title": "Restrict an MCP server to read-only tools"
+  },
+  "taxonomy": {
+    "categories": [
+      "mcp"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "mcp-config",
+      "json"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 3,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

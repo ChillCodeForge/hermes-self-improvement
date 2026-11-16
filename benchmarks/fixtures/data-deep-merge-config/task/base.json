@@ -1,0 +1,6 @@
+{
+  "service": {"name": "billing", "port": 8080, "features": ["invoices", "refunds"]},
+  "database": {"host": "db.internal", "pool": {"min": 2, "max": 10}, "ssl": true},
+  "logging": {"level": "info", "format": "json"},
+  "legacy_mode": true
+}

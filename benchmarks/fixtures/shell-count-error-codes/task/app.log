@@ -1,0 +1,12 @@
+2024-05-01T10:00:00Z INFO request served path=/health
+2024-05-01T10:00:01Z ERROR code=E102 upstream timeout
+2024-05-01T10:00:02Z WARN code=E102 slow upstream
+2024-05-01T10:00:03Z ERROR code=E500 unhandled exception
+2024-05-01T10:00:04Z ERROR code=E102 upstream timeout
+2024-05-01T10:00:05Z INFO request served path=/orders
+2024-05-01T10:00:06Z ERROR code=E404 missing template
+2024-05-01T10:00:07Z ERROR code=E500 unhandled exception
+2024-05-01T10:00:08Z ERROR code=E102 upstream timeout
+2024-05-01T10:00:09Z WARN code=E404 template fallback used
+2024-05-01T10:00:10Z ERROR code=E201 validation failed
+2024-05-01T10:00:11Z ERROR code=E404 missing template

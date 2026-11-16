@@ -1,0 +1,94 @@
+{
+  "benchmark": {
+    "cluster_id": "research-collect-package-licenses",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/research*",
+      "skills/*-research*",
+      "tools/research*"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "SOFT_BENCHMARK",
+    "replay_verified": false,
+    "reproducibility_score": 0.85
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "../harness/run-reference.sh"
+    ],
+    "container_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "cwd": "benchmarks/fixtures/research-collect-package-licenses",
+    "dependency_digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    "input_data": "sha256:80709001001379ccd5484d076f139030860869119a30005326781453992da0a7",
+    "network_policy": "disabled",
+    "repository_fixture": "benchmarks/fixtures/research-collect-package-licenses",
+    "timeout_seconds": 60,
+    "type": "command"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "research-collect-package-licenses",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "curated WP-B corpus; fixture, reference solution and deterministic check authored together",
+    "type": "manual"
+  },
+  "task": {
+    "prompt": "The workspace is the current directory. Follow QUESTION.md: write licenses.json mapping each vendored package name to its license, falling back to the license classifier when the License field is missing or UNKNOWN.",
+    "title": "Inventory licenses of vendored packages"
+  },
+  "taxonomy": {
+    "categories": [
+      "research"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "python",
+      "metadata"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": [],
+        "path": [
+          "failed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": 2,
+        "path": [
+          "checks"
+        ],
+        "type": "json_path_equals"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

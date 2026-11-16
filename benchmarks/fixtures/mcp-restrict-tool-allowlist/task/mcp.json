@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "files": {
+      "command": "files-mcp",
+      "args": ["--root", "/srv/shared"]
+    },
+    "tracker": {
+      "command": "tracker-mcp",
+      "args": ["--project", "OPS"],
+      "tools": {"include": ["get_issue", "search_issues"]}
+    }
+  }
+}

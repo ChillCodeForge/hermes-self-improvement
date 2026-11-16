@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly report worker
+After=network-online.target
+
+[Service]
+User=report
+ExecStart=/usr/local/bin/report-worker --queue nightly
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
