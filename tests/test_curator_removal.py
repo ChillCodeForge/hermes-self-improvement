@@ -399,12 +399,34 @@ def test_benchmarks_for_a_removed_skill_still_run_and_surface_as_regressions(bra
     monkeypatch.setenv("HERMES_EVALUATOR_UID", str(os.geteuid()))
     assert default_config().promotion.policy_version == "1"
 
-    for suite in ("SMOKE", "FULL"):
+    def evaluate(suite):
         monkeypatch.setattr(sys, "argv", [
             "hermes-improve", "evaluate", "cand-arch", "--repository", str(brain),
             "--holdout-root", str(holdout_root), "--suite", suite,
         ])
-        assert cli.main() == 0
+        return cli.main()
+
+    assert evaluate("SMOKE") == 0
+    # The regressing SMOKE evidence makes the archive candidate a non-finalist: the
+    # evaluator CLI refuses it the sealed holdout (spec §16) before running any task.
+    calls = len(runner.calls)
+    with pytest.raises(PolicyRejected, match="reserved for finalists.*SMOKE"):
+        evaluate("FULL")
+    assert len(runner.calls) == calls
+    # The FULL and holdout tasks naming the removed skill still run and regress when the
+    # evaluator is driven directly (same signed, persisted path the CLI uses).
+    from hermes_improve.evaluator import PairedEvaluator
+    from hermes_improve.models import Role
+
+    access = BenchmarkStore(public_root, holdout_root=holdout_root)
+    PairedEvaluator(
+        access, runner, PromotionPolicy.from_config(default_config().promotion),
+        experiment_store=store, evaluator_signing_key=key_file.read_bytes(),
+    ).evaluate(
+        candidate, baseline_commit=candidate.base_commit, benchmark_ids=["full-task", "holdout-task"],
+        suite="FULL", benchmark_version=access.version,
+        holdout_grant=access.access.evaluator_holdout_grant(Role.EVALUATOR), evaluation_id="eval-full-arch",
+    )
 
     ran_on_candidate = {task for commit, task in runner.calls if commit == candidate.commit}
     assert {"smoke-task", "full-task", "holdout-task"} <= ran_on_candidate

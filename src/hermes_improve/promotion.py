@@ -34,6 +34,64 @@ _SAFE_EXPERIMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _GIT_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
+def verify_evaluation_run_signature(candidate_id: str, run: dict[str, Any], public_key: bytes) -> None:
+    """Verify the evaluator signature of one stored evaluation run.
+
+    ``run`` is one entry of ``ExperimentStore.candidate_evaluations``. Raises
+    ``IntegrityError`` when the run is unsigned or the signature does not cover
+    its stored outcomes, metrics and run observations.
+    """
+    evaluation = run["evaluation"]
+    if not evaluation["signature"]:
+        raise IntegrityError("evaluation has no trusted evaluator signature")
+    signed_evaluation = {
+        "candidate_id": candidate_id,
+        "candidate_hash": evaluation["candidate_hash"],
+        "benchmark_version": evaluation["benchmark_version"],
+        "policy_version": evaluation["policy_version"],
+        "outcomes": [
+            item["result"] for item in sorted(run["task_results"], key=lambda item: item["task_id"])
+        ],
+        "passed": bool(evaluation["passed"]),
+        "reasons": json.loads(evaluation["reasons"]),
+        "created_at": evaluation["created_at"],
+        "metrics": json.loads(evaluation["metrics_json"]),
+        "run_observations": [
+            {**item, "artifact_digests": item.get("artifact_digests", [])}
+            for item in sorted(
+                run["run_observations"],
+                key=lambda row: (row["task_id"], row["commit"], row["seed"]),
+            )
+        ],
+    }
+    verify_report_signature(signed_evaluation, evaluation["signature"], public_key)
+
+
+def evidence_suite_of(item: dict[str, Any]) -> str:
+    """Suite a stored task result counts as evidence for (the holdout is identified by split)."""
+    result = item["result"]
+    suite = str(result.get("suite", "")).upper()
+    if str(item["split"]) == Split.SEALED_HOLDOUT.value:
+        return "SEALED_HOLDOUT"
+    if suite == "SEALED_HOLDOUT":
+        raise IntegrityError("sealed holdout evidence must come from the SEALED_HOLDOUT split")
+    return suite
+
+
+def check_suite_evidence(suite: str, rows: list[dict[str, Any]], policy: PromotionPolicy) -> None:
+    """Per-suite evidence gates shared by the promoter and the holdout finalist gate."""
+    if any(row.get("security_pass") is not True for row in rows):
+        raise PolicyRejected(f"security verifier failed in {suite} evidence")
+    if any(row.get("deterministic_pass") is not True for row in rows):
+        raise PolicyRejected(f"deterministic verifier failed in {suite} evidence")
+    if sum(int(row.get("critical_regressions", 0)) for row in rows) > policy.max_critical_regressions:
+        raise PolicyRejected(f"critical regression in {suite} evidence")
+    if sum(int(row.get("high_regressions", 0)) for row in rows) > policy.max_high_regressions:
+        raise PolicyRejected(f"high regression in {suite} evidence")
+    if any(row.get("baseline_success") and not row.get("candidate_success") for row in rows):
+        raise PolicyRejected(f"{suite} evidence shows a task-success regression")
+
+
 class GitPromoter:
     """Promotes an evaluated brain candidate commit using an atomic symlink.
 
@@ -137,41 +195,13 @@ class GitPromoter:
                 if latest:
                     raise IntegrityError("evaluation benchmark version differs from experiment manifest")
                 continue
-            if not evaluation["signature"]:
-                raise IntegrityError("evaluation has no trusted evaluator signature")
-            signed_evaluation = {
-                "candidate_id": candidate_id,
-                "candidate_hash": evaluation["candidate_hash"],
-                "benchmark_version": evaluation["benchmark_version"],
-                "policy_version": evaluation["policy_version"],
-                "outcomes": [
-                    item["result"] for item in sorted(run["task_results"], key=lambda item: item["task_id"])
-                ],
-                "passed": bool(evaluation["passed"]),
-                "reasons": json.loads(evaluation["reasons"]),
-                "created_at": evaluation["created_at"],
-                "metrics": json.loads(evaluation["metrics_json"]),
-                "run_observations": [
-                    {**item, "artifact_digests": item.get("artifact_digests", [])}
-                    for item in sorted(
-                        run["run_observations"],
-                        key=lambda row: (row["task_id"], row["commit"], row["seed"]),
-                    )
-                ],
-            }
-            verify_report_signature(signed_evaluation, evaluation["signature"], self.evaluator_public_key)
+            verify_evaluation_run_signature(candidate_id, run, self.evaluator_public_key)
             usable.append(run)
         return usable
 
     @staticmethod
     def _suite_of(item: dict[str, Any]) -> str:
-        result = item["result"]
-        suite = str(result.get("suite", "")).upper()
-        if str(item["split"]) == Split.SEALED_HOLDOUT.value:
-            return "SEALED_HOLDOUT"
-        if suite == "SEALED_HOLDOUT":
-            raise IntegrityError("sealed holdout evidence must come from the SEALED_HOLDOUT split")
-        return suite
+        return evidence_suite_of(item)
 
     def _check_evidence(self, candidate_id: str, candidate: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, str]:
         latest = runs[-1]
@@ -190,16 +220,7 @@ class GitPromoter:
             if suite not in newest_by_suite:
                 raise PolicyRejected(f"required {suite} evidence is missing")
             run_id, rows = newest_by_suite[suite]
-            if any(row.get("security_pass") is not True for row in rows):
-                raise PolicyRejected(f"security verifier failed in {suite} evidence")
-            if any(row.get("deterministic_pass") is not True for row in rows):
-                raise PolicyRejected(f"deterministic verifier failed in {suite} evidence")
-            if sum(int(row.get("critical_regressions", 0)) for row in rows) > self.policy.max_critical_regressions:
-                raise PolicyRejected(f"critical regression in {suite} evidence")
-            if sum(int(row.get("high_regressions", 0)) for row in rows) > self.policy.max_high_regressions:
-                raise PolicyRejected(f"high regression in {suite} evidence")
-            if any(row.get("baseline_success") and not row.get("candidate_success") for row in rows):
-                raise PolicyRejected(f"{suite} evidence shows a task-success regression")
+            check_suite_evidence(suite, rows, self.policy)
             evidence_runs[suite] = run_id
         try:
             final_outcomes = [

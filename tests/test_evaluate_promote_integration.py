@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 
@@ -64,14 +65,21 @@ class FakeBenchmarkRunner:
     def __init__(self, baseline_commit):
         self.baseline_commit = baseline_commit
         self.calls = []
+        # task_id -> exception raised when the task runs (simulated infrastructure failure).
+        self.crash_on: dict[str, Exception] = {}
+        # task IDs the candidate fails although the baseline solves them.
+        self.regress: set[str] = set()
 
     def run(self, commit, benchmark, seed):
+        if benchmark.id in self.crash_on:
+            raise self.crash_on[benchmark.id]
         self.calls.append((commit, benchmark.id, seed))
         candidate = commit != self.baseline_commit
+        regressed = candidate and benchmark.id in self.regress
         return RunObservation(
             task_id=benchmark.id, commit=commit, seed=seed,
             environment_digest="sha256:" + "e" * 64,
-            success=True, quality=10 if candidate else 5, tokens=100, latency_ms=20,
+            success=not regressed, quality=10 if candidate else 5, tokens=100, latency_ms=20,
             deterministic_pass=True, security_pass=True, tool_calls=2,
             verifier_results=({"type": "exit_code", "passed": True},),
         )
@@ -157,6 +165,7 @@ def setup(tmp_path, monkeypatch):
     return {
         "evaluate": evaluate, "promoter": promoter, "store": store, "candidate": candidate, "runner": runner,
         "benchmark_store": BenchmarkStore(public_root, holdout_root=holdout_root),
+        "public_root": public_root, "ledger": home / "experiments.sqlite3",
     }
 
 
@@ -181,7 +190,18 @@ def test_staged_cli_evaluations_satisfy_promotion_evidence(setup):
 
 def test_promotion_rejects_cli_evidence_without_core_run(setup):
     setup["evaluate"]("SMOKE")
+    # The evaluator itself refuses the sealed holdout to a candidate without CORE evidence.
+    with pytest.raises(PolicyRejected, match="no signed CORE evaluation"):
+        setup["evaluate"]("FULL")
+    # The promoter re-checks independently: CORE evidence that disappears from the
+    # ledger after the FULL run still blocks promotion.
+    setup["evaluate"]("CORE")
     setup["evaluate"]("FULL")
+    core_id = setup["store"].candidate_evaluations("cand-e2e")[1]["evaluation"]["id"]
+    with sqlite3.connect(setup["ledger"]) as db:
+        for table in ("run_observations", "task_results"):
+            db.execute(f"DELETE FROM {table} WHERE evaluation_id=?", (core_id,))
+        db.execute("DELETE FROM evaluation_runs WHERE id=?", (core_id,))
     with pytest.raises(PolicyRejected, match="required CORE evidence is missing"):
         setup["promoter"]().promote("exp-e2e", release_name="brain-v1", manifest_key=b"m" * 32)
 
@@ -198,10 +218,10 @@ def test_run_policy_follows_scoring_config():
 def test_evaluate_selects_impact_scoped_suite_and_records_manifest_digests(setup):
     from hermes_improve.suites import ImpactScope, suite_manifest
 
-    setup["evaluate"]("SMOKE")
-    setup["evaluate"]("FULL")
+    for suite in ("SMOKE", "CORE", "FULL"):
+        setup["evaluate"](suite)
     runs = setup["store"].candidate_evaluations("cand-e2e")
-    smoke, full = (json.loads(run["evaluation"]["metrics_json"])["suite_selection"] for run in runs)
+    smoke, _core, full = (json.loads(run["evaluation"]["metrics_json"])["suite_selection"] for run in runs)
     # brain/skills/demo narrows SMOKE to the task whose impact_areas match skills/demo.
     assert smoke["task_ids"] == ["smoke-task"]
     assert smoke["impact"]["target_areas"] == ["skills/demo"]
@@ -257,3 +277,120 @@ def test_experiment_ledger_fields_follow_creation_evaluation_and_promotion(setup
     assert gate["manifest_sha256"] == manifest["manifest_sha256"]
     assert gate["candidate_commit"] == candidate.commit == promoted["candidate_commit"]
     assert (gate["full_suite_passed"], gate["holdout_passed"], gate["security_passed"]) == (True, True, True)
+
+# --- Sealed-holdout finalist gate and spend-on-execution (spec §16) ---
+
+
+def _spent_rows(setup):
+    with sqlite3.connect(setup["ledger"]) as db:
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='spent_holdouts'"
+        ).fetchone()
+        if not exists:
+            return []
+        return [row[0] for row in db.execute("SELECT candidate_id FROM spent_holdouts")]
+
+
+def _holdout_calls(setup):
+    return [call for call in setup["runner"].calls if call[1] == "holdout-task"]
+
+
+def test_full_without_any_screening_evidence_is_refused_before_any_task_runs(setup):
+    with pytest.raises(PolicyRejected, match="reserved for finalists.*no signed SMOKE evaluation"):
+        setup["evaluate"]("FULL")
+    assert setup["runner"].calls == []
+    assert _spent_rows(setup) == []
+    assert setup["store"].candidate_evaluations("cand-e2e") == []
+
+
+def test_full_is_refused_when_the_newest_screening_evidence_fails(setup):
+    setup["runner"].regress = {"core-task"}
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("CORE")
+    calls = len(setup["runner"].calls)
+    with pytest.raises(PolicyRejected, match="newest CORE evaluation .* does not pass.*task-success regression"):
+        setup["evaluate"]("FULL")
+    assert len(setup["runner"].calls) == calls and not _holdout_calls(setup)
+    assert _spent_rows(setup) == []
+
+
+def test_screening_evidence_must_match_the_current_benchmark_version(setup):
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("CORE")
+    # A new public task changes the benchmark manifest version: the old SMOKE/CORE
+    # runs no longer describe the suite the FULL run would use.
+    extra = _benchmark("core-task", "REGRESSION", ["CORE"])
+    extra["id"] = "core-extra"
+    extra["task"] = {"title": "core-extra", "prompt": "Document the retention window for archived release notes"}
+    extra["benchmark"]["cluster_id"] = "core-extra"
+    (setup["public_root"] / "core-extra.json").write_text(json.dumps(extra))
+    with pytest.raises(PolicyRejected, match="no signed SMOKE evaluation for benchmark version"):
+        setup["evaluate"]("FULL")
+    assert not _holdout_calls(setup) and _spent_rows(setup) == []
+
+
+def test_tampered_screening_evidence_is_refused(setup):
+    from hermes_improve.errors import IntegrityError
+
+    setup["runner"].regress = {"smoke-task"}
+    setup["evaluate"]("SMOKE")
+    setup["runner"].regress = set()
+    setup["evaluate"]("CORE")
+    smoke_id = setup["store"].candidate_evaluations("cand-e2e")[0]["evaluation"]["id"]
+    with sqlite3.connect(setup["ledger"]) as db:
+        row = db.execute("SELECT rowid, result_json FROM task_results WHERE evaluation_id=?", (smoke_id,)).fetchone()
+        forged = {**json.loads(row[1]), "candidate_success": True}
+        db.execute("UPDATE task_results SET result_json=? WHERE rowid=?", (json.dumps(forged), row[0]))
+    with pytest.raises(IntegrityError, match="failed signature verification"):
+        setup["evaluate"]("FULL")
+    assert not _holdout_calls(setup) and _spent_rows(setup) == []
+
+
+def test_finalist_gets_the_holdout_once_and_it_is_spent_after_execution(setup):
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("CORE")
+    setup["evaluate"]("FULL")
+    assert _holdout_calls(setup)
+    lineage = setup["store"].show_experiment("exp-e2e")["lineage_id"]
+    assert _spent_rows(setup) == [f"lineage:{lineage}"]
+    calls = len(setup["runner"].calls)
+    from hermes_improve.errors import AccessDenied
+
+    with pytest.raises(AccessDenied, match="already consumed"):
+        setup["evaluate"]("FULL")
+    assert len(setup["runner"].calls) == calls  # the refusal happens before any task runs
+
+
+def test_infrastructure_failure_before_the_holdout_does_not_spend_it(setup):
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("CORE")
+    setup["runner"].crash_on = {"full-task": RuntimeError("docker daemon unavailable")}
+    with pytest.raises(RuntimeError, match="docker daemon unavailable"):
+        setup["evaluate"]("FULL")
+    assert not _holdout_calls(setup)
+    assert _spent_rows(setup) == []
+    # The infrastructure is repaired: the finalist still gets its single holdout run.
+    setup["runner"].crash_on = {}
+    setup["evaluate"]("FULL")
+    assert _holdout_calls(setup)
+    assert setup["store"].show_experiment("exp-e2e")["decision"] == "passed"
+    assert len(_spent_rows(setup)) == 1
+
+
+def test_failure_after_holdout_execution_started_still_spends_it(setup):
+    from hermes_improve.errors import AccessDenied
+
+    setup["evaluate"]("SMOKE")
+    setup["evaluate"]("CORE")
+    setup["runner"].crash_on = {"holdout-task": RuntimeError("runner crashed inside the holdout task")}
+    with pytest.raises(RuntimeError, match="crashed inside the holdout task"):
+        setup["evaluate"]("FULL")
+    lineage = setup["store"].show_experiment("exp-e2e")["lineage_id"]
+    assert _spent_rows(setup) == [f"lineage:{lineage}"]
+    # No signed FULL/holdout evaluation was recorded, and the lineage cannot retry.
+    assert [json.loads(run["evaluation"]["metrics_json"])["suite"]
+            for run in setup["store"].candidate_evaluations("cand-e2e")] == ["SMOKE", "CORE"]
+    setup["runner"].crash_on = {}
+    with pytest.raises(AccessDenied, match="already consumed"):
+        setup["evaluate"]("FULL")
+    assert not _holdout_calls(setup)

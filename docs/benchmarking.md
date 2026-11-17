@@ -366,6 +366,52 @@ paths — filesystem permissions remain the security boundary.
 After rotation, lineages that consumed the previous generation can be
 evaluated again on the new one.
 
+## Holdout access and spending in `evaluate`
+
+Only finalists get holdout evaluation (spec §16). `hermes-improve evaluate
+--suite FULL` adds the sealed holdout, and before it grants the evaluator
+holdout capability or runs any task it requires finalist evidence
+(`holdout_gate.require_holdout_finalist`):
+
+- the ledger holds evaluator-signed SMOKE and CORE evaluation runs for the
+  same candidate ID and content hash, the current benchmark version and the
+  current promotion policy version; runs for another identity are ignored;
+- the newest such SMOKE and the newest such CORE run each pass the per-suite
+  evidence gates the promoter applies (`promotion.check_suite_evidence`: all
+  security and deterministic verifiers passed, critical/high regressions
+  within policy, no task the baseline solves and the candidate fails);
+- every considered run verifies against the evaluator's own Ed25519 key
+  (`promotion.verify_evaluation_run_signature`); a matching run with a broken
+  signature is treated as tampering and refuses access.
+
+Otherwise the command fails with `PolicyRejected` ("sealed holdout is reserved
+for finalists ...") or `IntegrityError`. The order is therefore `evaluate
+--suite SMOKE`, `--suite CORE`, then `--suite FULL`. This also applies to
+`evolve` finalists: their screening runs happen under the agent identity and
+are neither signed nor visible to the evaluator ledger, so the agent-written
+`generated_variants.status = full_passed` is not accepted as finalist proof;
+the evaluator re-runs SMOKE and CORE itself. (`evolve` with a holdout-capable
+gateway only offers the holdout to variants that passed FULL screening.)
+
+The holdout generation is spent when holdout tasks execute, not when access is
+granted. A non-binding pre-check refuses a lineage that already spent the
+active generation before any task runs. The binding spend is an atomic insert
+into the spent-holdout registry (`spent_holdouts`, primary key generation +
+`lineage:<lineage_id>`) made by `HoldoutSpendingRunner` immediately before the
+first SEALED_HOLDOUT task is handed to the runner, and committed before that
+task starts. Consequences:
+
+- a failure before any holdout task ran (infrastructure error, crash during the
+  FULL tasks, finalist refusal) leaves the generation unspent;
+- once a holdout task was handed to the runner the generation stays spent,
+  whether the run then passes, fails, raises or the process dies; no signed
+  report is recorded for a crashed run and the lineage cannot retry until the
+  operator rotates the holdout;
+- of concurrent `evaluate` runs for one lineage exactly one wins the insert;
+  the others abort with `AccessDenied` before executing any holdout task;
+- a crash between the committed insert and the first runner call spends the
+  generation without any holdout feedback (fails closed).
+
 ## Known limits
 
 - The corpus is curated, not mined from real Hermes sessions; provenance is

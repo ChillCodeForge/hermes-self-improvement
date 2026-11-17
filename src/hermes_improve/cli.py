@@ -51,7 +51,8 @@ from .qwen import OpenAICompatibleQwen, QwenConfig, resolve_role_models
 from .role_handoff import export_candidate, import_bundle_ref, import_candidate, sync_production_baseline
 from .run_policy import RunPolicy
 from .sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits
-from .security import SpentHoldoutRegistry, consume_holdout_generation
+from .holdout_gate import HoldoutSpendingRunner, evaluator_public_key, require_holdout_finalist
+from .security import SpentHoldoutRegistry, consume_holdout_generation, holdout_generation_spent
 from .target_paths import assert_evaluable_candidate_paths
 from .store import ExperimentStore
 from .suites import (
@@ -1028,7 +1029,8 @@ def main() -> int:
         ).run(args.candidate_id)
         print(json.dumps(report.to_dict() | {
             "next_steps": [
-                f"hermes-improve evaluate {item.candidate_id} (evaluator identity: FULL + sealed holdout)"
+                f"hermes-improve evaluate {item.candidate_id} --suite SMOKE, then CORE, then FULL "
+                "(evaluator identity; signed SMOKE+CORE evidence gates the sealed holdout)"
                 for item in report.finalists if item.full_passed
             ],
         }, indent=2))
@@ -1362,27 +1364,39 @@ def main() -> int:
                 raise ValueError("--seeds must be comma-separated integers") from exc
             if not seeds or any(value < 0 for value in seeds):
                 raise ValueError("--seeds must contain non-negative integers")
+        policy = PromotionPolicy.from_config(config.promotion)
+        signing_key = Path(private_key_path).read_bytes()
+        spend_holdout = None
+        if holdout_ids:
+            # Spec §16: only finalists (signed, passing SMOKE + CORE for this exact
+            # candidate/benchmark/policy identity) are granted the sealed holdout.
+            require_holdout_finalist(
+                store, args.candidate_id, candidate_hash=candidate.content_hash,
+                benchmark_version=access_store.version, policy=policy,
+                public_key=evaluator_public_key(signing_key),
+            )
+            holdout_rows = [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT]
+            lineage_id = store.show_experiment(stored_candidate["experiment_id"])["lineage_id"]
+            registry = SpentHoldoutRegistry(str(database))
+            if holdout_generation_spent(registry, holdout_rows, lineage_id):
+                raise AccessDenied("holdout feedback for this candidate/evolution lineage was already consumed")
+            # Binding spend happens right before the first holdout task executes.
+            spend_holdout = lambda: consume_holdout_generation(registry, holdout_rows, lineage_id)  # noqa: E731
         grant = access_store.access.evaluator_holdout_grant(Role.EVALUATOR) if holdout_ids else None
         artifact_store = ArtifactStore(database.parent / "artifacts")
         args.benchmark_root = public_root
         args.holdout_root = holdout_root
+        runner = build_runner(args, artifact_store)
         evaluator = PairedEvaluator(
             access_store,
-            build_runner(args, artifact_store),
-            PromotionPolicy.from_config(config.promotion),
+            HoldoutSpendingRunner(runner, spend_holdout) if spend_holdout is not None else runner,
+            policy,
             experiment_store=store,
-            evaluator_signing_key=Path(private_key_path).read_bytes(),
+            evaluator_signing_key=signing_key,
             artifact_store=artifact_store,
             run_policy=RunPolicy.from_config(config.scoring),
             judge=PairwiseJudge(OpenAICompatibleQwen(QwenConfig.from_env())) if args.judge else None,
         )
-        if holdout_ids:
-            experiment = store.show_experiment(stored_candidate["experiment_id"])
-            consume_holdout_generation(
-                SpentHoldoutRegistry(str(database)),
-                [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT],
-                experiment["lineage_id"],
-            )
         report = evaluator.evaluate(
             candidate,
             baseline_commit=stored_candidate["base_commit"],
