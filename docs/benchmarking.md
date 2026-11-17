@@ -116,7 +116,9 @@ Only the latest version of an id is selected; only `HARD_BENCHMARK` records
 by default. `suite_manifest(...)` returns `{schema_version, suite,
 benchmark_version, impact, task_count, tasks[{id, version, digest, split,
 cluster_id, categories}], digest}`, where `digest` is `sha256:` over the
-canonical body and `benchmark_version` is `BenchmarkStore.version`; holdout
+canonical body and `benchmark_version` is `BenchmarkStore.version` (the public
+records only, so the generator, which cannot read the holdout, derives the same
+version as the evaluator; the holdout has its own `holdout_version`); holdout
 manifests omit task details. `verify_manifest` detects tampering.
 `corpus_manifest(...)` describes the public corpus (counts by split,
 category, difficulty, suite, eligibility; per-record digests) and refuses
@@ -147,8 +149,10 @@ Images are pulled by the operator in advance; the runner uses
 
 ## Curated corpus
 
-The repository ships 26 deterministic command benchmarks (public splits
-only; no holdout data is in the repository):
+The repository ships 26 deterministic reference-solution command benchmarks
+plus six brain-consuming `skill_procedure` benchmarks (next section; public
+splits only, no holdout data is in the repository). The tables describe the
+26 command benchmarks:
 
 | Split | Count |
 |---|---|
@@ -195,7 +199,61 @@ What the reference replay proves is that the task, its ground truth and its
 check are deterministic. Running the *agent* on these tasks (agent work
 replacing `solve.sh`) needs the Hermes batch-runner adapter, which is not
 part of this package; `hermes-improve evaluate` still runs each record's
-command against the baseline and candidate commits.
+command against the baseline and candidate commits. Because those commands
+run reference solutions, their outcome does not depend on the brain under
+evaluation: baseline and candidate score identically. The brain-consuming
+tasks below close that gap.
+
+## Brain-consuming `skill_procedure` benchmarks
+
+Six further public records (TRAIN 2, VALIDATION 2, REGRESSION 2, category
+`git`, impact area `skills/git-commit-hygiene`) measure the *skill text*
+itself. A skill declares its procedure in exactly one fenced
+` ```hermes-procedure ` block in `SKILL.md`, one operation per line from a
+fixed set (`inspect`, `stage-all`, `stage-tracked`, `stage-untracked GLOB...`,
+`unstage GLOB...`, `review-staged`, `subject TEMPLATE`, `body TEMPLATE`,
+`trailer KEY TEMPLATE`, `commit`, `commit-no-verify`, `verify`; templates use
+the task intent `{type}`, `{scope}`, `{summary}`, `{why}`, `{ticket}`).
+
+- `benchmarks/fixtures/skill-harness/skill-executor.sh` (POSIX sh, runs in
+  `alpine/git`) builds the task repository with the fixture's `setup.sh`,
+  executes the procedure (arguments are data: globs go through `case`,
+  templates are filled by `awk`; nothing from the skill is evaluated as
+  shell), stops at the first failing or unknown operation, then runs the
+  fixture's `check.sh`. Only the check's JSON line
+  `{"checks", "failed", "results": {name: bool}, "status"}` is printed; the
+  operation trace goes to `trace.log`.
+- `skillcheck.sh` grades the commit: one new commit, exactly the intended
+  paths, no secret files, no generated output, conventional subject, body
+  with the reason, untracked leftovers preserved, and the `Refs:` ticket
+  trailer when (and only when) the task has a ticket.
+- Records use `environment.type: "skill_procedure"`, `harness`,
+  `harness_digest`, `repository_fixture` (`fixtures/<id>`, relative to the
+  benchmark root) and `input_data` (fixture digest). Verifiers: exit code,
+  `status == "pass"`, one `json_path_equals` per named check, and a
+  `git_diff` check that only `trace.log` changed, so quality is graded per
+  check (11 verifiers).
+- The runner (`SandboxCommandRunner`) takes only `brain/` from the evaluated
+  commit; harness and fixture are copied from the evaluator's own benchmark
+  root (fixtures of SEALED_HOLDOUT records from the holdout root) and must
+  match the pinned digests. A candidate cannot change its yardstick.
+- `benchmarks/fixtures/skill-reference/` holds the reference skill (the
+  analogue of `solve.sh`). The replay evidence of all six records comes from
+  three `DockerCommandRunner` replays at the deterministic reference brain
+  commit `96e5cbf` built by `tests/skill_procedure_support.py`;
+  `tests/test_skill_procedure_corpus.py` replays them again in a local
+  process sandbox and must reproduce the same outcome and environment
+  digests.
+
+The shipped `git-commit-hygiene` skill passes the three hygiene tasks and
+fails only the ticket check on the three ticket tasks, so a candidate that
+adds the trailer is measurably better and a candidate that stages everything
+is measurably worse (`tests/e2e/test_full_improvement_loop.py`).
+
+To run the `docker`-marked tests from a container, mount the Docker socket
+and a temporary directory at the same path the daemon sees, for example
+`-v /var/run/docker.sock:/var/run/docker.sock -v /tmp/hsi-dood:/tmp/hsi-dood
+-e TMPDIR=/tmp/hsi-dood`, because the sandbox bind-mounts host paths.
 
 ## Admission and access
 

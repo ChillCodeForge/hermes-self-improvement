@@ -30,11 +30,14 @@ controlled Git-backed process.
 > against the real CLI and trajectory schema with a fixture, but has not been
 > run against a live Hermes install and model endpoint.
 > The repository ships a curated, replay-verified 26-task command benchmark
-> corpus, but no corpus mined from real Hermes sessions. It also still lacks
+> corpus plus six brain-consuming `skill_procedure` benchmarks whose outcome
+> depends on the evaluated skill text, but no corpus mined from real Hermes
+> sessions. It also still lacks
 > tested DSPy/`hermes-agent-self-evolution` integrations (GEPA optimize is
 > integrated behind a pinned optional extra), a live Qwen service,
 > a managed Unix-user/filesystem-isolation setup, a production monitoring
-> collector, and a verified end-to-end Hermes skill improvement deployment.
+> collector, and an end-to-end improvement driven by a live Hermes agent (the
+> automated §39 E2E test uses a deterministic skill executor, not an LLM).
 > Holdout access capabilities, the spent-state ledger, and UID checks do not
 > themselves provide OS isolation. See `docs/security.md`, `docs/operations.md`, and
 > `docs/architecture.md` for the exact boundaries.
@@ -53,8 +56,9 @@ pytest
 The default benchmark directory is `benchmarks/`; the database defaults to
 `~/.hermes-improve/experiments.sqlite3`. Override them with
 `HERMES_IMPROVE_BENCHMARKS` and `HERMES_IMPROVE_HOME`. The `benchmarks/` tree holds
-26 curated deterministic command benchmarks (train/validation/regression) with
-fixtures under `benchmarks/fixtures/`; see `docs/benchmarking.md`.
+26 curated deterministic command benchmarks and 6 brain-consuming
+`skill_procedure` benchmarks (train/validation/regression) with fixtures under
+`benchmarks/fixtures/`; see `docs/benchmarking.md`.
 
 ### Implemented in this repository
 
@@ -108,12 +112,14 @@ Hermes hook ingestion is disabled by default and requires explicit plugin
 enablement/settings. Candidate proposals are not automatically converted
 into Git content. An operator may select a DEEP proposal as candidate metadata,
 but candidate creation still requires explicitly supplied skill text. The
-`evaluate` CLI (`--suite SMOKE|CORE|FULL`, `--runner docker|hermes`) needs a
+`evaluate` CLI (`--suite SMOKE|CORE|FULL`, `--runner docker|hermes|local`) needs a
 Hermes install and model endpoint for the Hermes runner; CI only exercises it
-with a fixture. Production ingestion and monitoring need
-external callers. The end-to-end flow has been exercised with a temporary Git
-repository and local Docker image, but not against a real Hermes task corpus
-or independently provisioned generator/evaluator/promoter identities.
+with a fixture. `--runner local` runs only `skill_procedure` benchmarks, without
+container isolation. Production ingestion and monitoring need
+external callers. The full §39 loop is an automated test
+(`tests/e2e/test_full_improvement_loop.py`): single-user, through real Docker
+containers, and as provisioned agent/evaluator/promoter Unix users. It runs on
+the `skill_procedure` benchmarks, not on a real Hermes task corpus or agent.
 
 The sections below describe the target design where not explicitly marked as
 implemented. A target requirement is not evidence that the feature exists.
@@ -641,7 +647,7 @@ phase begins.
 | Phase | Deliverable | Current repository status | Exit criteria |
 |---|---|---|---|
 | **0 — Discovery** | Inspect actual Hermes, Curator, Self-Evolution, DSPy/GEPA, and Qwen versions/APIs; document reuse, risks, and adapters | Initial findings are documented; several external APIs and endpoints remain unverified | Evidence-backed discovery and reuse matrix; no assumption treated as an integration |
-| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components and a curated, replay-verified 26-task command corpus are implemented; agent runs on that corpus and repeated real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
+| **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components, a curated replay-verified 26-task command corpus and 6 brain-consuming skill benchmarks are implemented; the E2E test rejects a deliberately worse skill and promotes a measurably better one; agent runs and real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
 | **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Skills-only promotion and rollback are implemented; separate OS identities, filesystem protection, and a verified production deployment remain | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
 | **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | Strategy and optimization APIs exist; external adapters and automatic skill generation are not integrated | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
 | **4 — Session ingestion** | Post-session hook/export, redaction, metadata extraction, ingestion queue | JSON and trajectory ingestion plus an opt-in finalize plugin are implemented; live Hermes session finalization remains unverified | Completed sessions enter the queue without heavy analysis in the user path |
@@ -689,10 +695,11 @@ deployment and rollback, candidate mutation after evaluation, Self-Evolution
 version mismatch, Git-state mismatch, replay reproducibility, production
 read-only enforcement, experiment lineage, and retention of failed experiments.
 
-An end-to-end fixture should demonstrate a bad candidate rejected and a
-measurably better candidate moving through Full and holdout checks, manifest
-creation, release activation, post-promotion evidence, and rollback. This
-fixture is not a substitute for real deployment or benchmark evidence.
+The end-to-end test `tests/e2e/test_full_improvement_loop.py` demonstrates a bad
+candidate rejected and a measurably better candidate moving through Full and
+holdout checks, manifest creation, release activation, post-promotion
+evidence, and rollback. It is not a substitute for real deployment or
+benchmark evidence.
 
 ## Observability goals
 
