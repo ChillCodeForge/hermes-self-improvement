@@ -630,6 +630,26 @@ def resolve_layout_path(environ: Mapping[str, str] | None = None) -> Path:
     return Path(environ.get("HERMES_IMPROVE_LAYOUT") or DEFAULT_LAYOUT_PATH)
 
 
+def require_agent_paths(
+    layout: IsolationLayout, *, repository: Path | str, benchmark_root: Path | str, state_dir: Path | str,
+) -> None:
+    """Generator (agent) commands may only use agent-owned paths and public benchmarks.
+
+    The candidate repository must be the provisioned ``brain/candidates.git``
+    or a worktree below ``workspaces/``; never the production repository, a
+    release, the holdout, or the ledger. Benchmarks must be the public tree and
+    agent state must live in the agent's own directory.
+    """
+    layout.require_paths({"benchmarks_public": benchmark_root, "agent_state": state_dir})
+    resolved = Path(repository).resolve()
+    workspaces = layout.path("workspaces")
+    if resolved != layout.path("candidate_repo") and workspaces not in resolved.parents:
+        raise PermissionError(
+            f"agent repository must be {layout.path('candidate_repo')} or a worktree below {workspaces}, "
+            f"not {resolved}"
+        )
+
+
 def enforce_isolation(role: str, environ: Mapping[str, str] | None = None) -> IsolationLayout | None:
     """Fail closed unless the provisioned layout verifies for ``role``.
 

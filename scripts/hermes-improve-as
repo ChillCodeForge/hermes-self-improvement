@@ -27,7 +27,7 @@ allowed=0
 case "$ROLE" in
   agent)
     case "$command" in
-      status|ingest|ingest-batch|dream|candidates|experiments|security) allowed=1 ;;
+      status|ingest|ingest-batch|dream|candidates|experiments|evolve|security) allowed=1 ;;
       candidate) [[ "$sub" =~ ^(create|export|sync-baseline)$ ]] && allowed=1 ;;
       benchmarks) [[ "$sub" =~ ^(list|validate|mine|candidates|inspect-candidate)$ ]] && allowed=1 ;;
     esac ;;

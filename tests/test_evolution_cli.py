@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
 
 from evolution_doubles import TARGET, ScriptedOptimizerModel, SkillMarkerRunner, evolution_fixture, git
 from hermes_improve import cli
+from hermes_improve.errors import AccessDenied
 
 
 def _wire(monkeypatch, tmp_path, model):
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(tmp_path / "benchmarks"))
+    # Development mode without a provisioned OS layout; the agent boundary
+    # itself is covered below and in tests/security/test_os_isolation.py.
+    monkeypatch.setenv("HERMES_IMPROVE_LAYOUT", str(tmp_path / "absent-layout.json"))
+    monkeypatch.setenv("HERMES_IMPROVE_ISOLATION", "unprovisioned")
     monkeypatch.setattr(cli.QwenConfig, "from_env", classmethod(lambda cls: None))
     monkeypatch.setattr(cli, "OpenAICompatibleQwen", lambda config: model)
     runners = []
@@ -151,3 +157,92 @@ def test_candidate_subcommands_coexist_and_dispatch_without_foreign_attributes(t
     experiment = fixture.store.show_experiment(output["candidates"][0]["experiment_id"])
     assert experiment["decision"] == "pending"
     assert git(fixture.repo, "branch", "--list", f"candidate/{experiment['id']}")
+
+
+def _agent_layout(tmp_path):
+    from hermes_improve.isolation import load_layout
+
+    path = tmp_path / "layout.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "root": str(tmp_path / "srv"),
+        "users": {"agent": "hsi-a", "evaluator": "hsi-e", "promoter": "hsi-p"},
+        "ledger_group": "hsi-ledger", "cli": "/usr/bin/hermes-improve",
+    }))
+    path.chmod(0o644)
+    return load_layout(path, required_owner=os.getuid())
+
+
+def test_evolve_cli_fails_closed_without_an_isolation_layout(tmp_path, monkeypatch):
+    fixture = evolution_fixture(tmp_path, with_holdout=False)
+    model = ScriptedOptimizerModel([["never used quality=9"]])
+    _wire(monkeypatch, tmp_path, model)
+    monkeypatch.delenv("HERMES_IMPROVE_ISOLATION")
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo),
+    ])
+    with pytest.raises(PermissionError, match="no provisioned isolation layout"):
+        cli.main()
+    assert model.calls == []
+    assert git(fixture.repo, "branch", "--list", "candidate/*").split() == ["candidate/root-exp"]
+
+
+def test_evolve_cli_runs_as_agent_and_refuses_paths_outside_the_agent_boundary(tmp_path, monkeypatch):
+    fixture = evolution_fixture(tmp_path, with_holdout=False)
+    model = ScriptedOptimizerModel([["never used quality=9"]])
+    _wire(monkeypatch, tmp_path, model)
+    layout = _agent_layout(tmp_path)
+    roles = []
+    monkeypatch.setattr(cli, "enforce_isolation", lambda role: roles.append(role) or layout)
+    root = layout.root
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(root / "agent"))
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root / "benchmarks" / "public"))
+    for repository in (
+        fixture.repo, root / "brain" / "production.git", root / "releases" / "brain-v1",
+        root / "holdout", root / "workspaces",
+    ):
+        monkeypatch.setattr(sys, "argv", [
+            "hermes-improve", "evolve", fixture.root_id, "--repository", str(repository),
+        ])
+        with pytest.raises(PermissionError, match="agent repository must be"):
+            cli.main()
+    # Benchmarks and agent state must be the provisioned public and agent paths.
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "evolve", fixture.root_id, "--repository", str(root / "brain" / "candidates.git"),
+    ])
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(tmp_path / "benchmarks"))
+    with pytest.raises(PermissionError, match="benchmarks_public must be the provisioned path"):
+        cli.main()
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root / "benchmarks" / "public"))
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(root / "ledger"))
+    with pytest.raises(PermissionError, match="agent_state must be the provisioned path"):
+        cli.main()
+    assert set(roles) == {"agent"} and model.calls == []
+
+
+def test_require_agent_paths_accepts_only_the_candidate_repository_and_workspaces(tmp_path):
+    from hermes_improve.isolation import require_agent_paths
+
+    layout = _agent_layout(tmp_path)
+    root = layout.root
+    common = {"benchmark_root": root / "benchmarks" / "public", "state_dir": root / "agent"}
+    require_agent_paths(layout, repository=root / "brain" / "candidates.git", **common)
+    require_agent_paths(layout, repository=root / "workspaces" / "exp-0001", **common)
+    for forbidden in (
+        root / "brain" / "production.git", root / "deploy" / "current", root / "holdout",
+        root / "ledger", root / "workspaces" / ".." / "holdout",
+    ):
+        with pytest.raises(PermissionError, match="agent repository must be"):
+            require_agent_paths(layout, repository=forbidden, **common)
+
+
+def test_evolve_cli_refuses_a_gateway_that_could_reach_the_holdout(tmp_path, monkeypatch):
+    fixture = evolution_fixture(tmp_path, with_holdout=False)
+    model = ScriptedOptimizerModel([["never used quality=9"]])
+    _wire(monkeypatch, tmp_path, model)
+    monkeypatch.setattr(cli.EvaluationGateway, "holdout_available", property(lambda self: True))
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo),
+    ])
+    with pytest.raises(AccessDenied, match="never see sealed holdout"):
+        cli.main()
+    assert model.calls == []

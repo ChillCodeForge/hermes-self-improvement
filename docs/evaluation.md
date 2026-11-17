@@ -171,8 +171,11 @@ presentation and then yield `unreliable`; contradictory positions, confidence
 below 0.5 or uncertainty above 0.5 also yield `unreliable`. Verdicts across
 seeds must agree. A `baseline` or `unreliable` verdict adds a blocking reason;
 a `candidate` verdict changes nothing, so the judge can never promote alone.
-Qwen roles share the endpoint but have separate models (`QWEN_JUDGE_MODEL`),
-statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests only).
+Qwen roles share the endpoint but resolve their own model from `config/models.yaml`
+(`roles.<role>.model_env`, falling back to `QWEN_MODEL`; `QWEN_JUDGE_MODEL` for the
+judge), and keep separate statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests
+only). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
+(`QWEN_BASE_URL`/v1) when `--model`/`--model-base-url` are omitted.
 
 ## Report contents
 

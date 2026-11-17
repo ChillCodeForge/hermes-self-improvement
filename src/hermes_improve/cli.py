@@ -23,12 +23,14 @@ from .approvals import approve_promotion
 from .errors import AccessDenied
 from .docker_runner import DockerCommandRunner
 from .hermes_plugin import HookSignalStore
-from .observability import ObservabilityLog, build_report, render_text
+from .observability import ObservabilityLog, build_report, build_status, render_text
 from .shadow_replay import CommandReplayRunner, ShadowReplayer
 from .dreaming import DreamingEngine
 from .ingestion import SessionQueue, contains_secret_material
 from .holdout_rotation import rotate_holdout
-from .isolation import ROLES as ISOLATION_ROLES, check_isolation, enforce_isolation, load_layout, resolve_layout_path
+from .isolation import (
+    ROLES as ISOLATION_ROLES, check_isolation, enforce_isolation, load_layout, require_agent_paths, resolve_layout_path,
+)
 from .miner import corpus_similarity_index, mine_session
 from .replay import is_command_benchmark, replay_benchmark
 from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
@@ -43,7 +45,7 @@ from .optimizer import ModelMutationStrategy
 from .policy import PromotionPolicy
 from .promotion import GitPromoter
 from .proposal_generator import generate_candidates_from_proposals
-from .qwen import OpenAICompatibleQwen, QwenConfig
+from .qwen import OpenAICompatibleQwen, QwenConfig, resolve_role_models
 from .role_handoff import export_candidate, import_bundle_ref, import_candidate, sync_production_baseline
 from .run_policy import RunPolicy
 from .sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits
@@ -299,6 +301,15 @@ def select_suite_benchmarks(
     return [item.id for item in selected], [item.id for item in holdout]
 
 
+def _solver_role_defaults() -> tuple[str | None, str | None, str | None]:
+    """Model, OpenAI-compatible base URL and API-key variable name of the qwen_solver role."""
+    models = config_from_environment().models
+    model = resolve_role_models(models, os.environ).get("qwen_solver")
+    base_url = os.environ.get(models.endpoint_env["base_url"], "").rstrip("/")
+    key_env = models.endpoint_env["api_key"]
+    return model, f"{base_url}/v1" if base_url else None, key_env if os.environ.get(key_env) else None
+
+
 def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
     """Construct the sandboxed benchmark runner selected on the command line."""
     limits = SandboxLimits(
@@ -313,8 +324,18 @@ def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
             args.repository, artifact_store, default_timeout=args.timeout, network=network,
             verifier_http_allowlist=http_allowlist,
         )
-    if args.hermes_agent_dir is None or not args.model or not args.model_base_url:
-        raise ValueError("--runner hermes requires --hermes-agent-dir, --model and --model-base-url")
+    model_name, model_base_url, model_api_key_env = args.model, args.model_base_url, args.model_api_key_env
+    if not model_name or not model_base_url:
+        # Default to the qwen_solver logical role from config/models.yaml.
+        solver_model, solver_base_url, solver_key_env = _solver_role_defaults()
+        model_name = model_name or solver_model
+        model_base_url = model_base_url or solver_base_url
+        model_api_key_env = model_api_key_env or solver_key_env
+    if args.hermes_agent_dir is None or not model_name or not model_base_url:
+        raise ValueError(
+            "--runner hermes requires --hermes-agent-dir and a solver model "
+            "(--model/--model-base-url or the qwen_solver role environment)"
+        )
     if network.mode != "disabled":
         raise ValueError("--runner hermes executes agent tools with networking disabled only")
 
@@ -325,7 +346,7 @@ def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
         args.repository, artifact_store,
         hermes_agent_dir=args.hermes_agent_dir,
         model=HermesModelConfig(
-            model=args.model, base_url=args.model_base_url, api_key_env=args.model_api_key_env,
+            model=model_name, base_url=model_base_url, api_key_env=model_api_key_env,
         ),
         executor_factory=executor_factory,
         python_executable=args.hermes_python,
@@ -365,7 +386,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("status")
+    status = sub.add_parser("status", help="current brain version, active release and ledger counts (read-only)")
+    status.add_argument(
+        "--deployment-link", type=Path,
+        help="deployment symlink Hermes reads (default: the provisioned layout's deploy/current, if any)",
+    )
     ingest = sub.add_parser("ingest")
     ingest.add_argument("export", type=Path)
     batch_ingest = sub.add_parser("ingest-batch")
@@ -664,7 +689,18 @@ def main() -> int:
     args = build_parser().parse_args()
     database, benchmark_root = _paths()
     if args.command == "status":
-        print(json.dumps({"version": __version__, "database": str(database), "benchmarks": str(benchmark_root), "phase": "evaluation-foundation"}, indent=2))
+        deployment_link = args.deployment_link
+        if deployment_link is None:
+            layout_path = resolve_layout_path()
+            if layout_path.is_file():
+                try:
+                    deployment_link = load_layout(layout_path).deployment_link
+                except (OSError, ValueError):
+                    deployment_link = None
+        print(json.dumps({
+            "version": __version__, "database": str(database), "benchmarks": str(benchmark_root),
+            **build_status(database.parent, benchmark_root, deployment_link=deployment_link),
+        }, indent=2))
     elif args.command == "ingest":
         try:
             export = json.loads(args.export.read_text(encoding="utf-8"))
@@ -878,6 +914,13 @@ def main() -> int:
             "promotion": "not performed; created candidates await evaluation",
         }, indent=2))
     elif args.command == "evolve":
+        # The optimizer is the generator: it runs as the agent role, which must
+        # hold no holdout access and no production write (spec §2, §32).
+        layout = enforce_isolation("agent")
+        if layout is not None:
+            require_agent_paths(
+                layout, repository=args.repository, benchmark_root=benchmark_root, state_dir=database.parent,
+            )
         overrides: dict[str, object] = {}
         if args.settings is not None:
             with args.settings.open("rb") as source:
@@ -912,6 +955,8 @@ def main() -> int:
             generator_store=BenchmarkStore(benchmark_root),
             run_policy=RunPolicy.from_config(hermes_config.scoring),
         )
+        if gateway.holdout_available:
+            raise AccessDenied("evolve runs as the generator and must never see sealed holdout tasks")
         report = EvolutionLoop(
             repository=args.repository, store=store, gateway=gateway, strategy=strategy,
             expected_strategy_version=expected_version, config=config,

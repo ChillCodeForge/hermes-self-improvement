@@ -11,6 +11,12 @@ hermes-improve benchmarks list --role generator
 hermes-improve experiments list
 ```
 
+`status` reads the ledger read-only and reports the active brain version (from the
+deployment link given by `--deployment-link` or the provisioned layout, else the release
+ledger, with any disagreement reported as `mismatch`), the active release and its status,
+and counts of experiments by decision, candidates, evaluation runs, releases by status,
+rollbacks, spent holdouts, queued sessions and public benchmarks.
+
 `HERMES_IMPROVE_HOME` selects the local state root (`experiments.sqlite3`,
 `sessions.sqlite3`, `monitoring.sqlite3`, `observability.sqlite3`,
 `hook_signals.sqlite3`, `artifacts/`); `HERMES_IMPROVE_BENCHMARKS` selects the
