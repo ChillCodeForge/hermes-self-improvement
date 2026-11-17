@@ -43,6 +43,8 @@ from .benchmark_schema import (
     parse_benchmark_document,
 )
 from .benchmarks import BenchmarkStore, validate_benchmark_set
+from .clustering import SemanticReport
+from .embeddings import SemanticLayer
 from .models import Benchmark, Split
 from .security import manifest_digest
 
@@ -61,9 +63,16 @@ class RotationResult:
     generation: str
     record_count: int
     status: str
+    # Layer-5 status of the leakage check (counts and model id only, no content).
+    semantic_layer: SemanticReport | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"generation": self.generation, "record_count": self.record_count, "status": self.status}
+        result: dict[str, object] = {
+            "generation": self.generation, "record_count": self.record_count, "status": self.status,
+        }
+        if self.semantic_layer is not None:
+            result["semantic_layer"] = self.semantic_layer.to_dict()
+        return result
 
 
 def holdout_generation_digest(benchmarks: Iterable[Benchmark]) -> str:
@@ -93,7 +102,9 @@ def active_generation(store_root: Path) -> str | None:
     return _generation_from_target(os.readlink(link))
 
 
-def rotate_holdout(staging: Path, store_root: Path, *, public_root: Path) -> RotationResult:
+def rotate_holdout(
+    staging: Path, store_root: Path, *, public_root: Path, semantic: SemanticLayer | None = None,
+) -> RotationResult:
     """Validate STAGING and activate it as a new immutable holdout generation."""
     staging = Path(staging)
     store_root = Path(store_root)
@@ -124,7 +135,7 @@ def rotate_holdout(staging: Path, store_root: Path, *, public_root: Path) -> Rot
             snapshot = _snapshot_tree(staging_resolved)
             records = _parse_snapshot(snapshot)
             public = BenchmarkStore(public_resolved).load_public()
-            validate_benchmark_set([*public, *records])
+            leakage = validate_benchmark_set([*public, *records], semantic=semantic)
             generation = holdout_generation_digest(records)
             generations_fd = _open_or_create_directory(store_fd, GENERATIONS_DIRECTORY)
             try:
@@ -166,7 +177,7 @@ def rotate_holdout(staging: Path, store_root: Path, *, public_root: Path) -> Rot
                 os.unlink(temporary_link, dir_fd=store_fd)
                 raise
             os.fsync(store_fd)
-            return RotationResult(generation, len(records), "activated")
+            return RotationResult(generation, len(records), "activated", leakage.semantic)
     finally:
         os.close(store_fd)
 

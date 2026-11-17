@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 
 from .clustering import SimilarityIndex, task_fingerprint
 from .eligibility import assess_session
+from .embeddings import SemanticLayer
 from .ingestion import contains_secret_material
 from .models import Benchmark, Eligibility
 
@@ -81,16 +82,26 @@ def mine_session(
 
 def mine_sessions(
     sessions: Iterable[Mapping[str, Any]], *, corpus: Iterable[Benchmark] = (),
+    semantic: SemanticLayer | None = None,
 ) -> list[BenchmarkCandidate]:
     """Mine a batch; similar sessions share a cluster, and tasks similar to an
-    existing corpus benchmark inherit that benchmark's declared cluster_id."""
-    index = corpus_similarity_index(corpus)
+    existing corpus benchmark inherit that benchmark's declared cluster_id.
+
+    With ``semantic`` (layer 5), paraphrases with little shared vocabulary
+    also join the cluster, so `DedupRegistry` pins them to the same split."""
+    index = corpus_similarity_index(corpus, semantic=semantic)
     return [mine_session(session, cluster_index=index) for session in sessions]
 
 
-def corpus_similarity_index(corpus: Iterable[Benchmark]) -> SimilarityIndex:
-    index = SimilarityIndex()
-    for benchmark in sorted(corpus, key=lambda item: (item.id, item.version)):
+def corpus_similarity_index(
+    corpus: Iterable[Benchmark], *, semantic: SemanticLayer | None = None,
+) -> SimilarityIndex:
+    index = SimilarityIndex(semantic=semantic)
+    rows = sorted(corpus, key=lambda item: (item.id, item.version))
+    if semantic is not None:
+        # One batched (cached) embedding request for the whole corpus.
+        semantic.vectors([str(item.task["prompt"]) for item in rows if str(item.task["prompt"]).strip()])
+    for benchmark in rows:
         index.add(
             f"benchmark:{benchmark.id}:{benchmark.version}",
             str(benchmark.task["prompt"]),

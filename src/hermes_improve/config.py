@@ -104,6 +104,13 @@ class EvolutionConfig:
 
 
 @dataclass(frozen=True)
+class ClusteringConfig:
+    # Cosine-similarity threshold of the semantic clustering layer (layer 5).
+    # Only used when an embedding endpoint is configured (models.yaml embedding).
+    semantic_similarity_threshold: float = 0.85
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     overall_score_dashboard_only: bool = True
     deterministic_runs: int = 1
@@ -114,6 +121,7 @@ class ScoringConfig:
         "SEALED_HOLDOUT": RunCountRange(5, 5),
     }))
     evolution: EvolutionConfig = EvolutionConfig()
+    clustering: ClusteringConfig = ClusteringConfig()
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,21 @@ class ModelRoleConfig:
 
 
 @dataclass(frozen=True)
+class EmbeddingEnvConfig:
+    """Environment-variable names of the optional embedding endpoint (layer 5).
+
+    There is deliberately no fallback to the chat endpoint and no default URL:
+    the semantic layer is enabled only when both URL and model are set.
+    """
+
+    base_url_env: str = "QWEN_EMBEDDING_BASE_URL"
+    model_env: str = "QWEN_EMBEDDING_MODEL"
+    api_key_env: str = "QWEN_EMBEDDING_API_KEY"
+    timeout_env: str = "QWEN_EMBEDDING_TIMEOUT"
+    allow_remote_env: str = "QWEN_EMBEDDING_ALLOW_REMOTE"
+
+
+@dataclass(frozen=True)
 class ModelsConfig:
     endpoint_env: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({
         "base_url": "QWEN_BASE_URL",
@@ -146,6 +169,7 @@ class ModelsConfig:
         "qwen_dreamer": ModelRoleConfig("QWEN_MODEL"),
         "qwen_judge": ModelRoleConfig("QWEN_JUDGE_MODEL", "QWEN_MODEL"),
     }))
+    embedding: EmbeddingEnvConfig = EmbeddingEnvConfig()
 
 
 @dataclass(frozen=True)
@@ -364,7 +388,10 @@ def _parse_promotion(document: Mapping[str, Any]) -> PromotionConfig:
 
 
 def _parse_scoring(document: Mapping[str, Any]) -> ScoringConfig:
-    _exact_keys(document, "scoring.yaml", {"schema_version", "overall_score", "run_counts", "evolution"})
+    _exact_keys(
+        document, "scoring.yaml", {"schema_version", "overall_score", "run_counts", "evolution"},
+        {"clustering"},
+    )
     _schema(document, "scoring.yaml")
     overall = document["overall_score"]
     _exact_keys(overall, "scoring.yaml overall_score", {"dashboard_only"})
@@ -397,6 +424,19 @@ def _parse_scoring(document: Mapping[str, Any]) -> ScoringConfig:
     }
     if integers["candidates_per_generation"] > integers["max_candidates_total"]:
         raise ConfigError("evolution.candidates_per_generation cannot exceed max_candidates_total")
+    clustering = ClusteringConfig()
+    if "clustering" in document:
+        section = document["clustering"]
+        _exact_keys(section, "scoring.yaml clustering", {"semantic_similarity_threshold"})
+        threshold = section["semantic_similarity_threshold"]
+        if (
+            isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+            or not math.isfinite(threshold) or not 0 < threshold <= 1
+        ):
+            raise ConfigError(
+                "scoring.yaml clustering.semantic_similarity_threshold must be a finite number in (0, 1]"
+            )
+        clustering = ClusteringConfig(float(threshold))
     return ScoringConfig(
         overall_score_dashboard_only=True,
         deterministic_runs=deterministic,
@@ -406,6 +446,7 @@ def _parse_scoring(document: Mapping[str, Any]) -> ScoringConfig:
             minimum_meaningful_delta=_non_negative_number(
                 evolution["minimum_meaningful_delta"], "evolution.minimum_meaningful_delta"),
         ),
+        clustering=clustering,
     )
 
 
@@ -435,7 +476,7 @@ def _parse_taxonomy(document: Mapping[str, Any]) -> TaxonomyConfig:
 
 
 def _parse_models(document: Mapping[str, Any]) -> ModelsConfig:
-    _exact_keys(document, "models.yaml", {"schema_version", "endpoint_env", "roles"})
+    _exact_keys(document, "models.yaml", {"schema_version", "endpoint_env", "roles"}, {"embedding"})
     _schema(document, "models.yaml")
     endpoint = document["endpoint_env"]
     _exact_keys(endpoint, "models.yaml endpoint_env", {"base_url", "api_key", "timeout", "max_concurrency"})
@@ -454,7 +495,24 @@ def _parse_models(document: Mapping[str, Any]) -> ModelsConfig:
                 f"models.yaml roles.{role} must reference QWEN_* environment variables, not model names"
             )
         parsed[role] = ModelRoleConfig(entry["model_env"], entry.get("fallback_model_env"))
-    return ModelsConfig(endpoint_env=MappingProxyType(dict(endpoint)), roles=MappingProxyType(parsed))
+    embedding = EmbeddingEnvConfig()
+    if "embedding" in document:
+        section = document["embedding"]
+        fields = {
+            "base_url_env", "model_env", "api_key_env", "timeout_env", "allow_remote_env",
+        }
+        _exact_keys(section, "models.yaml embedding", fields)
+        for key, value in section.items():
+            if not isinstance(value, str) or not _ENV_NAME.fullmatch(value):
+                raise ConfigError(
+                    f"models.yaml embedding.{key} must name a QWEN_* environment variable, "
+                    "not a model name or URL"
+                )
+        embedding = EmbeddingEnvConfig(**section)
+    return ModelsConfig(
+        endpoint_env=MappingProxyType(dict(endpoint)), roles=MappingProxyType(parsed),
+        embedding=embedding,
+    )
 
 
 def _digest_documents(documents: Mapping[str, Any] | None) -> str:
@@ -505,6 +563,9 @@ def _default_documents() -> dict[str, Any]:
                     scoring.evolution.stop_after_no_improvement_generations,
                 "minimum_meaningful_delta": scoring.evolution.minimum_meaningful_delta,
             },
+            "clustering": {
+                "semantic_similarity_threshold": scoring.clustering.semantic_similarity_threshold,
+            },
         },
         "taxonomy.yaml": {
             "schema_version": 1,
@@ -521,6 +582,13 @@ def _default_documents() -> dict[str, Any]:
                     if entry.fallback_model_env else {"model_env": entry.model_env}
                 )
                 for role, entry in models.roles.items()
+            },
+            "embedding": {
+                "base_url_env": models.embedding.base_url_env,
+                "model_env": models.embedding.model_env,
+                "api_key_env": models.embedding.api_key_env,
+                "timeout_env": models.embedding.timeout_env,
+                "allow_remote_env": models.embedding.allow_remote_env,
             },
         },
     }

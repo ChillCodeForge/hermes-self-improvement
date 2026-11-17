@@ -1,6 +1,6 @@
 """Task deduplication and similarity clustering without heavy dependencies (spec §15).
 
-Four layers, from strictest to broadest:
+Five layers, from strictest to broadest:
 
 1. exact content hash: SHA-256 of the raw prompt bytes;
 2. task fingerprint: SHA-256 of the case-folded, whitespace-normalized prompt;
@@ -10,10 +10,26 @@ Four layers, from strictest to broadest:
    16x4 LSH banding for candidate pairs, confirmed by exact shingle Jaccard
    >= 0.5. Connected components form clusters.
 
-Layer 4 is a lexical approximation of semantic similarity: it groups reworded
-and lightly edited prompts, but cannot recognise paraphrases that share
-little vocabulary. Every step is deterministic (fixed hash salts, sorted
-iteration), so cluster ids are reproducible across processes and machines.
+5. semantic clustering (optional): cosine similarity of prompt embeddings
+   >= ``scoring.yaml clustering.semantic_similarity_threshold``, computed by a
+   pluggable :class:`~hermes_improve.embeddings.Embedder` (default backend: a
+   local OpenAI-compatible ``/v1/embeddings`` endpoint configured through
+   ``models.yaml embedding``). Semantic links are added to the same
+   union-find as layer 4, so clusters are connected components of the merged
+   lexical + semantic graph and split consistency is checked on them.
+
+Layer 4 is lexical: it groups reworded and lightly edited prompts but cannot
+recognise paraphrases that share little vocabulary; layer 5 closes that gap
+when an embedder is configured. Without one, behaviour is exactly layers 1-4
+and every leakage report says explicitly that layer 5 was not applied
+(:class:`SemanticReport` status ``not_applied``). SEALED_HOLDOUT prompts are
+embedded only by a backend marked ``sealed_holdout_trusted`` (a loopback
+endpoint); otherwise they are excluded and the status is ``partial``.
+
+Layers 1-4 are deterministic (fixed hash salts, sorted iteration), so cluster
+ids are reproducible across processes and machines. Layer 5 is reproducible
+because vectors are cached by (model id, content hash) and the model id is
+recorded in the report; links depend only on cached vectors and the threshold.
 """
 
 from __future__ import annotations
@@ -23,9 +39,14 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
-from .models import Benchmark
+from .embeddings import Vector, cosine
+from .models import Benchmark, Split
+
+if TYPE_CHECKING:
+    from .embeddings import SemanticLayer
 
 SHINGLE_SIZE = 5
 NUM_PERMUTATIONS = 64
@@ -115,10 +136,14 @@ def _bands(signature: Sequence[int]) -> tuple[str, ...]:
 class SimilarityIndex:
     """Incremental MinHash/LSH index assigning deterministic cluster ids."""
 
-    def __init__(self, threshold: float = SIMILARITY_THRESHOLD) -> None:
+    def __init__(
+        self, threshold: float = SIMILARITY_THRESHOLD, *, semantic: "SemanticLayer | None" = None,
+    ) -> None:
         if not 0 < threshold <= 1:
             raise ValueError("similarity threshold must be in (0, 1]")
         self.threshold = threshold
+        self.semantic = semantic
+        self._vectors: dict[str, Vector] = {}
         self._entries: dict[str, _Entry] = {}
         self._buckets: dict[str, list[str]] = defaultdict(list)
         self._cluster_of: dict[str, str] = {}
@@ -132,7 +157,8 @@ class SimilarityIndex:
     def similar_keys(self, text: str) -> tuple[str, ...]:
         """Return indexed keys whose confirmed similarity meets the threshold."""
         candidate = self._entry("", text)
-        return tuple(key for key, _score in self._matches(candidate))
+        matches = self._matches(candidate) or self._semantic_matches(text)
+        return tuple(key for key, _score in matches)
 
     def add(self, key: str, text: str, *, cluster_id: str | None = None) -> str:
         """Index `text` under `key`; return the cluster it joins.
@@ -146,7 +172,7 @@ class SimilarityIndex:
         if key in self._entries:
             raise ValueError(f"similarity index key already present: {key!r}")
         entry = self._entry(key, text)
-        matches = self._matches(entry)
+        matches = self._matches(entry) or self._semantic_matches(text)
         if matches:
             assigned = self._cluster_of[matches[0][0]]
         else:
@@ -155,6 +181,8 @@ class SimilarityIndex:
         self._cluster_of[key] = assigned
         for band in entry.bands:
             self._buckets[band].append(key)
+        if self.semantic is not None and text.strip():
+            self._vectors[key] = self.semantic.vectors([text])[0]
         return assigned
 
     def cluster_of(self, key: str) -> str:
@@ -165,6 +193,19 @@ class SimilarityIndex:
             raise ValueError("similarity index text must be a string")
         items = shingles(text)
         return _Entry(key, task_fingerprint(text), items, _bands(minhash_signature(items)))
+
+    def _semantic_matches(self, text: str) -> list[tuple[str, float]]:
+        """Layer 5: indexed keys whose embedding cosine meets the semantic threshold."""
+        if self.semantic is None or not self._vectors or not text.strip():
+            return []
+        vector = self.semantic.vectors([text])[0]
+        scored = []
+        for key, other in self._vectors.items():
+            score = cosine(vector, other)
+            if score >= self.semantic.threshold:
+                scored.append((key, score))
+        scored.sort(key=lambda item: (-item[1], item[0]))
+        return scored
 
     def _matches(self, entry: _Entry) -> list[tuple[str, float]]:
         if not entry.shingles:
@@ -186,29 +227,50 @@ class SimilarityIndex:
         return scored
 
 
-def cluster_texts(
-    texts: Mapping[str, str], threshold: float = SIMILARITY_THRESHOLD,
-) -> dict[str, str]:
-    """Cluster all texts at once (order independent).
+@dataclass(frozen=True)
+class SemanticReport:
+    """Whether layer 5 ran; always part of a leakage report (never a silent pass)."""
 
-    Connected components of the confirmed-similarity graph form clusters; a
-    cluster id is `sem-` plus the prefix of the smallest member fingerprint.
-    """
-    keys = sorted(texts)
-    entries = {key: SimilarityIndex(threshold)._entry(key, texts[key]) for key in keys}
-    parent = {key: key for key in keys}
+    status: str  # "applied" | "partial" | "not_applied"
+    reason: str | None = None
+    model_id: str | None = None
+    threshold: float | None = None
+    embedded_texts: int = 0
+    excluded_sealed_holdout: int = 0
+    semantic_links: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
 
-    def find(key: str) -> str:
-        while parent[key] != key:
-            parent[key] = parent[parent[key]]
-            key = parent[key]
-        return key
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "model_id": self.model_id,
+            "threshold": self.threshold,
+            "embedded_texts": self.embedded_texts,
+            "excluded_sealed_holdout": self.excluded_sealed_holdout,
+            "semantic_links": self.semantic_links,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+        }
 
-    def union(left: str, right: str) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[max(left_root, right_root)] = min(left_root, right_root)
+    def warning(self) -> str | None:
+        if self.status == "applied":
+            return None
+        if self.status == "partial":
+            return f"semantic clustering layer applied partially: {self.reason}"
+        return f"semantic clustering layer NOT applied: {self.reason}"
 
+
+NOT_CONFIGURED = SemanticReport(
+    "not_applied",
+    reason="no embedding endpoint configured (models.yaml embedding); "
+    "paraphrases sharing little vocabulary are not checked",
+)
+
+
+def _lexical_pairs(entries: Mapping[str, _Entry], threshold: float) -> list[tuple[str, str]]:
+    keys = sorted(entries)
     buckets: dict[str, list[str]] = defaultdict(list)
     for key in keys:
         for band in entries[key].bands:
@@ -221,12 +283,52 @@ def cluster_texts(
         for index, left in enumerate(members):
             for right in members[index + 1:]:
                 pairs.add((min(left, right), max(left, right)))
+    confirmed = []
     for left, right in sorted(pairs):
         a, b = entries[left], entries[right]
         if a.fingerprint == b.fingerprint or (
             a.shingles and b.shingles and jaccard(a.shingles, b.shingles) >= threshold
         ):
-            union(left, right)
+            confirmed.append((left, right))
+    return confirmed
+
+
+def semantic_pairs(
+    texts: Mapping[str, str], semantic: "SemanticLayer",
+) -> list[tuple[str, str]]:
+    """Layer 5: all key pairs whose embedding cosine meets the semantic threshold.
+
+    Exhaustive O(n^2) comparison of unit vectors in sorted key order, so the
+    result depends only on the (cached) vectors and the threshold.
+    """
+    keys = sorted(key for key in texts if texts[key].strip())
+    if not keys:
+        return []
+    vectors = dict(zip(keys, semantic.vectors([texts[key] for key in keys])))
+    pairs = []
+    for index, left in enumerate(keys):
+        left_vector = vectors[left]
+        for right in keys[index + 1:]:
+            if cosine(left_vector, vectors[right]) >= semantic.threshold:
+                pairs.append((left, right))
+    return pairs
+
+
+def _components(
+    keys: Sequence[str], entries: Mapping[str, _Entry], pairs: Iterable[tuple[str, str]],
+) -> dict[str, str]:
+    parent = {key: key for key in keys}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for left, right in pairs:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
     components: dict[str, list[str]] = defaultdict(list)
     for key in keys:
         components[find(key)].append(key)
@@ -238,31 +340,130 @@ def cluster_texts(
     return result
 
 
+def _entries(texts: Mapping[str, str], threshold: float) -> dict[str, _Entry]:
+    builder = SimilarityIndex(threshold)
+    return {key: builder._entry(key, texts[key]) for key in sorted(texts)}
+
+
+def cluster_texts(
+    texts: Mapping[str, str], threshold: float = SIMILARITY_THRESHOLD,
+    *, semantic: "SemanticLayer | None" = None,
+) -> dict[str, str]:
+    """Cluster all texts at once (order independent).
+
+    Connected components of the confirmed-similarity graph (layer 4, plus
+    layer-5 semantic links when ``semantic`` is given) form clusters; a cluster
+    id is `sem-` plus the prefix of the smallest member fingerprint.
+    """
+    entries = _entries(texts, threshold)
+    pairs = _lexical_pairs(entries, threshold)
+    if semantic is not None:
+        pairs += semantic_pairs(texts, semantic)
+    return _components(sorted(texts), entries, pairs)
+
+
 @dataclass(frozen=True)
 class ClusterLeak:
     cluster: str
     members: tuple[tuple[str, int, str], ...]
+    # "lexical" when layers 1-4 alone already put members of different splits
+    # in one cluster; "semantic" when only layer-5 links connect them.
+    detected_by: str = "lexical"
 
     def describe(self) -> str:
         rendered = ", ".join(f"{bid} v{version} ({split})" for bid, version, split in self.members)
-        return f"similarity cluster {self.cluster} spans splits: {rendered}"
+        layer = " [semantic layer]" if self.detected_by == "semantic" else ""
+        return f"similarity cluster {self.cluster} spans splits{layer}: {rendered}"
+
+
+@dataclass(frozen=True)
+class LeakageReport:
+    leaks: tuple[ClusterLeak, ...]
+    semantic: SemanticReport
+    # "<id>\x00<version>" -> merged (lexical + semantic) cluster id.
+    clusters: Mapping[str, str]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "leaks": [
+                {"cluster": leak.cluster, "detected_by": leak.detected_by,
+                 "members": [list(member) for member in leak.members]}
+                for leak in self.leaks
+            ],
+            "semantic_layer": self.semantic.to_dict(),
+        }
+
+
+def similarity_leakage_report(
+    benchmarks: Iterable[Benchmark], threshold: float = SIMILARITY_THRESHOLD,
+    *, semantic: "SemanticLayer | None" = None,
+) -> LeakageReport:
+    """Cluster benchmark prompts (layers 4 and 5) and report clusters spanning splits.
+
+    SEALED_HOLDOUT prompts are passed to the embedder only when it is
+    ``sealed_holdout_trusted``; otherwise they keep their lexical links only and
+    the semantic report status is ``partial``.
+    """
+    rows = list(benchmarks)
+    keyed = {f"{item.id}\x00{item.version}": item for item in rows}
+    texts = {key: str(item.task["prompt"]) for key, item in keyed.items()}
+    keys = sorted(texts)
+    entries = _entries(texts, threshold)
+    lexical = _lexical_pairs(entries, threshold)
+    lexical_clusters = _components(keys, entries, lexical)
+    if semantic is None:
+        report = NOT_CONFIGURED
+        clusters = lexical_clusters
+    else:
+        trusted = getattr(semantic.embedder, "sealed_holdout_trusted", False) is True
+        excluded = (
+            set() if trusted
+            else {key for key, item in keyed.items() if item.split is Split.SEALED_HOLDOUT}
+        )
+        hits, misses = semantic.cache_hits, semantic.cache_misses
+        eligible = {key: text for key, text in texts.items() if key not in excluded}
+        links = semantic_pairs(eligible, semantic)
+        clusters = _components(keys, entries, lexical + links)
+        report = SemanticReport(
+            "partial" if excluded else "applied",
+            reason=(
+                f"{len(excluded)} SEALED_HOLDOUT prompt(s) not embedded: the embedding "
+                "backend is not trusted with sealed holdout text (endpoint is not loopback)"
+                if excluded else None
+            ),
+            model_id=semantic.model_id,
+            threshold=float(semantic.threshold),
+            embedded_texts=sum(1 for text in eligible.values() if text.strip()),
+            excluded_sealed_holdout=len(excluded),
+            semantic_links=len(links),
+            cache_hits=semantic.cache_hits - hits,
+            cache_misses=semantic.cache_misses - misses,
+        )
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for key in keys:
+        grouped[clusters[key]].append(key)
+    leaks = []
+    for cluster in sorted(grouped):
+        members = grouped[cluster]
+        if len({keyed[key].split for key in members}) <= 1:
+            continue
+        lexical_spans = any(
+            len({keyed[key].split for key in members if lexical_clusters[key] == sub}) > 1
+            for sub in {lexical_clusters[key] for key in members}
+        )
+        leaks.append(ClusterLeak(
+            cluster,
+            tuple(sorted(
+                (keyed[key].id, keyed[key].version, keyed[key].split.value) for key in members
+            )),
+            "lexical" if lexical_spans else "semantic",
+        ))
+    return LeakageReport(tuple(leaks), report, MappingProxyType(dict(clusters)))
 
 
 def find_similarity_split_leaks(
     benchmarks: Iterable[Benchmark], threshold: float = SIMILARITY_THRESHOLD,
+    *, semantic: "SemanticLayer | None" = None,
 ) -> list[ClusterLeak]:
     """Report similarity clusters whose members are assigned to different splits."""
-    rows = list(benchmarks)
-    keyed = {f"{item.id}\x00{item.version}": item for item in rows}
-    clusters = cluster_texts({key: str(item.task["prompt"]) for key, item in keyed.items()}, threshold)
-    grouped: dict[str, list[Benchmark]] = defaultdict(list)
-    for key, cluster in clusters.items():
-        grouped[cluster].append(keyed[key])
-    leaks = []
-    for cluster in sorted(grouped):
-        members = grouped[cluster]
-        if len({item.split for item in members}) > 1:
-            leaks.append(ClusterLeak(cluster, tuple(sorted(
-                (item.id, item.version, item.split.value) for item in members
-            ))))
-    return leaks
+    return list(similarity_leakage_report(benchmarks, threshold, semantic=semantic).leaks)

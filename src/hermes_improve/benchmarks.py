@@ -22,8 +22,9 @@ from .benchmark_schema import (
     load_benchmark_document,
     parse_benchmark_document,
 )
-from .clustering import find_similarity_split_leaks
+from .clustering import LeakageReport, similarity_leakage_report
 from .eligibility import ELIGIBILITY_RANK, assess_benchmark
+from .embeddings import SemanticLayer
 from .errors import AccessDenied
 from .models import Benchmark, Eligibility, Role, Split
 from .security import AccessController, HoldoutGrant
@@ -41,10 +42,15 @@ class BenchmarkStore:
         access: AccessController | None = None,
         *,
         holdout_root: Path | None = None,
+        semantic: SemanticLayer | None = None,
     ) -> None:
         self.root = Path(root)
         self.access = access or AccessController()
         self.holdout_root = Path(holdout_root) if holdout_root is not None else None
+        # Optional layer-5 semantic clustering for leakage checks; the result of
+        # the most recent check (including "not applied") is kept for reporting.
+        self.semantic = semantic
+        self.last_leakage_report: LeakageReport | None = None
 
     def _load_root(self, root: Path, *, holdout: bool) -> list[Benchmark]:
         benchmarks: list[Benchmark] = []
@@ -73,7 +79,7 @@ class BenchmarkStore:
 
     def validate(self) -> list[Benchmark]:
         benchmarks = self.load_all()
-        _validate_benchmark_set(benchmarks)
+        self.last_leakage_report = _validate_benchmark_set(benchmarks, semantic=self.semantic)
         return benchmarks
 
     def admit_public(self, benchmark: Benchmark) -> Path:
@@ -102,9 +108,10 @@ class BenchmarkStore:
                 )
                 holdout_benchmarks = self.load_holdout()
                 original_directory = os.fstat(split_fd)
-                _validate_benchmark_set([
-                    *public_benchmarks, *holdout_benchmarks, benchmark,
-                ])
+                self.last_leakage_report = _validate_benchmark_set(
+                    [*public_benchmarks, *holdout_benchmarks, benchmark],
+                    semantic=self.semantic,
+                )
                 current_directory = os.stat(
                     benchmark.split.value.lower(),
                     dir_fd=root_fd,
@@ -337,7 +344,9 @@ def _admission_lock(root: Path) -> Iterator[None]:
         os.close(root_fd)
 
 
-def _validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
+def _validate_benchmark_set(
+    benchmarks: Iterable[Benchmark], *, semantic: SemanticLayer | None = None,
+) -> LeakageReport:
     rows = list(benchmarks)
     ids: set[tuple[str, int]] = set()
     cluster_splits: dict[str, Split] = {}
@@ -363,17 +372,24 @@ def _validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
                     f"near-duplicate benchmarks {previous.id!r} and {benchmark.id!r} "
                     "must share the same split and cluster_id"
                 )
-    leaks = find_similarity_split_leaks(rows)
-    if leaks:
+    report = similarity_leakage_report(rows, semantic=semantic)
+    if report.leaks:
         raise ValueError(
             "similar benchmarks must share one split: "
-            + "; ".join(leak.describe() for leak in leaks)
+            + "; ".join(leak.describe() for leak in report.leaks)
         )
+    return report
 
 
-def validate_benchmark_set(benchmarks: Iterable[Benchmark]) -> None:
-    """Public entry point for full corpus leakage validation (ids, clusters, similarity)."""
-    _validate_benchmark_set(benchmarks)
+def validate_benchmark_set(
+    benchmarks: Iterable[Benchmark], *, semantic: SemanticLayer | None = None,
+) -> LeakageReport:
+    """Public entry point for full corpus leakage validation (ids, clusters, similarity).
+
+    Returns the leakage report; its ``semantic`` field states whether layer 5
+    (embedding similarity) was applied, partially applied or not applied.
+    """
+    return _validate_benchmark_set(benchmarks, semantic=semantic)
 
 
 def lint_public_corpus(benchmarks: Iterable[Benchmark]) -> None:

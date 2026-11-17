@@ -44,7 +44,9 @@ def test_initial_rotation_activates_immutable_generation_usable_by_evaluator(lay
     tmp_path, public, store = layout
     staging = staging_dir(tmp_path, "stage-1", "holdout-a", "holdout-b")
     result = rotate_holdout(staging, store, public_root=public)
-    assert result.to_dict() == {"generation": result.generation, "record_count": 2, "status": "activated"}
+    payload = result.to_dict()
+    assert payload.pop("semantic_layer")["status"] == "not_applied"
+    assert payload == {"generation": result.generation, "record_count": 2, "status": "activated"}
     assert os.readlink(store / "active") == f"generations/{result.generation}"
     assert active_generation(store) == result.generation
     evaluator_view = BenchmarkStore(public, holdout_root=store / "active")
@@ -263,6 +265,11 @@ def test_cli_rotation_prints_only_digest_count_and_status(layout, monkeypatch, c
         "hermes-improve", "benchmarks", "holdout", "rotate", str(staging), "--store-root", str(store),
     ])
     assert main() == 0
-    output = capsys.readouterr().out
-    assert set(json.loads(output)) == {"generation", "record_count", "status"}
+    captured = capsys.readouterr()
+    output = captured.out
+    payload = json.loads(output)
+    assert set(payload) == {"generation", "record_count", "status", "semantic_layer"}
+    # The layer-5 status carries counts and the model id only, never content.
+    assert payload["semantic_layer"]["status"] == "not_applied"
+    assert "semantic clustering layer NOT applied" in captured.err
     assert "Handle" not in output and "holdout-a" not in output

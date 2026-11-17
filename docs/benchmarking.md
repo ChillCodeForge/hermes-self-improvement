@@ -81,7 +81,7 @@ inherits its `cluster_id`. Mining never admits a benchmark.
 
 ## Deduplication and clustering
 
-`hermes_improve.clustering` provides four layers:
+`hermes_improve.clustering` provides five layers:
 
 1. exact content hash (SHA-256 of the raw prompt);
 2. task fingerprint (case-folded, whitespace-normalized SHA-256);
@@ -89,14 +89,68 @@ inherits its `cluster_id`. Mining never admits a benchmark.
    ≥ 0.85) — must share split *and* `cluster_id`;
 4. similarity clusters: character 5-shingles, 64-permutation MinHash with
    16×4 LSH banding for candidates, confirmed by exact shingle Jaccard ≥ 0.5;
-   connected components get the deterministic id `sem-<fingerprint prefix>`.
+   connected components get the deterministic id `sem-<fingerprint prefix>`;
+5. semantic clusters (optional): cosine similarity of prompt embeddings
+   ≥ `scoring.yaml` `clustering.semantic_similarity_threshold` (default
+   0.85). Semantic links join the layer-4 union-find, so clusters are the
+   connected components of the merged lexical + semantic graph.
 
 Validation (`BenchmarkStore.validate`, public admission and holdout rotation)
 rejects duplicate id/version pairs, a declared `cluster_id` used in more than
-one split, near duplicates across split/cluster, and any similarity cluster
-spanning splits — including public/holdout leakage. Layer 4 is a lexical
-approximation of semantic similarity: it catches rewordings that share
-vocabulary but not paraphrases with different vocabulary.
+one split, near duplicates across split/cluster, and any merged similarity
+cluster spanning splits — including public/holdout leakage. Layers 1–4 are
+lexical: they catch rewordings that share vocabulary but not paraphrases
+with different vocabulary. Layer 5 catches those when an embedder is
+configured; a leak found only through semantic links is reported as
+`spans splits [semantic layer]` (`ClusterLeak.detected_by == "semantic"`).
+Mining (`benchmarks mine`, `mine_sessions(..., semantic=...)`) uses the same
+layer, so a paraphrased session inherits the corpus `cluster_id` and
+`DedupRegistry` pins it to that cluster's split.
+
+### Semantic layer (layer 5) configuration
+
+The backend is pluggable (`hermes_improve.embeddings.Embedder`: `model_id`,
+`sealed_holdout_trusted`, `embed(texts)`); the core has no new dependency.
+The shipped backend calls an OpenAI-compatible `POST /v1/embeddings`
+endpoint, for example Qwen3-Embedding served locally by vLLM
+(`vllm serve Qwen/Qwen3-Embedding-0.6B --task embed`), llama.cpp
+(`llama-server --embeddings`) or Ollama (`/v1/embeddings`). The
+environment-variable names live in `config/models.yaml` under `embedding`:
+
+| Variable | Meaning |
+|---|---|
+| `QWEN_EMBEDDING_BASE_URL` | endpoint root, e.g. `http://127.0.0.1:8001`; no default |
+| `QWEN_EMBEDDING_MODEL` | model name sent to the endpoint and recorded as the model id |
+| `QWEN_EMBEDDING_API_KEY` | optional bearer token |
+| `QWEN_EMBEDDING_TIMEOUT` | seconds, default 60 |
+| `QWEN_EMBEDDING_ALLOW_REMOTE` | `true` to allow a non-loopback endpoint (public text only) |
+| `HERMES_IMPROVE_EMBEDDING_CACHE` | cache directory (default `$HERMES_IMPROVE_HOME/embedding-cache`) |
+
+The layer is enabled only when both URL and model are set; setting just one
+is an error. Embeddings are cached per model in
+`embeddings-<sha256(model id)>.json` (mode `0600`, directory `0700`), keyed
+by the SHA-256 of the prompt; the cache holds hashes and vectors, no text.
+Repeated checks reuse cached vectors and never re-query; a different model id
+uses a different cache file, so changing the model invalidates the cache.
+Links depend only on cached vectors and the threshold, so a check is
+reproducible from the cache file plus the recorded model id.
+
+`benchmarks validate [--holdout-root DIR]`, `benchmarks add`, `benchmarks
+mine` and `benchmarks holdout rotate` print a `semantic_layer` object
+(`status`, `reason`, `model_id`, `threshold`, `embedded_texts`,
+`excluded_sealed_holdout`, `semantic_links`, `cache_hits`, `cache_misses`;
+never prompt text). `status` is `applied`, `partial` (sealed holdout prompts
+withheld from an untrusted backend) or `not_applied` (no endpoint
+configured); the latter two also print a warning on stderr, so a missing
+layer is never a silent pass. Without an endpoint the checks behave exactly
+as layers 1–4. Commands that only re-read an already validated corpus
+(`evaluate`, `benchmarks list`, `benchmarks manifest`) run layers 1–4; the
+semantic gate sits at admission, rotation and explicit validation.
+
+Sealed holdout prompts are embedded only through a loopback endpoint (see
+`docs/security.md`). With `QWEN_EMBEDDING_ALLOW_REMOTE=true` the holdout is
+withheld, the status is `partial`, and paraphrase leakage into the holdout is
+not checked by layer 5.
 
 ## Suites
 
@@ -316,7 +370,12 @@ evaluated again on the new one.
 
 - The corpus is curated, not mined from real Hermes sessions; provenance is
   descriptive metadata, not an attestation.
-- Similarity clustering is lexical (character shingles); paraphrases with
-  different vocabulary can evade it and may need manual `cluster_id`s.
+- Semantic clustering (layer 5) needs a configured embedding endpoint; without
+  one, clustering is lexical (character shingles) and paraphrases with
+  different vocabulary can evade it and may need manual `cluster_id`s. The
+  threshold is model-dependent and should be calibrated per embedding model.
+  The pairwise comparison is exhaustive (O(n²) in pure Python), which is
+  fine for curated corpora of a few thousand records but not for much larger
+  ones.
 - Agent execution on corpus tasks depends on a Hermes runtime adapter
   outside this package.

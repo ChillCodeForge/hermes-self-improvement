@@ -53,6 +53,8 @@ PROTECTED_REPOSITORY_PATHS = (
     "/src/hermes_improve/role_handoff.py",
     "/src/hermes_improve/evaluation_signing.py",
     "/src/hermes_improve/benchmarks.py",
+    "/src/hermes_improve/clustering.py",
+    "/src/hermes_improve/embeddings.py",
     "/src/hermes_improve/docker_runner.py",
     "/src/hermes_improve/statistics.py",
     "/src/hermes_improve/cli.py",

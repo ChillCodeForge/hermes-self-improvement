@@ -91,5 +91,9 @@ Open items that are outside what this repository can prove on its own:
   not exercised (see "Real external blockers").
 - Archive/delete Curator mutations are refused because candidates cannot yet
   remove skills through the Curator adapter path.
-- Clustering is lexical (MinHash); paraphrased tasks can escape leakage checks.
+- Semantic clustering (layer 5) needs a configured embedding endpoint
+  (`QWEN_EMBEDDING_*`); it is covered by a fake embedder and a local HTTP stub
+  but not exercised against a live Qwen3-Embedding server, and the default
+  cosine threshold (0.85) is not calibrated on real data. Without an endpoint
+  clustering stays lexical and reports say so explicitly.
 - CODEOWNERS only takes effect once branch protection is enabled by a repo admin.
