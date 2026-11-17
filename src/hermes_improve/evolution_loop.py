@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 from .artifacts import ArtifactStore
 from .benchmarks import BenchmarkStore
 from .candidate_builder import create_skill_candidate
+from .decisions import DecisionRecorder
 from .errors import AccessDenied, IntegrityError
 from .evaluator import BenchmarkRunner, PairedEvaluator
 from .ingestion import redact_text
@@ -490,6 +491,39 @@ class ScreeningOracle:
         return core.feedback
 
 
+EXPERIMENT_PRIORITY_RULES_VERSION = "finalist-core-rank-1"
+
+
+def experiment_priority_decision_fields(
+    state: _RunState, variant: _Variant, *, rank: int, pending: int, max_finalists: int, selected: bool,
+) -> dict[str, Any]:
+    """Decision-history fields (spec §36) for one finalist-priority decision.
+
+    Improved variants are ordered by CORE score and the top ``max_finalists``
+    go on to FULL (and the holdout). This describes that ordering after it is
+    fixed; it is rule-based and carries no calibrated confidence.
+    """
+    return {
+        "decision_type": "experiment_priority",
+        "input_features": {
+            "run_id": state.run_id,
+            "lineage_id": state.lineage_id,
+            "generation": state.generation,
+            "candidate_id": variant.candidate.candidate_id,
+            "smoke_score": variant.smoke_score,
+            "core_score": variant.core_score,
+            "rank": rank,
+            "pending_improved": pending,
+            "max_finalists": max_finalists,
+        },
+        "available_options": ("finalist", "deferred"),
+        "selected_option": "finalist" if selected else "deferred",
+        "confidence": None,
+        "source": "evolution-loop",
+        "model_version": EXPERIMENT_PRIORITY_RULES_VERSION,
+    }
+
+
 class EvolutionLoop:
     def __init__(
         self,
@@ -500,6 +534,7 @@ class EvolutionLoop:
         strategy: OptimizerStrategy,
         expected_strategy_version: str,
         config: EvolutionConfig | None = None,
+        decisions: DecisionRecorder | None = None,
     ) -> None:
         verify_strategy_version(strategy, expected_strategy_version)
         name = getattr(strategy, "name", None)
@@ -510,6 +545,7 @@ class EvolutionLoop:
         self.gateway = gateway
         self.strategy = strategy
         self.config = config or EvolutionConfig()
+        self.decisions = decisions
 
     def run(self, root_candidate_id: str) -> EvolutionRunReport:
         root = load_verified_candidate(self.repository, self.store, root_candidate_id)
@@ -765,7 +801,15 @@ class EvolutionLoop:
 
     def _finalize(self, state: _RunState) -> None:
         pending = [item for item in state.improved if item.candidate.candidate_id not in state.finalized]
-        ranked = sorted(pending, key=lambda item: item.core_score, reverse=True)[: self.config.max_finalists]
+        ordered = sorted(pending, key=lambda item: item.core_score, reverse=True)
+        ranked = ordered[: self.config.max_finalists]
+        if self.decisions is not None:
+            # Training data only (spec §36): recorded after the ranking is fixed.
+            for position, variant in enumerate(ordered, start=1):
+                self.decisions.record(**experiment_priority_decision_fields(
+                    state, variant, rank=position, pending=len(ordered),
+                    max_finalists=self.config.max_finalists, selected=position <= len(ranked),
+                ))
         for variant in ranked:
             state.finalized.add(variant.candidate.candidate_id)
             target = state.root.target

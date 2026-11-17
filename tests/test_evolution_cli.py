@@ -8,7 +8,9 @@ import pytest
 
 from evolution_doubles import TARGET, ScriptedOptimizerModel, SkillMarkerRunner, evolution_fixture, git
 from hermes_improve import cli
+from hermes_improve.decisions import DecisionRecorder
 from hermes_improve.errors import AccessDenied
+from hermes_improve.observability import build_report
 
 
 def _wire(monkeypatch, tmp_path, model):
@@ -53,6 +55,19 @@ def test_evolve_cli_reports_generations_and_finalists_without_holdout_or_promoti
     run = fixture.store.get_evolution_run(output["run_id"])
     assert run["config"]["smoke_seeds"] == [4] and run["config"]["max_generations"] == 3
     assert fixture.store.list_releases() == []
+    # §35: the optimizer's Qwen usage is persisted; §36: finalist priority is recorded per improved variant.
+    qwen = build_report(tmp_path / "state", tmp_path / "benchmarks")["qwen"]
+    assert qwen["by_role"]["qwen_optimizer"]["requests"] == len(model.calls) == 3
+    priorities = list(DecisionRecorder(tmp_path / "state" / "experiments.sqlite3").iter_records(
+        decision_type="experiment_priority"))
+    assert priorities, "every evolve finalist ranking is recorded"
+    finalists = {item.input_features["candidate_id"] for item in priorities if item.selected_option == "finalist"}
+    assert finalists == {row["candidate_id"] for row in output["finalists"]}
+    for item in priorities:
+        assert item.available_options == ("finalist", "deferred")
+        assert item.source == "evolution-loop" and item.confidence is None
+        assert item.input_features["run_id"] == output["run_id"]
+        assert (item.selected_option == "finalist") == (item.input_features["rank"] <= item.input_features["max_finalists"])
 
 
 def test_evolve_cli_rejects_unknown_settings_before_any_model_call(tmp_path, monkeypatch):
@@ -90,9 +105,19 @@ def test_candidate_generate_cli_creates_candidates_from_selected_proposals(tmp_p
     fixture = evolution_fixture(tmp_path, with_holdout=False)
 
     class AuthorModel:
+        requests = 0
+
         def complete(self, *, role, system_prompt, user_payload):
             assert role == "qwen_optimizer" and "UNTRUSTED EVIDENCE" in system_prompt
+            self.requests += 1
             return json.dumps({"content": "---\nname: generated\n---\nPrefer pinned images."})
+
+        @property
+        def stats(self):
+            return {"qwen_optimizer": {
+                "requests": self.requests, "input_tokens": 3 * self.requests,
+                "output_tokens": 2 * self.requests, "latency_ms": 1.0 * self.requests,
+            }}
 
     _wire(monkeypatch, tmp_path, AuthorModel())
     proposals = tmp_path / "deep.json"
@@ -111,6 +136,9 @@ def test_candidate_generate_cli_creates_candidates_from_selected_proposals(tmp_p
     assert [(row["proposal_index"], row["status"]) for row in rows] == [(1, "created"), (0, "created")]
     assert fixture.store.get_candidate(rows[0]["candidate_id"])["target"] == "brain/skills/new"
     assert git(fixture.repo, "rev-parse", "main") == main_before
+    # Qwen usage of `candidate generate` is persisted for the §35 report, per role.
+    qwen = build_report(tmp_path / "state", tmp_path / "benchmarks")["qwen"]
+    assert qwen["by_role"] == {"qwen_optimizer": {"requests": 2, "input_tokens": 6, "output_tokens": 4}}
 
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "generate", "--repository", str(fixture.repo),

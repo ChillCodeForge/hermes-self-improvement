@@ -264,3 +264,43 @@ def _non_empty_list(value: object) -> bool:
 
 def _non_empty_mapping(value: object) -> bool:
     return isinstance(value, Mapping) and bool(value)
+
+
+ELIGIBILITY_RULES_VERSION = "eligibility-rules-1"
+
+
+def eligibility_decision_fields(
+    *,
+    eligibility: Eligibility,
+    reproducibility_score: float,
+    ground_truth_type: str,
+    reasons: Iterable[str],
+    subject: Mapping[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    """Decision-history fields (spec §36) for one eligibility classification.
+
+    Pure: it only describes a classification that was already made and is
+    recorded after the fact; it never feeds back into ``classify``. The
+    confidence is the ground-truth source's fixed confidence from
+    ``GROUND_TRUTH_CONFIDENCE`` and ``None`` when no ground truth was ranked
+    (pre-screen exclusions).
+    """
+    try:
+        confidence: float | None = GROUND_TRUTH_CONFIDENCE[GroundTruthSource(ground_truth_type)]
+    except ValueError:
+        confidence = None
+    return {
+        "decision_type": "benchmark_eligibility",
+        "input_features": {
+            **dict(subject),
+            "reproducibility_score": reproducibility_score,
+            "ground_truth_type": ground_truth_type,
+            "reasons": list(reasons),
+        },
+        "available_options": tuple(item.value for item in ELIGIBILITY_RANK),
+        "selected_option": eligibility.value,
+        "confidence": confidence,
+        "source": source,
+        "model_version": ELIGIBILITY_RULES_VERSION,
+    }

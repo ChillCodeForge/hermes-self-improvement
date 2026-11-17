@@ -222,7 +222,17 @@ a `candidate` verdict changes nothing, so the judge can never promote alone.
 Qwen roles share the endpoint but resolve their own model from `config/models.yaml`
 (`roles.<role>.model_env`, falling back to `QWEN_MODEL`; `QWEN_JUDGE_MODEL` for the
 judge), and keep separate statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests
-only). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
+only). The shared default model is the variable all roles name as their common
+`fallback_model_env` (else the `qwen_solver` role's `model_env`), so no variable
+name is hardcoded in the adapter. `evaluate --judge` persists the judge's
+request/token/latency counters to `observability.sqlite3` (also when the
+evaluation fails), and the per-task `judge_uncertainty` stored in
+`task_results` feeds the report's `qwen.judge_uncertainty`. The routing rule
+(deterministic checks, else subjective criteria → judge, else exit code only)
+is `evaluator.judge_route`; each evaluate run records it per selected task as
+a `needs_qwen` decision (sealed holdout tasks without their ID), and records
+the impact-aware selection as a `suite_selection` decision (see
+`laya-future.md`). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
 (`QWEN_BASE_URL`/v1) when `--model`/`--model-base-url` are omitted.
 
 ## Report contents

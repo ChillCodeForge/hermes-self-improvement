@@ -131,3 +131,26 @@ def test_hermes_solver_defaults_to_the_qwen_solver_role(monkeypatch):
     monkeypatch.delenv("QWEN_MODEL")
     monkeypatch.delenv("QWEN_BASE_URL")
     assert cli._solver_role_defaults() == (None, None, None)
+
+
+def test_shared_model_variable_comes_from_the_models_config_not_a_hardcoded_name():
+    local = ModelRoleConfig("HERMES_LOCAL_MODEL")
+    models = ModelsConfig(roles=MappingProxyType({
+        "qwen_solver": local, "qwen_optimizer": local, "qwen_dreamer": local,
+        "qwen_judge": ModelRoleConfig("HERMES_LOCAL_JUDGE", "HERMES_LOCAL_MODEL"),
+    }))
+    environ = {"QWEN_BASE_URL": "http://127.0.0.1:9", "HERMES_LOCAL_MODEL": "local", "HERMES_LOCAL_JUDGE": "lj"}
+    config = QwenConfig.from_env(models, environ)
+    assert config.model == "local" and config.judge_model == "lj"
+    assert config.model_for("qwen_solver") == "local" and config.model_for("qwen_judge") == "lj"
+    # QWEN_MODEL is not part of this configuration, so it neither satisfies nor is demanded.
+    with pytest.raises(ValueError, match="HERMES_LOCAL_MODEL must be set"):
+        QwenConfig.from_env(models, {"QWEN_BASE_URL": "http://127.0.0.1:9", "QWEN_MODEL": "ignored"})
+    # Roles without a common fallback use the solver role's own variable as the shared model.
+    solo = ModelsConfig(roles=MappingProxyType({
+        "qwen_solver": ModelRoleConfig("QWEN_SOLVER_ONLY"),
+        "qwen_optimizer": ModelRoleConfig("QWEN_OPT_ONLY"),
+        "qwen_dreamer": ModelRoleConfig("QWEN_DREAM_ONLY"),
+        "qwen_judge": ModelRoleConfig("QWEN_JUDGE_ONLY"),
+    }))
+    assert QwenConfig.from_env(solo, {"QWEN_BASE_URL": "http://127.0.0.1:9", "QWEN_SOLVER_ONLY": "s"}).model == "s"

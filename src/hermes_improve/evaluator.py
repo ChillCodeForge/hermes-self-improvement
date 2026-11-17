@@ -57,6 +57,48 @@ def _subjective_criteria(benchmark: Benchmark) -> list[str]:
     return rendered
 
 
+JUDGE_ROUTES = ("deterministic_verification", "qwen_judge", "exit_code_only")
+NEEDS_QWEN_RULES_VERSION = "needs-qwen-rules-1"
+
+
+def judge_route(benchmark: Benchmark) -> str:
+    """How a task is verified: deterministic checks win; the Qwen judge only for subjective-only tasks."""
+    if has_deterministic_verification(benchmark):
+        return "deterministic_verification"
+    if _subjective_criteria(benchmark):
+        return "qwen_judge"
+    return "exit_code_only"
+
+
+def needs_qwen_decision_fields(benchmark: Benchmark, *, suite: str, judge_configured: bool) -> dict[str, Any]:
+    """Decision-history fields (spec §36) for the needs-Qwen decision on one task.
+
+    Uses the same :func:`judge_route` the evaluator uses, so the recorded
+    decision is the one that is applied. Sealed holdout tasks are recorded
+    without their ID. Rule-based, so there is no calibrated confidence.
+    """
+    checks = benchmark.verification.get("deterministic", [])
+    features: dict[str, Any] = {
+        "split": benchmark.split.value,
+        "suite": "SEALED_HOLDOUT" if benchmark.split is Split.SEALED_HOLDOUT else suite.upper(),
+        "deterministic_checks": len(checks) if isinstance(checks, list) else 0,
+        "subjective_criteria": len(_subjective_criteria(benchmark)),
+        "judge_configured": judge_configured,
+    }
+    if benchmark.split is not Split.SEALED_HOLDOUT:
+        features["task_id"] = benchmark.id
+        features["task_version"] = benchmark.version
+    return {
+        "decision_type": "needs_qwen",
+        "input_features": features,
+        "available_options": JUDGE_ROUTES,
+        "selected_option": judge_route(benchmark),
+        "confidence": None,
+        "source": "evaluator-verification-rules",
+        "model_version": NEEDS_QWEN_RULES_VERSION,
+    }
+
+
 class PairedEvaluator:
     """Pairs baseline/candidate runs on identical tasks, seeds, environment and limits.
 
@@ -263,11 +305,9 @@ class PairedEvaluator:
     def _judge(
         self, benchmark: Benchmark, baseline_runs: list[RunObservation], candidate_runs: list[RunObservation]
     ) -> JudgeVerdict | None:
-        if has_deterministic_verification(benchmark):
+        if judge_route(benchmark) != "qwen_judge":
             return None
         criteria = _subjective_criteria(benchmark)
-        if not criteria:
-            return None
         if self.judge is None:
             raise ValueError(f"benchmark {benchmark.id!r} requires a configured judge")
         verdicts = [

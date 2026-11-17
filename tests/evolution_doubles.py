@@ -136,9 +136,22 @@ class ScriptedOptimizerModel:
     def __init__(self, batches: list[list[str]]) -> None:
         self.batches = list(batches)
         self.calls: list[dict[str, str]] = []
+        self.stats_by_role: dict[str, dict[str, float | int]] = {}
+
+    @property
+    def stats(self) -> dict[str, dict[str, float | int]]:
+        """Same shape as ``OpenAICompatibleQwen.stats`` (scripted token counts)."""
+        return {role: dict(values) for role, values in self.stats_by_role.items()}
 
     def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str:
         self.calls.append({"role": role, "system_prompt": system_prompt, "user_payload": user_payload})
+        usage = self.stats_by_role.setdefault(
+            role, {"requests": 0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0.0},
+        )
+        usage["requests"] += 1
+        usage["input_tokens"] += len(user_payload)
+        usage["output_tokens"] += 7
+        usage["latency_ms"] += 2.5
         batch = self.batches.pop(0) if self.batches else []
         return json.dumps({"variants": [
             {"content": content, "rationale": f"scripted variant {index}"} for index, content in enumerate(batch)
