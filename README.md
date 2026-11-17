@@ -9,38 +9,36 @@ better is never sufficient: every candidate must be immutable, evaluated
 against an unchanged baseline, checked for regressions, and promoted through a
 controlled Git-backed process.
 
-> **Project status:** Version `0.1.0` now includes redacted session-export
-> ingestion, benchmark mining proposals, LIGHT/REM/DEEP Dreaming APIs, SQLite
-> experiment/evaluation persistence, benchmark split and cluster-leakage
-> checks, durable per-lineage holdout-spent tracking, deterministic verifiers,
-> paired evaluation, hard-gate policy checks,
-> confidence intervals, Ed25519-signed reports, and a digest-pinned Docker
-> command runner (`--network=none`, read-only input/root, non-root user and
-> resource limits). A Git promoter verifies signed Full+Holdout evidence and
-> the exact skills-only diff, creates a signed release manifest, switches a
-> deployment symlink atomically, and supports rollback. A monitoring API can
-> recommend rollback or mark a release stable after enough observations. The
-> package also exports an opt-in Hermes plugin for `on_session_finalize`
-> ingestion; its hook API was checked against a local Hermes revision, but the
-> plugin has not been exercised inside a live Hermes runtime.
+> **Project status:** Version `0.1.0` implements the complete gated loop as
+> code with automated tests (655 passing, `scripts/docker-test.sh`):
+> redacted session ingestion (export, `batch_runner` trajectories, opt-in
+> Hermes hooks), benchmark mining with eligibility/reproducibility scoring,
+> a Pydantic/YAML benchmark schema, exact/near/MinHash clustering with
+> cluster-consistent splits, sealed-holdout rotation and spent tracking,
+> SMOKE/CORE/FULL/holdout suites with impact-aware selection, 15
+> deterministic verifiers, a run-count policy, a blind A/B-swapped judge,
+> paired statistics with effect sizes, token-per-success metrics,
+> Ed25519-signed reports, Git candidates for all 12 candidate types on
+> `candidate/<experiment-id>` branches, a manual signed-approval gate for
+> non-skill types, policy-checked promotion with atomic deployment, release
+> tags, PROVISIONAL/STABLE/ROLLED_BACK lifecycle and audited rollback,
+> an iterative evolution loop (built-in Qwen strategy, pinned GEPA adapter),
+> Dreaming-to-candidate generation with untrusted-evidence prompting, a
+> read-only Curator connector plus mutation-to-candidate adapter,
+> post-promotion monitoring with promoter-executed rollback, an
+> observability report, a Laya decision-history dataset, and OS role
+> isolation (`scripts/provision.sh`, `hermes-improve-as`, `security check`).
+> The automated §39 E2E test rejects a deliberately worse skill and promotes
+> a measurably better one through FULL and sealed holdout, then rolls back.
 >
-> This is **not yet a complete autonomous Hermes self-improvement service**.
-> The optional Hermes finalize hook is version-sensitive. A Hermes
-> `batch_runner` execution adapter (`HermesBatchRunner`) exists and is tested
-> against the real CLI and trajectory schema with a fixture, but has not been
-> run against a live Hermes install and model endpoint.
-> The repository ships a curated, replay-verified 26-task command benchmark
-> corpus plus six brain-consuming `skill_procedure` benchmarks whose outcome
-> depends on the evaluated skill text, but no corpus mined from real Hermes
-> sessions. It also still lacks
-> tested DSPy/`hermes-agent-self-evolution` integrations (GEPA optimize is
-> integrated behind a pinned optional extra), a live Qwen service,
-> a managed Unix-user/filesystem-isolation setup, a production monitoring
-> collector, and an end-to-end improvement driven by a live Hermes agent (the
-> automated §39 E2E test uses a deterministic skill executor, not an LLM).
-> Holdout access capabilities, the spent-state ledger, and UID checks do not
-> themselves provide OS isolation. See `docs/security.md`, `docs/operations.md`, and
-> `docs/architecture.md` for the exact boundaries.
+> Not verified against live external systems: the `HermesBatchRunner` and
+> Hermes hooks are tested against the real CLI/schema/hook signatures with
+> fixtures but not inside a live Hermes runtime; no local Qwen endpoint was
+> available, so Qwen paths are tested against a local OpenAI-compatible stub;
+> `hermes-agent-self-evolution`'s own `evolve()` is deliberately not called
+> (see `docs/discovery.md`); the benchmark corpus is authored, not mined from
+> real sessions; the E2E skill executor follows a declared procedure rather
+> than an LLM agent. See `docs/gap-plan.md` for the remaining blockers.
 
 ### Quick start
 
@@ -648,11 +646,11 @@ phase begins.
 |---|---|---|---|
 | **0 — Discovery** | Inspect actual Hermes, Curator, Self-Evolution, DSPy/GEPA, and Qwen versions/APIs; document reuse, risks, and adapters | Initial findings are documented; several external APIs and endpoints remain unverified | Evidence-backed discovery and reuse matrix; no assumption treated as an integration |
 | **1 — Evaluation foundation** | Versioned benchmark store, baseline/candidate runners, verifiers, per-task/aggregate reports, regression detection, experiment store; begin with 20–50 curated tasks | Core evaluation components, a curated replay-verified 26-task command corpus and 6 brain-consuming skill benchmarks are implemented; the E2E test rejects a deliberately worse skill and promotes a measurably better one; agent runs and real-task proof are still missing | Repeated baseline is reproducible; deliberately worse candidate is rejected; measurable improvement can be demonstrated |
-| **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Skills-only promotion and rollback are implemented; separate OS identities, filesystem protection, and a verified production deployment remain | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
-| **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | Strategy and optimization APIs exist; external adapters and automatic skill generation are not integrated | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
+| **2 — Git and promotion** | Candidate branches/worktrees, immutable commits/hashes, manifest, release tag, atomic deployment, rollback | Promotion for all candidate types (skills auto-gated, others behind signed approval), atomic deployment, release tags, audited rollback and OS role isolation via `scripts/provision.sh` are implemented and tested with real role users in the container; a real production host deployment remains operator work | Production is read-only to Hermes; unevaluated/hash-mismatched candidates cannot promote; rollback works |
+| **3 — Skill evolution** | SelfEvolution/GEPA adapter where verified, optional DSPy/Qwen, iterative optimization | Iterative evolution loop (`evolve`), Qwen mutation strategy, pinned GEPA adapter and Dreaming-to-candidate generation are implemented; the E2E test drives a real skill through rejection and controlled promotion with a deterministic executor; live Qwen/GEPA runs remain unverified | At least one real skill follows candidate → evaluation → iteration → rejection or controlled promotion |
 | **4 — Session ingestion** | Post-session hook/export, redaction, metadata extraction, ingestion queue | JSON and trajectory ingestion plus an opt-in finalize plugin are implemented; live Hermes session finalization remains unverified | Completed sessions enter the queue without heavy analysis in the user path |
 | **5 — Benchmark miner** | Eligibility classes and reproducibility scoring | Mining proposals and operator review are implemented; proposals still require separate benchmark authoring and admission | Reproducible tasks are distinguished from Dreaming-only evidence |
-| **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact/lexical leakage checks and spent markers are implemented; semantic clustering and holdout rotation remain absent | Related tasks cannot leak across splits |
+| **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact, near-duplicate and MinHash/LSH clustering with cluster-consistent splits, manifests, versioning and operator holdout rotation are implemented; clustering is lexical, so paraphrases can escape | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
 | **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion are implemented and tested against fixtures in the real format; archive/delete conversion is refused | No Curator bypass around candidate evaluation and Git |
 | **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; production collection and a Hermes replay runner remain absent | Regression triggers an auditable rollback decision |

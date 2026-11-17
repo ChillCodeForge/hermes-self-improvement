@@ -62,3 +62,35 @@ pass. Every merge must keep the full suite green in the Linux test container.
 - No guaranteed local Qwen endpoint; Qwen-dependent paths are tested against a
   local OpenAI-compatible stub server, live use is opt-in.
 - Real sealed-holdout data and real production identities are operator-provisioned.
+
+## Outcome (2026-11-17)
+
+All work packages are merged into `main`; the suite has 655 passing tests
+(5 skipped: optional `gepa` extra and Docker-image tests) in the Linux test
+container, and every package passed GitHub Actions.
+
+| Package | PR | Status |
+|---|---|---|
+| Plan + container test runner | #8 | **done** |
+| WP-0 Discovery | #9 | **done** |
+| WP-E Curator, monitoring, report, Laya | #10 | **done** |
+| WP-A Brain, config, candidate types, manual gate, promotion | #11 | **done** |
+| WP-F OS isolation, provisioning | #12 | **done** (root CI job pending, see below) |
+| WP-C Verifiers, run policy, judge, metrics, Hermes runner, sandbox | #13 | **done** |
+| WP-D Evolution loop, GEPA adapter, Dreaming → candidate | #14 | **done** |
+| WP-B Schema, eligibility, clustering, suites, holdout rotation, replay, corpus | #15 | **done** (closes #7) |
+| WP-H §38 test matrix, evolve isolation, CLI completeness | #16 | **done** |
+| WP-G Brain-consuming benchmarks, 16-step E2E | #17 | **done** |
+
+Open items that are outside what this repository can prove on its own:
+
+- The GitHub Actions job that runs the suite as root in the test container
+  (so the `root_required` isolation tests run in CI) is written but not
+  pushed: the pushing token lacks the `workflow` scope. Until then, root tests
+  run only through `scripts/docker-test.sh`.
+- Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
+  not exercised (see "Real external blockers").
+- Archive/delete Curator mutations are refused because candidates cannot yet
+  remove skills through the Curator adapter path.
+- Clustering is lexical (MinHash); paraphrased tasks can escape leakage checks.
+- CODEOWNERS only takes effect once branch protection is enabled by a repo admin.
