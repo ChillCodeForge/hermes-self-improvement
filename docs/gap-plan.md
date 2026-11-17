@@ -89,27 +89,28 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Semantic clustering layer (embeddings) | #23 | **done** |
 | Spec audit fixes: §23 policy order/generalization/token gate, §16 finalist-only holdout, §26 ledger schema + migrations, §35/§36 report and Laya decisions, §29 session feed | #24 | **done** |
 | Test layout `tests/{unit,integration,security,e2e}` (§37) | #25 | **done** |
+| Token metering proxy for `HermesBatchRunner` (§24) | #26 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
-§35 and §36 that the table above had marked done; #24 closes them.
+§35 and §36 that the table above had marked done; #24 closes them. #24 made
+missing token usage block promotion; #26 supplies the measurement for
+Hermes runs: a loopback proxy between batch_runner and the model endpoint
+reads the `usage` of every response and marks a run measured only when every
+call reported usage and no model traffic bypassed it. The Docker and local
+command runners run no model and stay unmeasured, so model-free benchmark sets
+still need `require_token_measurement: false`.
 
 Open items:
 
-- Token measurement (§24): no shipped runner measures tokens. Hermes'
-  `batch_runner` discards the usage that `run_conversation` returns, and the
-  Docker command runner runs no model. With the default
-  `require_token_measurement: true` the policy therefore refuses promotion of
-  model-driven candidates until a token source exists (for example a metering
-  proxy in front of the model endpoint); operators with model-free benchmarks
-  set it to `false` explicitly and the report records the token check as
-  skipped.
 - Low-priority audit items: LIGHT dreaming counts distinct strings instead of
   reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
 
 Outside what this repository can prove on its own:
 
 - Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
-  not exercised (see "Real external blockers").
+  not exercised (see "Real external blockers"). The metering proxy is tested
+  against real loopback HTTP with JSON and chunked SSE responses, not against
+  a live Hermes/Qwen pair.
 - Semantic clustering (layer 5) needs a configured embedding endpoint
   (`QWEN_EMBEDDING_*`); it is covered by a fake embedder and a local HTTP stub
   but not exercised against a live Qwen3-Embedding server, and the default

@@ -56,6 +56,8 @@ PROTECTED_REPOSITORY_PATHS = (
     "/src/hermes_improve/clustering.py",
     "/src/hermes_improve/embeddings.py",
     "/src/hermes_improve/docker_runner.py",
+    "/src/hermes_improve/hermes_runner.py",
+    "/src/hermes_improve/metering_proxy.py",
     "/src/hermes_improve/statistics.py",
     "/src/hermes_improve/cli.py",
     "/src/hermes_improve/migrations/",
