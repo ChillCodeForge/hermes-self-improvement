@@ -15,6 +15,9 @@ thresholds:
 # manual = additionally requires an Ed25519-signed operator approval
 # Unlocking a type means changing its gate here (and normally bumping
 # policy_version so earlier evaluations no longer match).
+# A candidate whose diff deletes a brain/skills/<name>/SKILL.md (Curator
+# archive, delete, consolidate; any merge or split that drops a skill) always
+# needs the signed operator approval, whatever its type gate says here.
 promotion_gates:
   SKILL_CREATE: auto
   SKILL_PATCH: auto

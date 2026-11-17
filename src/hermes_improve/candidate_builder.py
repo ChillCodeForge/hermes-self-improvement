@@ -28,6 +28,7 @@ from .store import ExperimentStore
 from .target_paths import (
     TARGET_RULES,
     assert_changed_paths_match_target,
+    removed_skill_units,
     target_for_units,
     units_for_paths,
 )
@@ -261,6 +262,50 @@ def create_candidate(
             _git(repo, "worktree", "remove", "--force", str(worktree), check=False)
             if worktree.exists():
                 shutil.rmtree(worktree)
+
+
+_GIT_OBJECT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+_REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
+
+
+def production_skill_files(repository: Path, skill_unit: str) -> tuple[str, ...]:
+    """Every tracked file of ``skill_unit`` (``brain/skills/<name>``) on ``main``.
+
+    The skill must exist with an exact-case ``SKILL.md`` and consist only of
+    regular files: a symlink, submodule or anything else makes removal refuse
+    rather than delete something whose target lies outside the unit.
+    """
+    validate_skill_target(skill_unit)
+    if len(PurePosixPath(skill_unit).parts) != 3:
+        raise ValueError("skill unit must be a flat brain/skills/<name> directory")
+    listing = _git(
+        Path(repository).resolve(), "ls-tree", "-r", "-z", "--full-tree", "refs/heads/main", "--", "brain/skills",
+    ).stdout.decode("utf-8")
+    files = []
+    for entry in listing.split("\0"):
+        if not entry:
+            continue
+        header, _, path = entry.partition("\t")
+        if path != skill_unit and not path.startswith(f"{skill_unit}/"):
+            continue
+        mode, kind = header.split(" ")[:2]
+        if kind != "blob" or mode not in _REGULAR_BLOB_MODES:
+            raise ValueError(f"skill contains a non-regular tracked entry and cannot be removed: {path}")
+        files.append(path)
+    if f"{skill_unit}/SKILL.md" not in files:
+        raise ValueError(f"skill does not exist on main: {skill_unit}")
+    return tuple(sorted(files))
+
+
+def removed_skills_in_candidate(repository: Path, base_commit: str, commit: str) -> tuple[str, ...]:
+    """Skill units whose ``SKILL.md`` the candidate commit deletes (rename detection off)."""
+    if not _GIT_OBJECT.fullmatch(base_commit) or not _GIT_OBJECT.fullmatch(commit):
+        raise ValueError("candidate base and commit must be full Git object IDs")
+    deleted = _git(
+        Path(repository).resolve(), "diff", "--no-renames", "--diff-filter=D", "--name-only", "-z",
+        base_commit, commit,
+    ).stdout.decode("utf-8").split("\0")
+    return removed_skill_units(path for path in deleted if path)
 
 
 def _validate_content(path: str, content: str) -> str:

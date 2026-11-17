@@ -104,35 +104,36 @@ def test_curator_targeted_patch_requires_unique_match(brain, tmp_path):
     assert "Step" not in git(brain, "show", f"{conversion.candidate.commit}:brain/skills/demo/SKILL.md")
 
 
-def test_curator_consolidation_patches_umbrella_and_reports_unapplied_archive(brain, tmp_path):
+def test_curator_consolidation_becomes_a_skill_merge(brain, tmp_path):
     adapter, _ = _adapter(brain, tmp_path)
+    before = _production_state(brain)
     conversion = adapter.to_candidate(
         CuratorMutation("consolidate", "demo", "same umbrella", content="---\nname: umbrella\n---\nMerged.\n", into="umbrella"),
         experiment_id="exp-merge", candidate_id="cand-merge",
     )
-    assert conversion.candidate.target == "brain/skills/umbrella"
-    assert conversion.unapplied and "demo stays in production" in conversion.unapplied[0]
-    assert (brain / "brain" / "skills" / "demo" / "SKILL.md").read_text() == ORIGINAL
+    assert _production_state(brain) == before
+    assert conversion.candidate.candidate_type is CandidateType.SKILL_MERGE
+    assert conversion.candidate.target == "brain/skills/demo,brain/skills/umbrella"
+    assert conversion.unapplied == ()
+    assert git(brain, "ls-tree", "-r", "--name-only", conversion.candidate.commit).split() == [
+        "brain/skills/umbrella/SKILL.md",
+    ]
 
 
-def test_curator_archive_and_unsupported_writes_are_refused(brain, tmp_path):
+def test_curator_unsupported_writes_are_refused(brain, tmp_path):
     adapter, store = _adapter(brain, tmp_path)
-    with pytest.raises(CuratorMutationRefused, match="manual operator change"):
-        adapter.to_candidate(CuratorMutation("archive", "demo", "inactive"), experiment_id="exp-x", candidate_id="cand-x")
     with pytest.raises(CuratorMutationRefused, match="directory component"):
         adapter.to_candidate(
             CuratorMutation("create", "plugin:skill", "x", content="text"), experiment_id="exp-y", candidate_id="cand-y",
         )
     home = build_hermes_home(tmp_path)
     pending_dir = home / "pending" / "skills"
-    write_pending(pending_dir, "del00001", {"action": "delete", "name": "demo", "absorbed_into": "umbrella"})
     write_pending(pending_dir, "file0001", {"action": "write_file", "name": "demo", "file_path": "refs/a.md", "file_content": "x"})
     connector = CuratorConnector(home)
-    for pending_id in ("del00001", "file0001"):
-        with pytest.raises(CuratorMutationRefused):
-            adapter.convert_pending_write(
-                connector.pending_write(pending_id), experiment_id=f"exp-{pending_id}", candidate_id=f"cand-{pending_id}",
-            )
+    with pytest.raises(CuratorMutationRefused):
+        adapter.convert_pending_write(
+            connector.pending_write("file0001"), experiment_id="exp-file0001", candidate_id="cand-file0001",
+        )
     assert store.list_candidates() == []
     assert git(brain, "branch", "--list", "candidate/*") == ""
 

@@ -276,17 +276,24 @@ def impact_scope_for_candidate(
     kind = str(getattr(candidate_type, "value", candidate_type))
     if kind not in _NARROWING_CANDIDATE_TYPES:
         return ImpactScope()
-    area = _normalize_target(target)
-    if not area or area.startswith("/") or ".." in area.split("/"):
-        raise ValueError("candidate target must be a relative brain path")
-    name = area.rsplit("/", 1)[-1]
-    tokens = name.split("-")
-    matched = frozenset(
-        category for category in categories
-        if name == category or name.startswith(category + "-") or name.endswith("-" + category)
-        or category in tokens
-    )
-    return ImpactScope(categories=matched, target_areas=frozenset({area}))
+    categories = tuple(categories)
+    areas: set[str] = set()
+    matched: set[str] = set()
+    # Merge/split targets list several units ("brain/skills/a,brain/skills/b");
+    # every unit, including a removed one, keeps its own tasks in scope.
+    for unit in target.split(","):
+        area = _normalize_target(unit)
+        if not area or area.startswith("/") or ".." in area.split("/"):
+            raise ValueError("candidate target must be a relative brain path")
+        name = area.rsplit("/", 1)[-1]
+        tokens = name.split("-")
+        areas.add(area)
+        matched.update(
+            category for category in categories
+            if name == category or name.startswith(category + "-") or name.endswith("-" + category)
+            or category in tokens
+        )
+    return ImpactScope(categories=frozenset(matched), target_areas=frozenset(areas))
 
 
 def select_evaluation_suite(

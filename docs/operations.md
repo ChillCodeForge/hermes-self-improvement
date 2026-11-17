@@ -143,12 +143,24 @@ Conversion rules (`CuratorAdapter`):
 - `create` → `SKILL_CREATE`; `edit` or full-content `patch` → `SKILL_PATCH`.
 - Targeted `patch` (old/new string) is applied to the production `SKILL.md`
   read from `main`; the match must be unique unless `replace_all` is set.
-- `consolidate` → `SKILL_PATCH` of the umbrella skill. The absorbed skill stays
-  in production and is reported under `unapplied`.
-- `archive`/`delete`, supporting-file writes, and skill names that are not a
-  safe `brain/skills/` directory component are refused with an explicit
-  error. The candidate builder only writes `SKILL.md`; removal needs a manual
-  operator change.
+- `consolidate` (and a staged `delete` with `absorbed_into`) → `SKILL_MERGE`
+  that writes the umbrella `SKILL.md` and deletes every tracked file of the
+  absorbed skill. Without new umbrella content (the staged `delete`
+  payload carries none unless it sets `content`) or with content equal to
+  production, only the removal remains and the candidate is the
+  `archive` form below.
+- `archive` (and a staged `delete` without `absorbed_into`) → `SKILL_PATCH`
+  that deletes every tracked file of `brain/skills/<name>`. The skill must
+  exist on `main` with an exact-case `SKILL.md` and contain only regular,
+  candidate-legal files; otherwise conversion is refused and nothing is
+  recorded.
+- Every candidate that removes a skill is created with risk `HIGH` and needs
+  a signed operator approval before promotion, even though skill types are
+  auto-gated: `hermes-improve approve EXP --operator NAME --rationale TEXT
+  --repository REPO` (the repository is needed to read the removal from the
+  candidate diff). See `docs/promotion.md`.
+- Supporting-file writes and skill names that are not a safe `brain/skills/`
+  directory component are refused with an explicit error.
 
 The converted candidate still needs `evaluate` and `promote`. The adapter
 never writes production or the Hermes pending record.
