@@ -84,9 +84,16 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | WP-B Schema, eligibility, clustering, suites, holdout rotation, replay, corpus | #15 | **done** (closes #7) |
 | WP-H §38 test matrix, evolve isolation, CLI completeness | #16 | **done** |
 | WP-G Brain-consuming benchmarks, 16-step E2E | #17 | **done** |
+| Root CI job, CODEOWNERS team + branch protection | #19, #21 | **done** |
+| Curator archive/delete/consolidate as gated removal candidates | #22 | **done** |
+| Semantic clustering layer (embeddings) | #23 | **done** |
 
 Open items that are outside what this repository can prove on its own:
 
 - Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
   not exercised (see "Real external blockers").
-- Clustering is lexical (MinHash); paraphrased tasks can escape leakage checks.
+- Semantic clustering (layer 5) needs a configured embedding endpoint
+  (`QWEN_EMBEDDING_*`); it is covered by a fake embedder and a local HTTP stub
+  but not exercised against a live Qwen3-Embedding server, and the default
+  cosine threshold (0.85) is not calibrated on real data. Without an endpoint
+  clustering stays lexical and reports say so explicitly.

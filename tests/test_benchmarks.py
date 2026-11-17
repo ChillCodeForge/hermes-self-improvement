@@ -466,10 +466,10 @@ def test_admission_rejects_split_directory_replaced_during_validation(tmp_path, 
     benchmark = Benchmark.from_dict(authored)
     validate = benchmarks_module._validate_benchmark_set
 
-    def replace_split_directory(rows):
+    def replace_split_directory(rows, **kwargs):
         os.rename(train, moved)
         train.mkdir()
-        validate(rows)
+        return validate(rows, **kwargs)
 
     monkeypatch.setattr(benchmarks_module, "_validate_benchmark_set", replace_split_directory)
 

@@ -18,7 +18,9 @@ from .curator import CuratorAdapter, CuratorMutation
 from .curator_connector import CuratorConnector
 from .decisions import DECISION_TYPES, DecisionRecorder
 from .candidate_builder import create_candidate, create_skill_candidate
+from .clustering import NOT_CONFIGURED, SemanticReport
 from .config import config_from_environment
+from .embeddings import semantic_layer_from_environment
 from .approvals import approve_promotion
 from .errors import AccessDenied
 from .docker_runner import DockerCommandRunner, LocalSkillProcedureRunner
@@ -71,6 +73,14 @@ _MAX_EVOLUTION_SETTINGS_BYTES = 64 * 1024
 def _paths() -> tuple[Path, Path]:
     home = Path(os.environ.get("HERMES_IMPROVE_HOME", Path.home() / ".hermes-improve"))
     return home / "experiments.sqlite3", Path(os.environ.get("HERMES_IMPROVE_BENCHMARKS", "benchmarks"))
+
+
+def _report_semantic_layer(report: SemanticReport) -> dict[str, object]:
+    """Layer-5 status for CLI output; a missing or partial layer is also warned on stderr."""
+    warning = report.warning()
+    if warning is not None:
+        print(f"warning: {warning}", file=sys.stderr)
+    return report.to_dict()
 
 
 def _require_role_uid(role: str) -> None:
@@ -452,7 +462,11 @@ def build_parser() -> argparse.ArgumentParser:
     decisions_backfill.add_argument("--source", required=True)
     benchmarks = sub.add_parser("benchmarks")
     benchmark_sub = benchmarks.add_subparsers(dest="benchmark_command", required=True)
-    benchmark_sub.add_parser("validate")
+    validate_benchmarks = benchmark_sub.add_parser("validate")
+    validate_benchmarks.add_argument(
+        "--holdout-root", type=Path,
+        help="also check public/holdout leakage against this sealed holdout directory",
+    )
     mine = benchmark_sub.add_parser("mine")
     mine.add_argument("session_id")
     benchmark_sub.add_parser("candidates")
@@ -794,24 +808,44 @@ def main() -> int:
             "hypotheses": report.hypotheses,
         }, indent=2))
     elif args.command == "benchmarks":
+        # Leakage-checking commands use the semantic layer (layer 5) when an
+        # embedding endpoint is configured and always report whether it ran.
+        semantic = (
+            semantic_layer_from_environment()
+            if args.benchmark_command in {"validate", "add", "mine", "holdout"}
+            else None
+        )
         store = (
-            BenchmarkStore(benchmark_root, holdout_root=args.holdout_root)
-            if args.benchmark_command == "add"
+            BenchmarkStore(
+                benchmark_root, holdout_root=getattr(args, "holdout_root", None), semantic=semantic,
+            )
+            if args.benchmark_command in {"add", "validate"}
             else BenchmarkStore(benchmark_root)
         )
         if args.benchmark_command == "validate":
             rows = store.validate()
-            lint_public_corpus(rows)
-            print(json.dumps({"valid_benchmarks": len(rows), "version": store.version}))
+            lint_public_corpus([row for row in rows if row.split is not Split.SEALED_HOLDOUT])
+            print(json.dumps({
+                "valid_benchmarks": len(rows), "version": store.version,
+                "semantic_layer": _report_semantic_layer(store.last_leakage_report.semantic),
+            }))
         elif args.benchmark_command == "mine":
             session = SessionQueue(database.parent / "sessions.sqlite3").get(args.session_id)
             candidate = mine_session(
-                session, cluster_index=corpus_similarity_index(store.load_public()),
+                session,
+                cluster_index=corpus_similarity_index(store.load_public(), semantic=semantic),
             )
             added = ExperimentStore(database).save_benchmark_candidate(candidate, args.session_id)
             print(json.dumps(candidate.__dict__ | {
                 "eligibility": candidate.eligibility.value,
                 "status": "created" if added else "deduplicated",
+                "semantic_layer": _report_semantic_layer(
+                    NOT_CONFIGURED if semantic is None
+                    else SemanticReport(
+                        "applied", model_id=semantic.model_id, threshold=float(semantic.threshold),
+                        cache_hits=semantic.cache_hits, cache_misses=semantic.cache_misses,
+                    )
+                ),
             }, indent=2))
         elif args.benchmark_command == "candidates":
             print(json.dumps(ExperimentStore(database).list_benchmark_candidates(), indent=2))
@@ -869,12 +903,14 @@ def main() -> int:
             document = load_benchmark_document(args.file)
             benchmark = parse_benchmark_document(document, source=args.file.name)
             path = store.admit_public(benchmark)
+            leakage = store.last_leakage_report
             print(json.dumps({
                 "status": "admitted",
                 "benchmark_id": benchmark.id,
                 "version": benchmark.version,
                 "path": str(path),
                 "manifest_version": store.version,
+                "semantic_layer": _report_semantic_layer(leakage.semantic),
             }, indent=2))
         elif args.benchmark_command == "schema":
             print(json.dumps(benchmark_json_schema(), indent=2, sort_keys=True))
@@ -884,7 +920,11 @@ def main() -> int:
         elif args.benchmark_command == "replay":
             return _replay_benchmarks(args, store, database)
         elif args.benchmark_command == "holdout":
-            result = rotate_holdout(args.staging, args.store_root, public_root=benchmark_root)
+            result = rotate_holdout(
+                args.staging, args.store_root, public_root=benchmark_root, semantic=semantic,
+            )
+            if result.semantic_layer is not None:
+                _report_semantic_layer(result.semantic_layer)
             print(json.dumps(result.to_dict(), indent=2))
         elif args.suite is not None:
             role = Role(args.role)

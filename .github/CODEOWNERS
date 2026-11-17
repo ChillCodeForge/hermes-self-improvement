@@ -17,6 +17,8 @@
 /src/hermes_improve/role_handoff.py         @ChillCodeForge/chillcode
 /src/hermes_improve/evaluation_signing.py   @ChillCodeForge/chillcode
 /src/hermes_improve/benchmarks.py           @ChillCodeForge/chillcode
+/src/hermes_improve/clustering.py           @ChillCodeForge/chillcode
+/src/hermes_improve/embeddings.py           @ChillCodeForge/chillcode
 /src/hermes_improve/docker_runner.py        @ChillCodeForge/chillcode
 /src/hermes_improve/statistics.py           @ChillCodeForge/chillcode
 /src/hermes_improve/cli.py                  @ChillCodeForge/chillcode

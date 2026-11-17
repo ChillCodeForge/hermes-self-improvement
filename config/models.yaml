@@ -11,3 +11,15 @@ roles:
   qwen_optimizer: {model_env: QWEN_MODEL}
   qwen_dreamer: {model_env: QWEN_MODEL}
   qwen_judge: {model_env: QWEN_JUDGE_MODEL, fallback_model_env: QWEN_MODEL}
+# Optional embedding endpoint for the semantic clustering layer (layer 5).
+# OpenAI-compatible POST /v1/embeddings (vLLM, llama.cpp, Ollama), e.g. a
+# local Qwen embedding model. No default endpoint: the layer is enabled only when
+# both base URL and model variables are set. The endpoint must be loopback
+# unless the allow_remote variable is "true"; sealed holdout text is only
+# ever sent to a loopback endpoint.
+embedding:
+  base_url_env: QWEN_EMBEDDING_BASE_URL
+  model_env: QWEN_EMBEDDING_MODEL
+  api_key_env: QWEN_EMBEDDING_API_KEY
+  timeout_env: QWEN_EMBEDDING_TIMEOUT
+  allow_remote_env: QWEN_EMBEDDING_ALLOW_REMOTE

@@ -143,6 +143,38 @@ diff. The agent's `candidate sync-baseline` fetches production `main` through
 - Key rotation for the evaluator Ed25519 key and the manifest HMAC key,
   backups of the ledger, and secret management.
 
+## Embedding endpoint for semantic leakage checks
+
+Layer 5 of the leakage checks (`hermes_improve.clustering`,
+`hermes_improve.embeddings`) sends benchmark prompts to an embedding
+endpoint. During `benchmarks holdout rotate`, `benchmarks add` and
+`benchmarks validate --holdout-root` that includes sealed holdout prompts,
+so the endpoint is treated as part of the evaluator/operator trust boundary:
+
+- There is no default endpoint and no fallback to the chat endpoint; the
+  layer runs only when `QWEN_EMBEDDING_BASE_URL` and `QWEN_EMBEDDING_MODEL`
+  are both set (names fixed in the protected `config/models.yaml`).
+- The URL must be loopback (`localhost`, `127.0.0.0/8`, `::1`) unless
+  `QWEN_EMBEDDING_ALLOW_REMOTE=true` is set; `QWEN_ALLOW_REMOTE` for the chat
+  model does not widen it. Credentials, query strings and fragments in the
+  URL are rejected.
+- Only a loopback endpoint is trusted with SEALED_HOLDOUT text
+  (`Embedder.sealed_holdout_trusted`). With an explicitly allowed remote
+  endpoint, holdout prompts are never sent; the report status is `partial`
+  and names the number of withheld records. A custom `Embedder` must set
+  `sealed_holdout_trusted` only if it keeps holdout text inside the
+  evaluator boundary (for example an in-process local model).
+- The loopback endpoint must itself run on the operator/evaluator host and
+  must not forward requests elsewhere; the code cannot verify that.
+- Vectors of holdout prompts are holdout-derived data (embeddings can be
+  partially inverted). The cache stores only content hashes and vectors,
+  in a `0700` directory with `0600` files, under the invoking role's private
+  state (`$HERMES_IMPROVE_HOME/embedding-cache`, overridable with
+  `HERMES_IMPROVE_EMBEDDING_CACHE`). Keep it out of the ledger and out of any
+  directory the agent or promoter can read.
+- Reports and CLI output carry the model id, threshold and counts, never
+  prompt text.
+
 ## Known limits
 
 - The evaluator and promoter can both write the ledger database (SQLite
