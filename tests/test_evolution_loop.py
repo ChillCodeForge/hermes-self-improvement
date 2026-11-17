@@ -16,7 +16,8 @@ from evolution_doubles import (
 )
 from hermes_improve.benchmarks import BenchmarkStore
 from hermes_improve.errors import AccessDenied
-from hermes_improve.evolution_loop import EvaluationGateway, EvolutionConfig, EvolutionLoop
+from hermes_improve.evolution_loop import EvaluationGateway, EvolutionConfig, EvolutionLoop, load_verified_candidate
+from hermes_improve.models import Split
 from hermes_improve.optimizer import ModelMutationStrategy
 from hermes_improve.policy import PromotionPolicy
 
@@ -351,3 +352,35 @@ def _root(fixture):
     from hermes_improve.evolution_loop import load_verified_candidate
 
     return load_verified_candidate(fixture.repo, fixture.store, fixture.root_id)
+
+
+def test_finalist_holdout_is_spent_only_once_a_holdout_task_runs(tmp_path):
+    fixture = evolution_fixture(tmp_path)
+    gateway = fixture.gateway()
+    root = load_verified_candidate(fixture.repo, fixture.store, fixture.root_id)
+    original = fixture.runner.run
+
+    def crash_before_holdout(commit, benchmark, seed):
+        if benchmark.split is not Split.SEALED_HOLDOUT:
+            raise RuntimeError("sandbox infrastructure failure")
+        return original(commit, benchmark, seed)
+
+    def finalist_spent():
+        return fixture.registry.is_spent(gateway.holdout_generation(), "lineage:root-exp/finalist/root-cand")
+
+    fixture.runner.run = crash_before_holdout
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        gateway.evaluate_finalist_with_holdout(root, lineage_id="root-exp", seeds=None)
+    assert not finalist_spent()
+
+    def crash_in_holdout(commit, benchmark, seed):
+        if benchmark.split is Split.SEALED_HOLDOUT:
+            raise RuntimeError("crash inside holdout task")
+        return original(commit, benchmark, seed)
+
+    fixture.runner.run = crash_in_holdout
+    with pytest.raises(RuntimeError, match="inside holdout"):
+        gateway.evaluate_finalist_with_holdout(root, lineage_id="root-exp", seeds=None)
+    assert finalist_spent()
+    with pytest.raises(AccessDenied):
+        gateway.evaluate_finalist_with_holdout(root, lineage_id="root-exp", seeds=None)

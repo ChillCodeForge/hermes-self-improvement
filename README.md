@@ -10,7 +10,7 @@ against an unchanged baseline, checked for regressions, and promoted through a
 controlled Git-backed process.
 
 > **Project status:** Version `0.1.0` implements the complete gated loop as
-> code with automated tests (655 passing, `scripts/docker-test.sh`):
+> code with an automated test suite (`scripts/docker-test.sh`):
 > redacted session ingestion (export, `batch_runner` trajectories, opt-in
 > Hermes hooks), benchmark mining with eligibility/reproducibility scoring,
 > a Pydantic/YAML benchmark schema, exact/near/MinHash clustering with
@@ -517,10 +517,20 @@ QWEN_MAX_CONCURRENCY
 ```
 
 Logical roles—`qwen_solver`, `qwen_optimizer`, `qwen_dreamer`, and
-`qwen_judge`—use role-specific prompts. The adapter exposes in-memory request,
-token, and latency counters; it does not persist them or capture GPU runtime.
-Blind A/B swaps and abstention are implemented as a helper but are not part of
-the deterministic promotion gate. No live endpoint has been validated.
+`qwen_judge`—use role-specific prompts. The model variables are the ones named
+in `config/models.yaml`. Every Qwen-backed command (`dream --stage rem|deep`,
+`candidate generate`, `evolve`, `evaluate --judge`) persists the adapter's
+per-role request, token, and latency counters to `observability.sqlite3`, also
+when the command fails. GPU runtime is measured only when the operator points
+`HERMES_GPU_METRICS_URL` at the model server's Prometheus endpoint and names
+its cumulative seconds counters in `HERMES_GPU_RUNTIME_METRICS`; otherwise the
+report says `unavailable` and why (see `docs/operations.md`).
+`evaluate --judge` wires the blind pairwise judge into evaluation: each
+subjective-only task is judged with A/B and swapped order, and a
+position-dependent answer is `unreliable`. A judge verdict can only add
+blocking reasons to the evaluation report, never make a candidate pass;
+deterministic verifiers always take precedence. No live endpoint has been
+validated.
 
 ## Experiment, artifact, and decision history
 
@@ -561,7 +571,9 @@ After Git ref update and release tagging, the promoter switches the configured
 deployment symlink atomically and marks the release `PROVISIONAL`. The
 monitoring API and `hermes-improve monitor ingest observations.jsonl` accept
 trusted collector observations; stable observation IDs make retries
-idempotent. There is not yet an automatic Hermes/production collector. Track
+idempotent. `hermes-improve monitor collect RELEASE` derives observations from
+Hermes sessions already ingested (attributed by release activation time,
+user corrections by documented heuristics; see `docs/operations.md`). Track
 success rate, tool errors, tokens and calls per success, latency, retries,
 user corrections, and regression signals. Move to `STABLE` only with adequate
 evidence; otherwise roll back atomically and record the decision. Avoid
@@ -620,7 +632,7 @@ hermes-improve approve <experiment-id> --operator NAME --rationale TEXT
 hermes-improve promote <experiment-id> [--release brain-vN] [--operator-public-key KEY]
 hermes-improve rollback <release>
 hermes-improve curator status|propose|convert-pending
-hermes-improve monitor ingest|replay|evaluate [--apply]
+hermes-improve monitor collect|ingest|replay|evaluate [--apply]
 hermes-improve report [--json]
 hermes-improve decisions export|backfill
 hermes-improve security check [--role agent|evaluator|promoter] [--production PATH]
@@ -653,7 +665,7 @@ phase begins.
 | **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact, near-duplicate and MinHash/LSH clustering with cluster-consistent splits, manifests, versioning and operator holdout rotation are implemented; clustering is lexical, so paraphrases can escape | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
 | **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion (including archive, delete and consolidation as manually gated removal candidates) are implemented and tested against fixtures in the real format | No Curator bypass around candidate evaluation and Git |
-| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; production collection and a Hermes replay runner remain absent | Regression triggers an auditable rollback decision |
+| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; `monitor collect` feeds ingested Hermes sessions (heuristic correction signals) and `monitor replay --source shadow-benchmarks` replays SHADOW-split tasks; a Hermes replay runner remains absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous
 learning. Later candidate types, observability expansion, and Laya are gated on

@@ -2,21 +2,28 @@
 
 Every number is computed from persisted state: the experiment store, the
 session queue, the monitoring database, the public benchmark tree, and the
-observability log written by the CLI after Dreaming and Qwen-backed runs.
-Missing sources are reported as ``"no data"``; a metric without any possible
-source in this package is reported as ``"unavailable"``. Nothing is estimated.
-Reading never creates or modifies a database.
+observability log written by the CLI after Dreaming and every Qwen-backed
+command (``dream``, ``candidate generate``, ``evolve``, ``evaluate --judge``).
+Missing sources are reported as ``"no data"``; a metric whose source is not
+configured is reported as ``"unavailable"`` together with the reason. Nothing
+is estimated. Reading never creates or modifies a database.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
+import re
 import sqlite3
+import urllib.error
+import urllib.request
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from statistics import mean
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
+from urllib.parse import urlparse
 
 from .benchmarks import BenchmarkStore
 from .models import canonical_json, utc_now
@@ -56,6 +63,15 @@ class ObservabilityLog:
                 CREATE TABLE IF NOT EXISTS proposal_conversions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     candidate_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gpu_runtime_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    seconds REAL,
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
             """)
@@ -109,6 +125,209 @@ class ObservabilityLog:
                 (candidate_id, utc_now()),
             )
 
+    def record_gpu_runtime(
+        self, *, command: str, metrics: tuple[str, ...], seconds: float | None, status: str, detail: str = "",
+    ) -> None:
+        """Store one GPU-runtime sample: a counter delta (``status='ok'``) or why there is none."""
+        if command not in _QWEN_COMMANDS:
+            raise ValueError(f"unknown Qwen-backed command {command!r}")
+        if status not in {"ok", "scrape_failed", "counter_reset", "metrics_missing"}:
+            raise ValueError("unknown GPU runtime sample status")
+        if (status == "ok") != (seconds is not None):
+            raise ValueError("only an ok GPU runtime sample carries seconds")
+        if seconds is not None and (
+            isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or seconds < 0
+        ):
+            raise ValueError("GPU runtime seconds must be finite and non-negative")
+        with sqlite3.connect(self.path) as db:
+            db.execute(
+                """INSERT INTO gpu_runtime_samples (command,metrics_json,seconds,status,detail,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (command, canonical_json(list(metrics)), None if seconds is None else float(seconds),
+                 status, str(detail)[:500], utc_now()),
+            )
+
+
+_QWEN_COMMANDS = frozenset({"dream-rem", "dream-deep", "candidate-generate", "evolve", "evaluate-judge"})
+_METRIC_NAME = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]*$")
+_MAX_METRICS_BYTES = 4 * 1024 * 1024
+GPU_METRICS_URL_ENV = "HERMES_GPU_METRICS_URL"
+GPU_RUNTIME_METRICS_ENV = "HERMES_GPU_RUNTIME_METRICS"
+GPU_METRICS_ALLOW_REMOTE_ENV = "HERMES_GPU_METRICS_ALLOW_REMOTE"
+GPU_RUNTIME_UNCONFIGURED = (
+    f"no GPU runtime samples recorded; set {GPU_METRICS_URL_ENV} (model server Prometheus /metrics URL) and "
+    f"{GPU_RUNTIME_METRICS_ENV} (comma-separated cumulative seconds counters) to measure it"
+)
+
+
+class GpuRuntimeProbe:
+    """Reads operator-named cumulative seconds counters from a model server's Prometheus endpoint.
+
+    Configured only through the environment: ``HERMES_GPU_METRICS_URL`` (for
+    example the vLLM or llama.cpp ``/metrics`` URL) and
+    ``HERMES_GPU_RUNTIME_METRICS`` (comma-separated counter names, each a
+    cumulative number of seconds, e.g. llama.cpp's
+    ``llamacpp:prompt_seconds_total,llamacpp:tokens_predicted_seconds_total``).
+    Every series of a named metric is summed. The runtime of a command is the
+    difference of that sum after and before the command, so it includes any
+    other traffic the server handled in that window. The URL must be loopback
+    unless ``HERMES_GPU_METRICS_ALLOW_REMOTE=true``.
+    """
+
+    def __init__(self, url: str, metrics: tuple[str, ...], *, timeout: float = 5.0, allow_remote: bool = False) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"{GPU_METRICS_URL_ENV} must be an absolute HTTP(S) URL")
+        if parsed.username or parsed.password or parsed.fragment:
+            raise ValueError(f"{GPU_METRICS_URL_ENV} must not contain credentials or a fragment")
+        hostname = parsed.hostname.lower()
+        try:
+            local = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            local = hostname == "localhost"
+        if not local and not allow_remote:
+            raise ValueError(
+                f"{GPU_METRICS_URL_ENV} must be loopback unless {GPU_METRICS_ALLOW_REMOTE_ENV}=true is set"
+            )
+        if not metrics or any(not _METRIC_NAME.fullmatch(name) for name in metrics) or len(set(metrics)) != len(metrics):
+            raise ValueError(f"{GPU_RUNTIME_METRICS_ENV} must list distinct Prometheus metric names")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("GPU metrics timeout must be positive")
+        self.url = url
+        self.metrics = tuple(metrics)
+        self.timeout = timeout
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "GpuRuntimeProbe | None":
+        """The configured probe, ``None`` when no metrics URL is set; partial configuration is an error."""
+        environ = os.environ if environ is None else environ
+        url = environ.get(GPU_METRICS_URL_ENV, "").strip()
+        names = tuple(item.strip() for item in environ.get(GPU_RUNTIME_METRICS_ENV, "").split(",") if item.strip())
+        if not url and not names:
+            return None
+        if not url or not names:
+            raise ValueError(f"{GPU_METRICS_URL_ENV} and {GPU_RUNTIME_METRICS_ENV} must be set together")
+        return cls(url, names, allow_remote=environ.get(GPU_METRICS_ALLOW_REMOTE_ENV, "").lower() == "true")
+
+    def read_seconds(self) -> float:
+        """Sum of all series of the configured counters; raises when one is absent."""
+        request = urllib.request.Request(self.url, headers={"Accept": "text/plain"}, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read(_MAX_METRICS_BYTES + 1)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"GPU metrics scrape failed: {exc}") from exc
+        if len(raw) > _MAX_METRICS_BYTES:
+            raise RuntimeError("GPU metrics response exceeds the 4 MiB limit")
+        return sum_prometheus_counters(raw.decode("utf-8", errors="replace"), self.metrics)
+
+
+class MetricsMissing(ValueError):
+    """A configured counter is absent from the scraped exposition."""
+
+
+def sum_prometheus_counters(text: str, metrics: tuple[str, ...]) -> float:
+    """Sum every series of each named metric in Prometheus text exposition format."""
+    totals: dict[str, float] = {}
+    wanted = set(metrics)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name_end = len(line)
+        for index, char in enumerate(line):
+            if char in "{ \t":
+                name_end = index
+                break
+        name = line[:name_end]
+        if name not in wanted:
+            continue
+        rest = line[name_end:]
+        if rest.startswith("{"):
+            closing = rest.rfind("}")
+            if closing < 0:
+                raise ValueError(f"malformed Prometheus series for {name}")
+            rest = rest[closing + 1:]
+        fields = rest.split()
+        if not fields:
+            raise ValueError(f"Prometheus series for {name} has no value")
+        value = float(fields[0])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"Prometheus counter {name} must be finite and non-negative")
+        totals[name] = totals.get(name, 0.0) + value
+    missing = [name for name in metrics if name not in totals]
+    if missing:
+        raise MetricsMissing(f"metrics endpoint does not expose: {', '.join(missing)}")
+    return sum(totals.values())
+
+
+@contextmanager
+def record_qwen_usage(
+    state_dir: Path, model: Any, *, command: str, environ: Mapping[str, str] | None = None,
+) -> Iterator[None]:
+    """Record the model's per-role Qwen usage and, if configured, GPU runtime for one command.
+
+    Both are recorded when the wrapped block finishes, including when it
+    raises, so failed runs still account for the requests they made. A GPU
+    scrape that fails is stored as a failed sample with its reason; it never
+    changes the outcome of the command. A misconfigured probe fails before any
+    Qwen request is made.
+    """
+    if command not in _QWEN_COMMANDS:
+        raise ValueError(f"unknown Qwen-backed command {command!r}")
+    log = ObservabilityLog(Path(state_dir) / "observability.sqlite3")
+    probe = GpuRuntimeProbe.from_environment(environ)
+    before: float | None = None
+    before_error: tuple[str, str] | None = None
+    if probe is not None:
+        try:
+            before = probe.read_seconds()
+        except MetricsMissing as exc:
+            before_error = ("metrics_missing", str(exc))
+        except (RuntimeError, ValueError) as exc:
+            before_error = ("scrape_failed", str(exc))
+    try:
+        yield
+    finally:
+        log.record_qwen_stats(model.stats)
+        if probe is not None:
+            _record_gpu_sample(log, probe, command, before, before_error)
+
+
+def _record_gpu_sample(
+    log: ObservabilityLog, probe: GpuRuntimeProbe, command: str,
+    before: float | None, before_error: tuple[str, str] | None,
+) -> None:
+    if before_error is not None:
+        log.record_gpu_runtime(
+            command=command, metrics=probe.metrics, seconds=None, status=before_error[0],
+            detail=f"before command: {before_error[1]}",
+        )
+        return
+    try:
+        after = probe.read_seconds()
+    except MetricsMissing as exc:
+        log.record_gpu_runtime(
+            command=command, metrics=probe.metrics, seconds=None, status="metrics_missing",
+            detail=f"after command: {exc}",
+        )
+        return
+    except (RuntimeError, ValueError) as exc:
+        log.record_gpu_runtime(
+            command=command, metrics=probe.metrics, seconds=None, status="scrape_failed",
+            detail=f"after command: {exc}",
+        )
+        return
+    assert before is not None
+    if after < before:
+        log.record_gpu_runtime(
+            command=command, metrics=probe.metrics, seconds=None, status="counter_reset",
+            detail="counters decreased during the command (model server restarted)",
+        )
+        return
+    log.record_gpu_runtime(command=command, metrics=probe.metrics, seconds=after - before, status="ok")
+
 
 def build_report(home: Path, benchmark_root: Path) -> dict[str, Any]:
     home = Path(home)
@@ -123,7 +342,7 @@ def build_report(home: Path, benchmark_root: Path) -> dict[str, Any]:
             "improvement": _improvement(experiments),
             "benchmarks": _benchmarks(benchmark_root, experiments),
             "dreaming": _dreaming(log, experiments),
-            "qwen": _qwen(log),
+            "qwen": _qwen(log, experiments),
             "production": _production(experiments, monitoring),
         }
     finally:
@@ -273,13 +492,32 @@ def _dreaming(log: sqlite3.Connection | None, experiments: sqlite3.Connection | 
     return result
 
 
-def _qwen(log: sqlite3.Connection | None) -> dict[str, Any]:
+def _qwen(log: sqlite3.Connection | None, experiments: sqlite3.Connection | None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "requests": NO_DATA, "input_tokens": NO_DATA, "output_tokens": NO_DATA,
         "average_latency_ms": NO_DATA, "by_role": NO_DATA,
-        "gpu_runtime": UNAVAILABLE, "judge_uncertainty": NO_DATA,
+        "gpu_runtime": UNAVAILABLE, "gpu_runtime_reason": GPU_RUNTIME_UNCONFIGURED,
+        "judge_uncertainty": _judge_uncertainty(experiments),
     }
-    if log is None or not _has_table(log, "qwen_usage"):
+    if log is None:
+        return result
+    if _has_table(log, "gpu_runtime_samples"):
+        samples = log.execute(
+            "SELECT command, seconds, status FROM gpu_runtime_samples ORDER BY id"
+        ).fetchall()
+        if samples:
+            measured = [row for row in samples if row[2] == "ok"]
+            by_command: dict[str, float] = {}
+            for command, seconds, _status in measured:
+                by_command[command] = by_command.get(command, 0.0) + seconds
+            result["gpu_runtime"] = {
+                "seconds": sum(row[1] for row in measured),
+                "measured_commands": len(measured),
+                "unmeasured_commands": dict(sorted(Counter(row[2] for row in samples if row[2] != "ok").items())),
+                "seconds_by_command": dict(sorted(by_command.items())),
+            }
+            del result["gpu_runtime_reason"]
+    if not _has_table(log, "qwen_usage"):
         return result
     rows = log.execute(
         "SELECT role, SUM(requests), SUM(input_tokens), SUM(output_tokens), SUM(latency_ms) FROM qwen_usage GROUP BY role"
@@ -295,6 +533,32 @@ def _qwen(log: sqlite3.Connection | None) -> dict[str, Any]:
         "by_role": {row[0]: {"requests": row[1], "input_tokens": row[2], "output_tokens": row[3]} for row in rows},
     })
     return result
+
+
+def _judge_uncertainty(experiments: sqlite3.Connection | None) -> Any:
+    """Aggregate of the judge uncertainty stored per judged task in ``task_results``."""
+    if experiments is None or not _has_table(experiments, "task_results"):
+        return NO_DATA
+    uncertainties: list[float] = []
+    unreliable = 0
+    for (result_json,) in experiments.execute("SELECT result_json FROM task_results"):
+        row = json.loads(result_json)
+        value = row.get("judge_uncertainty")
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError("task_results contains a non-numeric judge_uncertainty")
+        uncertainties.append(float(value))
+        if row.get("judge_result") == "unreliable":
+            unreliable += 1
+    if not uncertainties:
+        return NO_DATA
+    return {
+        "judged_tasks": len(uncertainties),
+        "mean": mean(uncertainties),
+        "max": max(uncertainties),
+        "unreliable_tasks": unreliable,
+    }
 
 
 def _production(experiments: sqlite3.Connection | None, monitoring: sqlite3.Connection | None) -> dict[str, Any]:

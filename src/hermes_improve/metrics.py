@@ -72,7 +72,10 @@ def efficiency_report(pairs: Sequence[tuple[RunObservation, RunObservation]]) ->
         {"task_id": baseline.task_id, "seed": baseline.seed}
         for baseline, candidate in pairs
         if baseline.success and not candidate.success and (
-            candidate.tokens < baseline.tokens
+            (
+                baseline.token_usage_reported and candidate.token_usage_reported
+                and candidate.tokens < baseline.tokens
+            )
             or candidate.latency_ms < baseline.latency_ms
             or candidate.tool_calls < baseline.tool_calls
         )

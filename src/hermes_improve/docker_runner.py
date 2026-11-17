@@ -255,7 +255,11 @@ class SandboxCommandRunner:
             environment_digest=environment_digest,
             success=verification.passed,
             quality=verification.quality,
+            # No model runs here and nothing measures token usage, so the zero
+            # is not a measurement: report it as unmeasured (see PromotionPolicy
+            # ``require_token_measurement``).
             tokens=0,
+            token_usage_reported=False,
             latency_ms=result.duration_ms,
             deterministic_pass=verification.passed,
             security_pass=True,

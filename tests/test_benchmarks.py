@@ -233,6 +233,7 @@ def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
     source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
     root = tmp_path / "public"
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root))
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "benchmarks", "add", str(source),
         "--holdout-root", str(tmp_path / "holdout"),
@@ -244,6 +245,21 @@ def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
     assert result["status"] == "admitted"
     assert result["path"] == str(root / "train" / "authored-task-v1.json")
     assert result["manifest_version"] == BenchmarkStore(root).version
+    # Spec §36: the admission's eligibility classification is recorded as training data.
+    from hermes_improve.decisions import DecisionRecorder
+    from hermes_improve.eligibility import assess_benchmark
+
+    expected = assess_benchmark(BenchmarkStore(root).load_public()[0])
+    [record] = DecisionRecorder(tmp_path / "state" / "experiments.sqlite3").iter_records(
+        decision_type="benchmark_eligibility",
+    )
+    assert record.selected_option == expected.eligibility.value
+    assert record.available_options == ("EXCLUDED", "DREAMING_ONLY", "SOFT_BENCHMARK", "HARD_BENCHMARK")
+    assert record.confidence == expected.ground_truth_confidence
+    assert record.source == "benchmark-admission" and record.model_version == "eligibility-rules-1"
+    assert record.input_features["benchmark_id"] == "authored-task"
+    assert record.input_features["reproducibility_score"] == expected.reproducibility_score
+    assert record.input_features["ground_truth_type"] == expected.ground_truth.value
 
 
 def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypatch):

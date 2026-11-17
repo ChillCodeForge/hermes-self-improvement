@@ -57,6 +57,48 @@ def _subjective_criteria(benchmark: Benchmark) -> list[str]:
     return rendered
 
 
+JUDGE_ROUTES = ("deterministic_verification", "qwen_judge", "exit_code_only")
+NEEDS_QWEN_RULES_VERSION = "needs-qwen-rules-1"
+
+
+def judge_route(benchmark: Benchmark) -> str:
+    """How a task is verified: deterministic checks win; the Qwen judge only for subjective-only tasks."""
+    if has_deterministic_verification(benchmark):
+        return "deterministic_verification"
+    if _subjective_criteria(benchmark):
+        return "qwen_judge"
+    return "exit_code_only"
+
+
+def needs_qwen_decision_fields(benchmark: Benchmark, *, suite: str, judge_configured: bool) -> dict[str, Any]:
+    """Decision-history fields (spec §36) for the needs-Qwen decision on one task.
+
+    Uses the same :func:`judge_route` the evaluator uses, so the recorded
+    decision is the one that is applied. Sealed holdout tasks are recorded
+    without their ID. Rule-based, so there is no calibrated confidence.
+    """
+    checks = benchmark.verification.get("deterministic", [])
+    features: dict[str, Any] = {
+        "split": benchmark.split.value,
+        "suite": "SEALED_HOLDOUT" if benchmark.split is Split.SEALED_HOLDOUT else suite.upper(),
+        "deterministic_checks": len(checks) if isinstance(checks, list) else 0,
+        "subjective_criteria": len(_subjective_criteria(benchmark)),
+        "judge_configured": judge_configured,
+    }
+    if benchmark.split is not Split.SEALED_HOLDOUT:
+        features["task_id"] = benchmark.id
+        features["task_version"] = benchmark.version
+    return {
+        "decision_type": "needs_qwen",
+        "input_features": features,
+        "available_options": JUDGE_ROUTES,
+        "selected_option": judge_route(benchmark),
+        "confidence": None,
+        "source": "evaluator-verification-rules",
+        "model_version": NEEDS_QWEN_RULES_VERSION,
+    }
+
+
 class PairedEvaluator:
     """Pairs baseline/candidate runs on identical tasks, seeds, environment and limits.
 
@@ -256,17 +298,16 @@ class PairedEvaluator:
                 decides_experiment=(
                     suite.upper() in {"FULL", "SEALED_HOLDOUT"} or staged_regression(report.outcomes)
                 ),
+                regressions=detect_regressions(report.outcomes),
             )
         return report
 
     def _judge(
         self, benchmark: Benchmark, baseline_runs: list[RunObservation], candidate_runs: list[RunObservation]
     ) -> JudgeVerdict | None:
-        if has_deterministic_verification(benchmark):
+        if judge_route(benchmark) != "qwen_judge":
             return None
         criteria = _subjective_criteria(benchmark)
-        if not criteria:
-            return None
         if self.judge is None:
             raise ValueError(f"benchmark {benchmark.id!r} requires a configured judge")
         verdicts = [
@@ -319,6 +360,7 @@ class PairedEvaluator:
             judge_result=verdict.result if verdict is not None else "",
             judge_confidence=verdict.confidence if verdict is not None else None,
             judge_uncertainty=verdict.uncertainty if verdict is not None else None,
+            token_usage_reported=all(run.token_usage_reported for run in (*baseline_runs, *candidate_runs)),
         )
 
     @staticmethod
@@ -388,6 +430,51 @@ class PairedEvaluator:
             raise IntegrityError("runner deterministic status contradicts its verifier results")
         if observation.success and not observation.deterministic_pass and observation.verifier_results:
             raise IntegrityError("runner reported success despite failed deterministic verifiers")
+
+
+def detect_regressions(outcomes: Iterable[TaskOutcome]) -> list[dict[str, Any]]:
+    """One record per regression detected on one task (spec section 26 Regression).
+
+    ``reported``: the runner's verifiers counted critical/high/medium
+    regressions in the candidate runs (count = the per-run maximum the outcome
+    carries). ``task_failure``: the baseline solved the task and the candidate
+    did not; it is recorded as ``high``, the weight ``staged_regression`` and
+    the evolution screen already give it.
+    """
+    records = []
+    for row in sorted(outcomes, key=lambda item: item.task_id):
+        baseline = {
+            "success": row.baseline_success, "quality": row.baseline_quality,
+            "tokens": row.baseline_tokens, "latency_ms": row.baseline_latency_ms,
+            "tool_calls": row.baseline_tool_calls, "failed_tool_calls": row.baseline_failed_tool_calls,
+        }
+        candidate = {
+            "success": row.candidate_success, "quality": row.candidate_quality,
+            "tokens": row.candidate_tokens, "latency_ms": row.candidate_latency_ms,
+            "tool_calls": row.candidate_tool_calls, "failed_tool_calls": row.candidate_failed_tool_calls,
+            "deterministic_pass": row.deterministic_pass, "security_pass": row.security_pass,
+            "critical_regressions": row.critical_regressions, "high_regressions": row.high_regressions,
+            "medium_regressions": row.medium_regressions, "run_count": row.run_count,
+        }
+        found = [
+            ("reported", severity, count)
+            for severity, count in (
+                ("critical", row.critical_regressions), ("high", row.high_regressions),
+                ("medium", row.medium_regressions),
+            )
+            if count > 0
+        ]
+        if row.baseline_success and not row.candidate_success:
+            found.append(("task_failure", "high", 1))
+        records.extend(
+            {
+                "benchmark_id": row.task_id, "suite": row.suite, "split": row.split.value,
+                "kind": kind, "severity": severity, "count": count,
+                "baseline_outcome": baseline, "candidate_outcome": candidate,
+            }
+            for kind, severity, count in found
+        )
+    return records
 
 
 def staged_regression(outcomes: Iterable[TaskOutcome]) -> bool:

@@ -90,13 +90,8 @@ class SpentHoldoutRegistry:
             return (generation, candidate_id) in self._spent
 
 
-def consume_holdout_generation(
-    registry: SpentHoldoutRegistry,
-    holdout_benchmarks: Iterable[Benchmark],
-    lineage_id: str,
-) -> str:
-    if not isinstance(lineage_id, str) or not lineage_id.strip():
-        raise ValueError("candidate evolution lineage must be non-empty")
+def holdout_generation(holdout_benchmarks: Iterable[Benchmark]) -> str:
+    """Digest identifying one sealed-holdout generation (its sealed manifest)."""
     manifest = sorted(
         (
             {"id": benchmark.id, "version": benchmark.version, "digest": benchmark.digest}
@@ -107,8 +102,34 @@ def consume_holdout_generation(
     )
     if not manifest:
         raise ValueError("at least one sealed holdout benchmark is required")
-    generation = manifest_digest({"sealed_holdout": manifest})
-    registry.mark_spent(generation, f"lineage:{lineage_id}")
+    return manifest_digest({"sealed_holdout": manifest})
+
+
+def _lineage_key(lineage_id: str) -> str:
+    if not isinstance(lineage_id, str) or not lineage_id.strip():
+        raise ValueError("candidate evolution lineage must be non-empty")
+    return f"lineage:{lineage_id}"
+
+
+def holdout_generation_spent(
+    registry: SpentHoldoutRegistry,
+    holdout_benchmarks: Iterable[Benchmark],
+    lineage_id: str,
+) -> bool:
+    """Non-binding pre-check; only ``consume_holdout_generation`` atomically spends."""
+    key = _lineage_key(lineage_id)
+    return registry.is_spent(holdout_generation(holdout_benchmarks), key)
+
+
+def consume_holdout_generation(
+    registry: SpentHoldoutRegistry,
+    holdout_benchmarks: Iterable[Benchmark],
+    lineage_id: str,
+) -> str:
+    """Atomically mark the generation spent for the lineage; raises if already spent."""
+    key = _lineage_key(lineage_id)
+    generation = holdout_generation(holdout_benchmarks)
+    registry.mark_spent(generation, key)
     return generation
 
 

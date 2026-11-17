@@ -5,7 +5,8 @@ Every step runs the production code paths: the ``hermes-improve`` CLI
 ``releases events``, ``rollback``), real Git repositories, the real
 ``ExperimentStore``/``ArtifactStore``, real Ed25519 evaluator keys and HMAC
 manifest keys, ``PairedEvaluator`` with ``PromotionPolicy``/``RunPolicy`` from
-the shipped ``config/`` files, ``GitPromoter``, ``ReleaseMonitor`` and rollback.
+the shipped ``config/`` files (with ``require_token_measurement: false``, see
+``install_policy_config``), ``GitPromoter``, ``ReleaseMonitor`` and rollback.
 
 Outcomes come from the brain-consuming ``skill_procedure`` benchmarks: the
 evaluator-owned harness executes the candidate skill's declared procedure
@@ -152,6 +153,25 @@ def brain_tree(skill_text: str) -> dict[str, str]:
     return files
 
 
+def install_policy_config(target: Path) -> None:
+    """Shipped ``config/*.yaml`` with the one change this deterministic story needs.
+
+    The ``skill_procedure`` runners execute no model, so they report token
+    usage as unmeasured. With the shipped ``require_token_measurement: true``
+    every final evaluation would (correctly) fail "token efficiency not
+    measured". The operator of a model-free benchmark set opts out explicitly
+    in protected config; nothing else differs from the shipped files.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("promotion.yaml", "scoring.yaml", "taxonomy.yaml", "models.yaml"):
+        text = (REPO_ROOT / "config" / name).read_text(encoding="utf-8")
+        if name == "promotion.yaml":
+            assert "\nrequire_token_measurement: true\n" in text
+            text = text.replace("\nrequire_token_measurement: true\n", "\nrequire_token_measurement: false\n")
+        (target / name).write_text(text, encoding="utf-8")
+        (target / name).chmod(0o644)
+
+
 # ----------------------------------------------------------------- deployments
 
 class SingleUserDeployment:
@@ -177,6 +197,9 @@ class SingleUserDeployment:
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
         ))
         self.manifest_key = os.urandom(32).hex()
+        self.config = tmp / "config"
+        install_policy_config(self.config)
+        self.config.chmod(0o755)
 
     @property
     def ledger(self) -> Path:
@@ -186,7 +209,7 @@ class SingleUserDeployment:
         env = {
             "HERMES_IMPROVE_HOME": str(self.home),
             "HERMES_IMPROVE_BENCHMARKS": str(self.public),
-            "HERMES_IMPROVE_CONFIG": str(REPO_ROOT / "config"),
+            "HERMES_IMPROVE_CONFIG": str(self.config),
             "HERMES_IMPROVE_LAYOUT": str(self.tmp / "no-layout.json"),
             "HERMES_IMPROVE_ISOLATION": "unprovisioned",
         }
@@ -503,6 +526,12 @@ class RoleUserDeployment:
     def __init__(self, base: Path) -> None:
         self.root = base / "srv"
         _run("bash", PROVISION, "--root", self.root, "--cli", CLI, "--python", sys.executable)
+        # Protected policy config in the root-owned config directory; a second
+        # provisioning run points every role's HERMES_IMPROVE_CONFIG at it.
+        install_policy_config(self.root / "config")
+        _run("bash", PROVISION, "--root", self.root, "--cli", CLI, "--python", sys.executable)
+        assert (self.root / "config" / "roles" / "evaluator.env").read_text().count(
+            f"HERMES_IMPROVE_CONFIG={self.root}/config\n") == 1
         self.public = self.root / "benchmarks" / "public"
         self.holdout = self.root / "holdout"
         self.home = self.root / "ledger"

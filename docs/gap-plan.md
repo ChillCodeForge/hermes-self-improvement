@@ -65,9 +65,9 @@ pass. Every merge must keep the full suite green in the Linux test container.
 
 ## Outcome (2026-11-17)
 
-All work packages are merged into `main`; the suite has 655 passing tests
-(5 skipped: optional `gepa` extra and Docker-image tests) in the Linux test
-container, and every package passed GitHub Actions. Since #19, CI runs the
+All work packages are merged into `main`, and every package passed GitHub
+Actions. Skipped tests are limited to the optional `gepa` extra and
+Docker-image tests. Since #19, CI runs the
 suite twice: on the plain runner (root tests skipped) and as root in the
 Linux test container via `scripts/docker-test.sh`, where a skipped
 `root_required` test fails the job.
@@ -87,8 +87,27 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Root CI job, CODEOWNERS team + branch protection | #19, #21 | **done** |
 | Curator archive/delete/consolidate as gated removal candidates | #22 | **done** |
 | Semantic clustering layer (embeddings) | #23 | **done** |
+| Spec audit fixes: §23 policy order/generalization/token gate, §16 finalist-only holdout, §26 ledger schema + migrations, §35/§36 report and Laya decisions, §29 session feed | #24 | **done** |
 
-Open items that are outside what this repository can prove on its own:
+A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
+§35 and §36 that the table above had marked done; #24 closes them.
+
+Open items:
+
+- Token measurement (§24): no shipped runner measures tokens. Hermes'
+  `batch_runner` discards the usage that `run_conversation` returns, and the
+  Docker command runner runs no model. With the default
+  `require_token_measurement: true` the policy therefore refuses promotion of
+  model-driven candidates until a token source exists (for example a metering
+  proxy in front of the model endpoint); operators with model-free benchmarks
+  set it to `false` explicitly and the report records the token check as
+  skipped.
+- Test layout (§37): tests are flat under `tests/` (plus `tests/security`
+  and `tests/e2e`), not split into `unit/` and `integration/`.
+- Low-priority audit items: LIGHT dreaming counts distinct strings instead of
+  reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
+
+Outside what this repository can prove on its own:
 
 - Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
   not exercised (see "Real external blockers").

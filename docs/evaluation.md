@@ -159,6 +159,11 @@ records it exports only `brain/` of the commit and adds the harness and task
 fixture from the evaluator's benchmark roots (public, or holdout for
 SEALED_HOLDOUT tasks), verified against the record's `harness_digest` and
 `input_data`; the environment digest covers both (see `benchmarking.md`).
+No model runs in these runners, and nothing measures token usage, so their
+observations carry `tokens=0` with `token_usage_reported=False`: the zero is
+not presented as a measurement. A benchmark set that only uses these runners
+needs `require_token_measurement: false` in the protected `promotion.yaml` to
+promote (the end-to-end test does exactly that); the shipped default blocks.
 
 `LocalSkillProcedureRunner` (`--runner local
 --acknowledge-no-container-isolation`) runs the same composition through
@@ -182,9 +187,21 @@ a missing row means the prompt failed (`exit_state=agent_error`, never success),
 a non-zero batch_runner exit is an infrastructure error. Tool-call and turn
 limits are enforced on the parsed trajectory. The trajectory, diff and run
 record are stored as artifacts. Known gaps: batch_runner has no sampling seed
-(the seed is passed only as `HERMES_EVAL_SEED`), and trajectories carry no
-token usage, so these runs report `token_usage_reported=False` and token
-metrics are shown as unavailable rather than zero. Live execution requires a
+(the seed is passed only as `HERMES_EVAL_SEED`), and no token usage is
+available, so these runs report `token_usage_reported=False` and token
+metrics are shown as unavailable rather than zero. Blocker, verified in the
+Hermes v0.22.2 source: `AIAgent.run_conversation` returns `input_tokens`,
+`output_tokens` and related counters, but `batch_runner._process_single_prompt`
+copies only `completed`, `partial`, `api_calls`, tool stats and the converted
+trajectory into its result row, and it constructs `AIAgent` without a
+`session_db`, so `_ensure_db_session` never writes a SessionDB row (no
+`state.db` session with token columns exists for the run). The only per-task
+token source is `hermes -z PROMPT --usage-file PATH` (one-shot CLI), which
+writes no trajectory (no tool stats, turns or tool-call limits to enforce) and
+loads memory and `AGENTS.md` from the working directory, so it cannot replace
+batch_runner here. Consequence: with the default
+`require_token_measurement: true`, FULL/holdout evidence from this runner fails
+the policy with "token efficiency not measured" (see `promotion.md`). Live execution requires a
 Hermes install (`--hermes-agent-dir`) and a reachable model endpoint; CI
 exercises the adapter with a fixture that mimics the real CLI flags and row
 schema.
@@ -205,7 +222,17 @@ a `candidate` verdict changes nothing, so the judge can never promote alone.
 Qwen roles share the endpoint but resolve their own model from `config/models.yaml`
 (`roles.<role>.model_env`, falling back to `QWEN_MODEL`; `QWEN_JUDGE_MODEL` for the
 judge), and keep separate statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests
-only). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
+only). The shared default model is the variable all roles name as their common
+`fallback_model_env` (else the `qwen_solver` role's `model_env`), so no variable
+name is hardcoded in the adapter. `evaluate --judge` persists the judge's
+request/token/latency counters to `observability.sqlite3` (also when the
+evaluation fails), and the per-task `judge_uncertainty` stored in
+`task_results` feeds the report's `qwen.judge_uncertainty`. The routing rule
+(deterministic checks, else subjective criteria → judge, else exit code only)
+is `evaluator.judge_route`; each evaluate run records it per selected task as
+a `needs_qwen` decision (sealed holdout tasks without their ID), and records
+the impact-aware selection as a `suite_selection` decision (see
+`laya-future.md`). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
 (`QWEN_BASE_URL`/v1) when `--model`/`--model-base-url` are omitted.
 
 ## Report contents
@@ -232,7 +259,8 @@ only). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
 `api_calls`, `exit_state`, `model_config_digest`, `limits_digest`,
 `verifier_results`, `filesystem_changes`, `trajectory_digest`, `diff_digest`.
 `TaskOutcome` adds `run_count`, `judge_result`, `judge_confidence`,
-`judge_uncertainty`. The signed top-level payload shape is unchanged, so
+`judge_uncertainty` and `token_usage_reported` (true only when every paired
+run of both arms reported token usage; defaults to false). The signed top-level payload shape is unchanged, so
 reports written before version 2 still verify.
 
 An evaluation report is not sufficient on its own to establish operational

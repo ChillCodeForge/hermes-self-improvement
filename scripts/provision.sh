@@ -14,6 +14,11 @@
 #   --install-from SRC  create DIR/install/venv and pip-install SRC into it (root-owned)
 #   --python PY         interpreter with `cryptography` for evaluator key generation
 #                       (default: the install venv's python, else python3)
+#
+# Protected policy configuration: when DIR/config holds all four of
+# promotion.yaml, scoring.yaml, taxonomy.yaml and models.yaml (root-owned like
+# the rest of DIR/config), every role environment gets
+# HERMES_IMPROVE_CONFIG=DIR/config; otherwise the built-in defaults apply.
 set -euo pipefail
 umask 022
 
@@ -288,6 +293,10 @@ HERMES_IMPROVE_BENCHMARKS=$ROOT/benchmarks/public
 HERMES_EVALUATOR_UID=$EVALUATOR_UID
 HERMES_PROMOTER_UID=$PROMOTER_UID
 EOF
+  if [[ -f "$ROOT/config/promotion.yaml" && -f "$ROOT/config/scoring.yaml" \
+        && -f "$ROOT/config/taxonomy.yaml" && -f "$ROOT/config/models.yaml" ]]; then
+    echo "HERMES_IMPROVE_CONFIG=$ROOT/config"
+  fi
 }
 { common_env; cat <<EOF
 HERMES_IMPROVE_USER=$AGENT

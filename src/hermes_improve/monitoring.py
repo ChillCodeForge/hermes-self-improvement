@@ -21,10 +21,11 @@ if TYPE_CHECKING:
     from .promotion import GitPromoter
 
 
-OBSERVATION_SOURCES = frozenset({"production", "shadow_replay", "historical_replay"})
+OBSERVATION_SOURCES = frozenset({"production", "hermes_session", "shadow_replay", "historical_replay"})
 SEVERITY_OPTIONS = ("none", "medium", "high", "critical")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _MAX_OBSERVATION_SKILLS = 32
+_MAX_DERIVATION_BYTES = 4096
 _MONITORING_MODEL_VERSION = "monitoring-policy-1"
 
 
@@ -34,7 +35,8 @@ class ProductionObservation:
     task_id: str
     success: bool
     tool_errors: int
-    tokens: int
+    # ``None`` means the source did not report token usage; it is never counted as 0.
+    tokens: int | None
     tool_calls: int
     latency_ms: float
     user_corrections: int = 0
@@ -43,6 +45,9 @@ class ProductionObservation:
     observation_id: str = ""
     skills: tuple[str, ...] = ()
     source: str = "production"
+    # How derived fields were obtained (e.g. heuristic names and counts for
+    # sessions fed from the queue). Stored with the observation, never evaluated.
+    derivation: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,7 @@ class ReleaseMetrics:
     retry_rate: float
     correction_rate: float
     regression_signals: int
+    tokens_reported_samples: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +120,7 @@ class MonitoringAssessment:
     sources: Mapping[str, int]
     unavailable_baselines: tuple[str, ...] = ()
     decision_id: str | None = None
+    unavailable_metrics: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +136,7 @@ class MonitoringAssessment:
             "unmatched_observations": self.unmatched_observations,
             "sources": dict(self.sources),
             "unavailable_baselines": list(self.unavailable_baselines),
+            "unavailable_metrics": list(self.unavailable_metrics),
             "decision_id": self.decision_id,
         }
 
@@ -137,7 +145,7 @@ class MonitoringAssessment:
 class _Row:
     success: int
     tool_errors: int
-    tokens: int
+    tokens: int | None
     tool_calls: int
     latency_ms: float
     user_corrections: int
@@ -200,6 +208,15 @@ class ReleaseMonitor:
                 db.execute("ALTER TABLE production_observations ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]'")
             if "source" not in columns:
                 db.execute("ALTER TABLE production_observations ADD COLUMN source TEXT NOT NULL DEFAULT 'production'")
+            if "tokens_reported" not in columns:
+                # Rows written before this column existed always carried a reported count.
+                db.execute(
+                    "ALTER TABLE production_observations ADD COLUMN tokens_reported INTEGER NOT NULL DEFAULT 1"
+                )
+            if "derivation_json" not in columns:
+                db.execute(
+                    "ALTER TABLE production_observations ADD COLUMN derivation_json TEXT NOT NULL DEFAULT '{}'"
+                )
             db.execute("""
                 CREATE TABLE IF NOT EXISTS monitoring_actions (
                     id TEXT PRIMARY KEY,
@@ -215,24 +232,42 @@ class ReleaseMonitor:
             """)
 
     def observe(self, observation: ProductionObservation) -> MonitoringDecision:
+        duplicate, count = self.record(observation)
+        if duplicate:
+            return MonitoringDecision("DUPLICATE", count, ("observation was already recorded",), True)
+        assessment = self.evaluate(observation.release_id, record_decision=False)
+        if assessment.status == "STABLE":
+            self.store.set_release_status(observation.release_id, "STABLE")
+        return MonitoringDecision(assessment.status, assessment.matched_observations, assessment.reasons)
+
+    def record(self, observation: ProductionObservation) -> tuple[bool, int]:
+        """Store one observation without assessing it.
+
+        Returns ``(duplicate, recorded_count_for_release)``. Bulk feeds use this
+        and assess once at the end; :meth:`observe` assesses after every record.
+        """
         validate_observation(observation)
         record_id = observation.observation_id or uuid.uuid4().hex
         skills_json = canonical_json(sorted(set(observation.skills)))
+        derivation_json = canonical_json(dict(observation.derivation or {}))
+        tokens_reported = int(observation.tokens is not None)
+        tokens = observation.tokens if observation.tokens is not None else 0
         with sqlite3.connect(self.path, timeout=30) as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
                 """SELECT release_id,task_id,success,tool_errors,tokens,tool_calls,latency_ms,
-                          user_corrections,retries,critical_regression,skills_json,source
+                          user_corrections,retries,critical_regression,skills_json,source,
+                          tokens_reported,derivation_json
                    FROM production_observations WHERE id=?""",
                 (record_id,),
             ).fetchone()
             if existing:
                 supplied = (
                     observation.release_id, observation.task_id, int(observation.success),
-                    observation.tool_errors, observation.tokens, observation.tool_calls,
+                    observation.tool_errors, tokens, observation.tool_calls,
                     float(observation.latency_ms), observation.user_corrections,
                     observation.retries, int(observation.critical_regression),
-                    skills_json, observation.source,
+                    skills_json, observation.source, tokens_reported, derivation_json,
                 )
                 if tuple(existing) != supplied:
                     raise ValueError("observation_id was already recorded with different content")
@@ -240,7 +275,7 @@ class ReleaseMonitor:
                     "SELECT COUNT(*) FROM production_observations WHERE release_id=?",
                     (observation.release_id,),
                 ).fetchone()[0]
-                return MonitoringDecision("DUPLICATE", count, ("observation was already recorded",), True)
+                return True, count
             release = self.store.get_release(observation.release_id)
             if release["status"] != "PROVISIONAL":
                 raise ValueError("post-promotion observations are accepted only for provisional releases")
@@ -250,17 +285,17 @@ class ReleaseMonitor:
             db.execute(
                 """INSERT INTO production_observations
                 (id,release_id,task_id,success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,
-                 retries,critical_regression,created_at,skills_json,source)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 retries,critical_regression,created_at,skills_json,source,tokens_reported,derivation_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (record_id, observation.release_id, observation.task_id, int(observation.success),
-                 observation.tool_errors, observation.tokens, observation.tool_calls, observation.latency_ms,
+                 observation.tool_errors, tokens, observation.tool_calls, observation.latency_ms,
                  observation.user_corrections, observation.retries, int(observation.critical_regression),
-                 utc_now(), skills_json, observation.source),
+                 utc_now(), skills_json, observation.source, tokens_reported, derivation_json),
             )
-        assessment = self.evaluate(observation.release_id, record_decision=False)
-        if assessment.status == "STABLE":
-            self.store.set_release_status(observation.release_id, "STABLE")
-        return MonitoringDecision(assessment.status, assessment.matched_observations, assessment.reasons)
+            count = db.execute(
+                "SELECT COUNT(*) FROM production_observations WHERE release_id=?", (observation.release_id,),
+            ).fetchone()[0]
+        return False, count
 
     def evaluate(self, release_id: str, *, record_decision: bool = True) -> MonitoringAssessment:
         """Assess a release from matched evidence without changing its status."""
@@ -297,18 +332,18 @@ class ReleaseMonitor:
                 reasons=("minimum observation sample not reached",), **base,
             )
         else:
-            comparisons, unavailable = self._compare(metrics, baseline)
+            comparisons, unavailable, unmeasured = self._compare(metrics, baseline)
             if comparisons:
                 severity = "high" if any(item.severity == "high" for item in comparisons) else "medium"
                 assessment = MonitoringAssessment(
                     status="ROLLBACK_RECOMMENDED", severity=severity,
                     reasons=tuple(item.reason for item in comparisons),
-                    unavailable_baselines=unavailable, **base,
+                    unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
             else:
                 assessment = MonitoringAssessment(
                     status="STABLE", severity="none", reasons=(),
-                    unavailable_baselines=unavailable, **base,
+                    unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
         if record_decision and self.decisions is not None:
             record = self.decisions.record(
@@ -410,15 +445,18 @@ class ReleaseMonitor:
         with sqlite3.connect(self.path, timeout=30) as db:
             rows = db.execute(
                 """SELECT success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,retries,
-                          critical_regression,skills_json,source
+                          critical_regression,skills_json,source,tokens_reported
                    FROM production_observations WHERE release_id=?""",
                 (release_id,),
             ).fetchall()
-        return [_Row(*row[:8], tuple(json.loads(row[8])), row[9]) for row in rows]
+        return [
+            _Row(row[0], row[1], row[2] if row[10] else None, *row[3:8], tuple(json.loads(row[8])), row[9])
+            for row in rows
+        ]
 
     def _compare(
         self, metrics: ReleaseMetrics, baseline: Mapping[str, Any],
-    ) -> tuple[list[_Comparison], tuple[str, ...]]:
+    ) -> tuple[list[_Comparison], tuple[str, ...], tuple[str, ...]]:
         policy = self.policy
         checks = (
             ("success_rate", "success rate regression", "high",
@@ -436,15 +474,20 @@ class ReleaseMonitor:
             ("correction_rate", "user correction rate regression", "medium",
              lambda base: metrics.correction_rate > base + policy.max_correction_rate_increase),
         )
-        failures, unavailable = [], []
+        failures, unavailable, unmeasured = [], [], []
         for key, reason, severity, regressed in checks:
+            if math.isnan(getattr(metrics, key)):
+                # The evidence did not report this metric (e.g. no observation had
+                # token counts); it is reported as unmeasured, never compared as 0.
+                unmeasured.append(key)
+                continue
             base = baseline.get(key)
             if isinstance(base, bool) or not isinstance(base, (int, float)) or not math.isfinite(base):
                 unavailable.append(key)
                 continue
             if regressed(float(base)):
                 failures.append(_Comparison(key, reason, severity, getattr(metrics, key)))
-        return failures, tuple(unavailable)
+        return failures, tuple(unavailable), tuple(unmeasured)
 
     def _audit(
         self, release_id: str, action: str, target: str | None, previous_commit: str | None,
@@ -473,16 +516,27 @@ def compute_metrics(rows: Iterable[_Row]) -> ReleaseMetrics:
     def per_success(total: float) -> float:
         return total / successes if successes else float("inf")
 
+    # Tokens only from observations that reported them; unknown counts are not zeros.
+    token_rows = [row for row in rows if row.tokens is not None]
+    token_successes = sum(row.success for row in token_rows)
+    if not token_rows:
+        tokens_per_success = float("nan")
+    elif token_successes:
+        tokens_per_success = sum(row.tokens for row in token_rows) / token_successes
+    else:
+        tokens_per_success = float("inf")
+
     return ReleaseMetrics(
         sample_count=len(rows),
         success_rate=mean(row.success for row in rows),
         tool_error_rate=sum(row.tool_errors for row in rows) / max(1, sum(row.tool_calls for row in rows)),
-        tokens_per_success=per_success(sum(row.tokens for row in rows)),
+        tokens_per_success=tokens_per_success,
         tool_calls_per_success=per_success(sum(row.tool_calls for row in rows)),
         latency_per_success_ms=per_success(sum(row.latency_ms for row in rows)),
         retry_rate=mean(bool(row.retries) for row in rows),
         correction_rate=mean(bool(row.user_corrections) for row in rows),
         regression_signals=sum(bool(row.critical_regression) for row in rows),
+        tokens_reported_samples=len(token_rows),
     )
 
 
@@ -507,8 +561,8 @@ def _matches(skills: tuple[str, ...], affected: frozenset[str]) -> bool:
 
 def validate_observation(observation: ProductionObservation) -> None:
     counters = (
-        observation.tool_errors, observation.tokens, observation.tool_calls,
-        observation.user_corrections, observation.retries,
+        observation.tool_errors, 0 if observation.tokens is None else observation.tokens,
+        observation.tool_calls, observation.user_corrections, observation.retries,
     )
     if any(
         isinstance(value, bool) or not isinstance(value, int)
@@ -537,6 +591,14 @@ def validate_observation(observation: ProductionObservation) -> None:
         or contains_secret_material(list(observation.skills))
     ):
         raise ValueError("observation skills must be a tuple of at most 32 brain skill directory names")
+    derivation = observation.derivation
+    if derivation is not None:
+        try:
+            encoded = canonical_json(dict(derivation)) if isinstance(derivation, Mapping) else None
+        except (TypeError, ValueError):
+            encoded = None
+        if encoded is None or len(encoded.encode("utf-8")) > _MAX_DERIVATION_BYTES:
+            raise ValueError("observation derivation must be a JSON object of at most 4 KiB")
     try:
         valid_latency = (
             not isinstance(observation.latency_ms, bool)
