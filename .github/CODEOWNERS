@@ -22,6 +22,7 @@
 /src/hermes_improve/docker_runner.py        @ChillCodeForge/chillcode
 /src/hermes_improve/statistics.py           @ChillCodeForge/chillcode
 /src/hermes_improve/cli.py                  @ChillCodeForge/chillcode
+/src/hermes_improve/migrations/             @ChillCodeForge/chillcode
 /benchmarks/                                @ChillCodeForge/chillcode
 /config/                                    @ChillCodeForge/chillcode
 /scripts/                                   @ChillCodeForge/chillcode

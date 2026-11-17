@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .errors import IntegrityError
+from .migrations import apply_migrations
 from .ingestion import contains_secret_material
 from .miner import BenchmarkCandidate
 from .models import Candidate, EvaluationReport, candidate_digest, canonical_json, utc_now
@@ -21,167 +23,8 @@ class ExperimentStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        with self._connect() as db:
-            db.executescript("""
-                PRAGMA journal_mode=WAL;
-                PRAGMA foreign_keys=ON;
-                CREATE TABLE IF NOT EXISTS experiments (
-                    id TEXT PRIMARY KEY,
-                    parent_id TEXT,
-                    lineage_id TEXT NOT NULL,
-                    hypothesis TEXT NOT NULL,
-                    source_sessions TEXT NOT NULL DEFAULT '[]',
-                    candidate_type TEXT NOT NULL,
-                    target TEXT NOT NULL,
-                    risk TEXT NOT NULL,
-                    baseline_commit TEXT NOT NULL,
-                    benchmark_version TEXT NOT NULL,
-                    policy_version TEXT NOT NULL,
-                    decision TEXT NOT NULL DEFAULT 'pending',
-                    reason TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    finished_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS candidates (
-                    id TEXT PRIMARY KEY,
-                    experiment_id TEXT NOT NULL REFERENCES experiments(id),
-                    candidate_type TEXT NOT NULL,
-                    target TEXT NOT NULL,
-                    base_commit TEXT NOT NULL,
-                    commit_id TEXT NOT NULL,
-                    diff_hash TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS evaluation_runs (
-                    id TEXT PRIMARY KEY,
-                    candidate_id TEXT NOT NULL REFERENCES candidates(id),
-                    candidate_hash TEXT NOT NULL,
-                    benchmark_version TEXT NOT NULL,
-                    policy_version TEXT NOT NULL,
-                    passed INTEGER NOT NULL,
-                    reasons TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL DEFAULT '{}',
-                    signature TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS task_results (
-                    evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(id),
-                    task_id TEXT NOT NULL,
-                    split TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    PRIMARY KEY (evaluation_id, task_id)
-                );
-                CREATE TABLE IF NOT EXISTS run_observations (
-                    evaluation_id TEXT NOT NULL REFERENCES evaluation_runs(id),
-                    task_id TEXT NOT NULL,
-                    commit_id TEXT NOT NULL,
-                    seed INTEGER NOT NULL,
-                    observation_json TEXT NOT NULL,
-                    PRIMARY KEY (evaluation_id, task_id, commit_id, seed)
-                );
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    digest TEXT PRIMARY KEY,
-                    path TEXT NOT NULL,
-                    media_type TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS decisions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    experiment_id TEXT NOT NULL REFERENCES experiments(id),
-                    decision_type TEXT NOT NULL,
-                    input_json TEXT NOT NULL,
-                    options_json TEXT NOT NULL,
-                    selected_option TEXT NOT NULL,
-                    confidence REAL,
-                    source TEXT NOT NULL,
-                    ground_truth TEXT,
-                    ground_truth_source TEXT,
-                    correct INTEGER,
-                    model_version TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS releases (
-                    id TEXT PRIMARY KEY,
-                    experiment_id TEXT NOT NULL REFERENCES experiments(id),
-                    candidate_hash TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    manifest_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS benchmark_candidates (
-                    task_fingerprint TEXT PRIMARY KEY,
-                    candidate_id TEXT NOT NULL,
-                    cluster_id TEXT NOT NULL,
-                    eligibility TEXT NOT NULL,
-                    reproducibility_score REAL NOT NULL,
-                    ground_truth_type TEXT NOT NULL,
-                    reasons_json TEXT NOT NULL,
-                    source_sessions_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    review_status TEXT NOT NULL DEFAULT 'PENDING',
-                    reviewer TEXT,
-                    review_rationale TEXT,
-                    reviewed_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS evolution_runs (
-                    id TEXT PRIMARY KEY,
-                    root_candidate_id TEXT NOT NULL REFERENCES candidates(id),
-                    lineage_id TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    strategy_version TEXT NOT NULL,
-                    config_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'running',
-                    stop_reason TEXT,
-                    report_json TEXT,
-                    created_at TEXT NOT NULL,
-                    finished_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS generated_variants (
-                    target TEXT NOT NULL,
-                    content_sha256 TEXT NOT NULL,
-                    origin TEXT NOT NULL,
-                    generation INTEGER NOT NULL,
-                    parent_candidate_id TEXT,
-                    candidate_id TEXT REFERENCES candidates(id),
-                    status TEXT NOT NULL,
-                    reason TEXT NOT NULL DEFAULT '',
-                    scores_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (target, content_sha256)
-                );
-                CREATE TABLE IF NOT EXISTS benchmark_replays (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    benchmark_id TEXT NOT NULL,
-                    benchmark_version INTEGER NOT NULL,
-                    benchmark_digest TEXT NOT NULL,
-                    commit_id TEXT NOT NULL,
-                    runs INTEGER NOT NULL,
-                    reproducible INTEGER NOT NULL,
-                    passed INTEGER NOT NULL,
-                    outcome_digest TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-            """)
-            columns = {row[1] for row in db.execute("PRAGMA table_info(evaluation_runs)")}
-            if "metrics_json" not in columns:
-                db.execute("ALTER TABLE evaluation_runs ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'")
-            if "signature" not in columns:
-                db.execute("ALTER TABLE evaluation_runs ADD COLUMN signature TEXT")
-            benchmark_candidate_columns = {
-                row[1] for row in db.execute("PRAGMA table_info(benchmark_candidates)")
-            }
-            for column, definition in (
-                ("review_status", "TEXT NOT NULL DEFAULT 'PENDING'"),
-                ("reviewer", "TEXT"),
-                ("review_rationale", "TEXT"),
-                ("reviewed_at", "TEXT"),
-            ):
-                if column not in benchmark_candidate_columns:
-                    db.execute(f"ALTER TABLE benchmark_candidates ADD COLUMN {column} {definition}")
-            db.executescript(_PROMOTION_AUDIT_SCHEMA)
+        # The schema is defined only by the versioned migrations package.
+        apply_migrations(self.path)
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30)
@@ -206,7 +49,6 @@ class ExperimentStore:
             )
 
     def add_candidate(self, candidate: Candidate) -> None:
-        import hashlib
         diff_hash = hashlib.sha256(candidate.diff.encode()).hexdigest()
         with self._lock, self._connect() as db:
             db.execute(
@@ -216,6 +58,13 @@ class ExperimentStore:
                 (candidate.candidate_id,candidate.experiment_id,candidate.candidate_type.value,
                  candidate.target,candidate.base_commit,candidate.commit,diff_hash,
                  candidate.content_hash,candidate.created_at),
+            )
+            # The first candidate of an experiment names it; a deciding
+            # evaluation re-states the candidate it actually judged.
+            db.execute(
+                """UPDATE experiments SET candidate_commit=?, candidate_hash=?
+                   WHERE id=? AND candidate_commit IS NULL""",
+                (candidate.commit, candidate.content_hash, candidate.experiment_id),
             )
 
     def create_experiment_with_candidate(
@@ -238,17 +87,17 @@ class ExperimentStore:
             raise ValueError("parent experiment ID must be a non-empty string")
         if not candidate.diff or not candidate.commit or not candidate.base_commit:
             raise ValueError("candidate requires commit IDs and a non-empty diff")
-        import hashlib
         diff_hash = hashlib.sha256(candidate.diff.encode()).hexdigest()
         with self._lock, self._connect() as db:
             db.execute(
                 """INSERT INTO experiments
                 (id,parent_id,lineage_id,hypothesis,source_sessions,candidate_type,target,risk,
-                 baseline_commit,benchmark_version,policy_version,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 baseline_commit,candidate_commit,candidate_hash,benchmark_version,policy_version,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (candidate.experiment_id, parent_id, lineage_id, hypothesis,
                  canonical_json(list(source_sessions)),
                  candidate.candidate_type.value, candidate.target, risk, candidate.base_commit,
+                 candidate.commit, candidate.content_hash,
                  benchmark_version, policy_version, utc_now()),
             )
             db.execute(
@@ -265,10 +114,20 @@ class ExperimentStore:
         signature: str | None = None,
         *,
         decides_experiment: bool = True,
+        regressions: Iterable[Mapping[str, Any]] = (),
     ) -> None:
-        """Persist an evaluation; staged (SMOKE/CORE) runs pass decides_experiment=False."""
+        """Persist an evaluation; staged (SMOKE/CORE) runs pass decides_experiment=False.
+
+        ``regressions`` are the evaluator's detected regressions (see
+        ``evaluator.detect_regressions``); each becomes one ``regressions`` row.
+        A deciding evaluation also records its execution identity, seeds,
+        aggregate metrics and policy gate result on the experiment row.
+        """
+        regression_rows = _validated_regressions(regressions, report)
         with self._lock, self._connect() as db:
-            candidate = db.execute("SELECT content_hash FROM candidates WHERE id=?", (candidate_id,)).fetchone()
+            candidate = db.execute(
+                "SELECT experiment_id, commit_id, content_hash FROM candidates WHERE id=?", (candidate_id,),
+            ).fetchone()
             if candidate is None:
                 raise KeyError(f"unknown candidate {candidate_id!r}")
             if report.candidate_id != candidate_id:
@@ -295,12 +154,75 @@ class ExperimentStore:
                     for row in report.run_observations
                 ],
             )
+            db.executemany(
+                """INSERT INTO regressions
+                   (evaluation_run_id,experiment_id,candidate_id,benchmark_id,suite,split,kind,severity,
+                    count,baseline_outcome_json,candidate_outcome_json,detected_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (evaluation_id, candidate["experiment_id"], candidate_id, row["benchmark_id"],
+                     row["suite"], row["split"], row["kind"], row["severity"], row["count"],
+                     canonical_json(row["baseline_outcome"]), canonical_json(row["candidate_outcome"]),
+                     report.created_at)
+                    for row in regression_rows
+                ],
+            )
             if not decides_experiment:
                 return
+            gate = _gate_result(db, candidate["experiment_id"])
+            gate["policy"] = {
+                "evaluation_id": evaluation_id,
+                "candidate_id": candidate_id,
+                "suite": report.metrics.get("suite"),
+                "policy_version": report.policy_version,
+                "benchmark_version": report.benchmark_version,
+                "passed": bool(report.passed),
+                "reasons": list(report.reasons),
+                "regressions": len(regression_rows),
+                "decided_at": report.created_at,
+            }
             db.execute(
-                "UPDATE experiments SET decision=?,reason=?,finished_at=? WHERE id=(SELECT experiment_id FROM candidates WHERE id=?)",
-                ("passed" if report.passed else "rejected", canonical_json(report.reasons), report.created_at, candidate_id),
+                """UPDATE experiments SET decision=?,reason=?,finished_at=?,
+                       candidate_commit=?,candidate_hash=?,model_config_digest=?,environment_digest=?,
+                       seeds=?,aggregate_metrics=?,gate_result=?
+                   WHERE id=?""",
+                ("passed" if report.passed else "rejected", canonical_json(report.reasons), report.created_at,
+                 candidate["commit_id"], candidate["content_hash"],
+                 _observed_digest(report, "model_config_digest"),
+                 _observed_digest(report, "environment_digest"),
+                 _observed_seeds(report), canonical_json(dict(report.metrics)), canonical_json(gate),
+                 candidate["experiment_id"]),
             )
+
+    def list_regressions(
+        self, *, experiment_id: str | None = None, candidate_id: str | None = None,
+        evaluation_run_id: str | None = None, severity: str | None = None, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Recorded regressions, oldest first, optionally filtered."""
+        if not 1 <= limit <= 10000:
+            raise ValueError("limit must be between 1 and 10000")
+        if severity is not None and severity not in REGRESSION_SEVERITIES:
+            raise ValueError(f"unknown regression severity {severity!r}")
+        clauses, parameters = [], []
+        for column, value in (
+            ("experiment_id", experiment_id), ("candidate_id", candidate_id),
+            ("evaluation_run_id", evaluation_run_id), ("severity", severity),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        query = "SELECT * FROM regressions"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as db:
+            rows = db.execute(query + " ORDER BY id LIMIT ?", (*parameters, limit)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["baseline_outcome"] = json.loads(item.pop("baseline_outcome_json"))
+            item["candidate_outcome"] = json.loads(item.pop("candidate_outcome_json"))
+            result.append(item)
+        return result
 
     def list_experiments(self, limit: int = 100) -> list[dict[str, Any]]:
         if limit < 1 or limit > 1000:
@@ -318,6 +240,9 @@ class ExperimentStore:
                 raise KeyError(experiment_id)
             result = dict(row)
             result["source_sessions"] = json.loads(result["source_sessions"])
+            for column in ("seeds", "aggregate_metrics", "gate_result"):
+                if result.get(column) is not None:
+                    result[column] = json.loads(result[column])
             result["candidates"] = [dict(item) for item in db.execute(
                 "SELECT * FROM candidates WHERE experiment_id=?", (experiment_id,)
             )]
@@ -497,10 +422,7 @@ class ExperimentStore:
                    VALUES (?,?,?,?,?,?)""",
                 (release_id, experiment_id, candidate_hash, status, canonical_json(manifest), utc_now()),
             )
-            db.execute(
-                "UPDATE experiments SET decision='promoted',finished_at=? WHERE id=?",
-                (utc_now(), experiment_id),
-            )
+            _record_promotion_gate(db, experiment_id, release_id, status, manifest)
 
     def update_release_status(self, release_id: str, status: str) -> None:
         if status not in {item.value for item in ReleaseStatus}:
@@ -717,9 +639,8 @@ class ExperimentStore:
                 (release_id, experiment_id, candidate_hash, ReleaseStatus.PROVISIONAL.value,
                  canonical_json(manifest), utc_now()),
             )
-            db.execute(
-                "UPDATE experiments SET decision='promoted',finished_at=? WHERE id=?",
-                (utc_now(), experiment_id),
+            _record_promotion_gate(
+                db, experiment_id, release_id, ReleaseStatus.PROVISIONAL.value, manifest,
             )
             self._append_release_event(
                 db, release_id, "PROMOTED", None, ReleaseStatus.PROVISIONAL.value,
@@ -995,41 +916,101 @@ class ExperimentStore:
 
 
 
-_PROMOTION_AUDIT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS promotion_approvals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    experiment_id TEXT NOT NULL REFERENCES experiments(id),
-    candidate_id TEXT NOT NULL REFERENCES candidates(id),
-    candidate_hash TEXT NOT NULL,
-    policy_version TEXT NOT NULL,
-    operator TEXT NOT NULL,
-    key_fingerprint TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    signature TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS promotion_approvals_append_only_update
-BEFORE UPDATE ON promotion_approvals
-BEGIN SELECT RAISE(ABORT, 'promotion approvals are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS promotion_approvals_append_only_delete
-BEFORE DELETE ON promotion_approvals
-BEGIN SELECT RAISE(ABORT, 'promotion approvals are append-only'); END;
-CREATE TABLE IF NOT EXISTS release_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    release_id TEXT NOT NULL,
-    event TEXT NOT NULL,
-    from_status TEXT,
-    to_status TEXT,
-    detail_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS release_events_append_only_update
-BEFORE UPDATE ON release_events
-BEGIN SELECT RAISE(ABORT, 'release events are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS release_events_append_only_delete
-BEFORE DELETE ON release_events
-BEGIN SELECT RAISE(ABORT, 'release events are append-only'); END;
-"""
+REGRESSION_KINDS = frozenset({"reported", "task_failure"})
+REGRESSION_SEVERITIES = frozenset({"critical", "high", "medium"})
+_REGRESSION_FIELDS = frozenset({
+    "benchmark_id", "suite", "split", "kind", "severity", "count", "baseline_outcome", "candidate_outcome",
+})
+
+
+def _validated_regressions(
+    regressions: Iterable[Mapping[str, Any]], report: EvaluationReport,
+) -> list[dict[str, Any]]:
+    outcomes = {row.task_id: row for row in report.outcomes}
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in regressions:
+        if not isinstance(item, Mapping) or set(item) != _REGRESSION_FIELDS:
+            raise ValueError("regression records have an invalid field set")
+        outcome = outcomes.get(item["benchmark_id"])
+        if outcome is None:
+            raise ValueError(f"regression names a task outside the evaluation: {item['benchmark_id']!r}")
+        if item["suite"] != outcome.suite or item["split"] != outcome.split.value:
+            raise ValueError("regression suite or split differs from the evaluated task outcome")
+        if item["kind"] not in REGRESSION_KINDS or item["severity"] not in REGRESSION_SEVERITIES:
+            raise ValueError("regression kind or severity is unknown")
+        count = item["count"]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("regression count must be a positive integer")
+        if not isinstance(item["baseline_outcome"], Mapping) or not isinstance(item["candidate_outcome"], Mapping):
+            raise ValueError("regression outcome summaries must be objects")
+        key = (item["benchmark_id"], item["kind"], item["severity"])
+        if key in seen:
+            raise ValueError(f"duplicate regression record {key!r}")
+        seen.add(key)
+        rows.append(dict(item))
+    return rows
+
+
+def _gate_result(db: sqlite3.Connection, experiment_id: str) -> dict[str, Any]:
+    row = db.execute("SELECT gate_result FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+    if row is None:
+        raise KeyError(experiment_id)
+    return json.loads(row["gate_result"]) if row["gate_result"] is not None else {}
+
+
+def _observed_digest(report: EvaluationReport, field_name: str) -> str | None:
+    """The run digest of an evaluation: the single value all runs shared, or a
+    ``composite-sha256:`` digest over the per-task values when tasks differ.
+    ``None`` when no run reported one (the per-run values stay in run_observations)."""
+    per_task: dict[str, set[str]] = {}
+    for observation in report.run_observations:
+        value = getattr(observation, field_name)
+        if value:
+            per_task.setdefault(observation.task_id, set()).add(value)
+    distinct = set().union(*per_task.values()) if per_task else set()
+    if not distinct:
+        return None
+    if len(distinct) == 1:
+        return next(iter(distinct))
+    mapping = {task: sorted(values) for task, values in sorted(per_task.items())}
+    return "composite-sha256:" + hashlib.sha256(canonical_json(mapping).encode()).hexdigest()
+
+
+def _observed_seeds(report: EvaluationReport) -> str | None:
+    seeds: dict[str, set[int]] = {}
+    for observation in report.run_observations:
+        seeds.setdefault(observation.task_id, set()).add(observation.seed)
+    if not seeds:
+        return None
+    return canonical_json({task: sorted(values) for task, values in sorted(seeds.items())})
+
+
+_PROMOTION_GATE_FIELDS = (
+    "promotion_gate", "full_suite_passed", "holdout_passed", "security_passed",
+    "policy_version", "benchmark_version", "candidate_commit", "candidate_hash", "manifest_sha256",
+)
+
+
+def _record_promotion_gate(
+    db: sqlite3.Connection, experiment_id: str, release_id: str, status: str, manifest: Mapping[str, Any],
+) -> None:
+    """Mark the experiment promoted and add the promotion gate to gate_result."""
+    gate = _gate_result(db, experiment_id)
+    promoted_at = utc_now()
+    promotion: dict[str, Any] = {"release_id": release_id, "release_status": status, "promoted_at": promoted_at}
+    promotion.update({key: manifest[key] for key in _PROMOTION_GATE_FIELDS if key in manifest})
+    if "approval" in manifest:
+        approval = manifest["approval"]
+        promotion["operator_approval"] = (
+            {key: approval[key] for key in ("operator", "operator_key_fingerprint") if key in approval}
+            if isinstance(approval, Mapping) else None
+        )
+    gate["promotion"] = promotion
+    db.execute(
+        "UPDATE experiments SET decision='promoted',finished_at=?,gate_result=? WHERE id=?",
+        (promoted_at, canonical_json(gate), experiment_id),
+    )
 
 
 _VARIANT_STATUSES = frozenset({

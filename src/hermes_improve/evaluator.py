@@ -256,6 +256,7 @@ class PairedEvaluator:
                 decides_experiment=(
                     suite.upper() in {"FULL", "SEALED_HOLDOUT"} or staged_regression(report.outcomes)
                 ),
+                regressions=detect_regressions(report.outcomes),
             )
         return report
 
@@ -388,6 +389,51 @@ class PairedEvaluator:
             raise IntegrityError("runner deterministic status contradicts its verifier results")
         if observation.success and not observation.deterministic_pass and observation.verifier_results:
             raise IntegrityError("runner reported success despite failed deterministic verifiers")
+
+
+def detect_regressions(outcomes: Iterable[TaskOutcome]) -> list[dict[str, Any]]:
+    """One record per regression detected on one task (spec section 26 Regression).
+
+    ``reported``: the runner's verifiers counted critical/high/medium
+    regressions in the candidate runs (count = the per-run maximum the outcome
+    carries). ``task_failure``: the baseline solved the task and the candidate
+    did not; it is recorded as ``high``, the weight ``staged_regression`` and
+    the evolution screen already give it.
+    """
+    records = []
+    for row in sorted(outcomes, key=lambda item: item.task_id):
+        baseline = {
+            "success": row.baseline_success, "quality": row.baseline_quality,
+            "tokens": row.baseline_tokens, "latency_ms": row.baseline_latency_ms,
+            "tool_calls": row.baseline_tool_calls, "failed_tool_calls": row.baseline_failed_tool_calls,
+        }
+        candidate = {
+            "success": row.candidate_success, "quality": row.candidate_quality,
+            "tokens": row.candidate_tokens, "latency_ms": row.candidate_latency_ms,
+            "tool_calls": row.candidate_tool_calls, "failed_tool_calls": row.candidate_failed_tool_calls,
+            "deterministic_pass": row.deterministic_pass, "security_pass": row.security_pass,
+            "critical_regressions": row.critical_regressions, "high_regressions": row.high_regressions,
+            "medium_regressions": row.medium_regressions, "run_count": row.run_count,
+        }
+        found = [
+            ("reported", severity, count)
+            for severity, count in (
+                ("critical", row.critical_regressions), ("high", row.high_regressions),
+                ("medium", row.medium_regressions),
+            )
+            if count > 0
+        ]
+        if row.baseline_success and not row.candidate_success:
+            found.append(("task_failure", "high", 1))
+        records.extend(
+            {
+                "benchmark_id": row.task_id, "suite": row.suite, "split": row.split.value,
+                "kind": kind, "severity": severity, "count": count,
+                "baseline_outcome": baseline, "candidate_outcome": candidate,
+            }
+            for kind, severity, count in found
+        )
+    return records
 
 
 def staged_regression(outcomes: Iterable[TaskOutcome]) -> bool:

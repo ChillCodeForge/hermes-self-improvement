@@ -29,8 +29,9 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
 - Benchmark schema checks, split/cluster leakage checks including a
   conservative lexical near-duplicate guard, and separate-root loading for
   sealed holdout. Semantic task clustering is not implemented.
-- Experiment, candidate, run, evaluation, artifact, decision, and release
-  persistence; SHA-256 content-addressed artifacts.
+- Experiment, candidate, run, evaluation, regression, artifact, decision, and
+  release persistence with versioned schema migrations (see "Experiment
+  store" below); SHA-256 content-addressed artifacts.
 - Deterministic verifier interfaces and hard-gate promotion policy.
 - Paired runner orchestration, confidence intervals, Ed25519 report signatures,
   and a Docker runner for declared command-based benchmarks.
@@ -55,6 +56,57 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
   release manifests, atomic symlink switching, and rollback.
 - Post-promotion monitoring decision API plus bounded JSONL CLI ingestion for
   trusted collector observations; no live Hermes telemetry collector is wired.
+
+## Experiment store
+
+`store.py` (`ExperimentStore`) is the SQLite experiment ledger. Its schema is
+defined only by the numbered migrations in `src/hermes_improve/migrations/`
+(`vNNNN_<name>.sql`, or `vNNNN_<name>.py` with an `upgrade(db)` function where
+SQL cannot express the change). The directory sits inside the package, rather
+than at the repository root as the spec layout suggests, so that the `*.sql`
+files are installed as package data (`pyproject.toml`) and a root-owned
+installation applies exactly the reviewed files. Like the evaluator, it is a
+protected path (CODEOWNERS, `isolation.PROTECTED_REPOSITORY_PATHS`).
+
+- `PRAGMA user_version` is the schema version. Opening a store applies every
+  pending migration in order, each in its own `BEGIN IMMEDIATE` transaction
+  that also appends `(version, name, sha256, applied_at)` to the append-only
+  `schema_migrations` table and bumps `user_version`; a failing step rolls
+  back completely. A database newer than the code is refused.
+- Migrations 1-6 reproduce the layouts that existed before versioning, so a
+  pre-versioning database (version 0) adopts them: tables use
+  `IF NOT EXISTS` and the columns that used to be added by inline `ALTER
+  TABLE` (`evaluation_runs.metrics_json/signature`, the
+  `benchmark_candidates` review columns) are added only when missing.
+- Migration 7 adds the spec §26 experiment fields. `candidate_commit` and
+  `candidate_hash` are written when the candidate is created (for
+  `create_experiment` + `add_candidate`, by the first candidate) and re-stated
+  by the evaluation that decides the experiment. That deciding evaluation
+  (FULL / sealed holdout, or a staged run that already proves a regression)
+  also writes `model_config_digest` and `environment_digest` (the single value
+  all runs shared, `composite-sha256:` over the per-task values when tasks
+  differ, `NULL` when no run reported one; per-run values stay in
+  `run_observations`), `seeds` (task ID to seeds), `aggregate_metrics` (the
+  report metrics) and `gate_result.policy` (passed, reasons, suite, policy
+  version, regression count). A recorded promotion adds `gate_result.promotion`
+  from the release manifest. Experiments created before migration 7 keep
+  `NULL`; nothing is back-filled.
+- Migration 8 adds the `regressions` table. Each persisted evaluation writes
+  one row per regression `evaluator.detect_regressions` finds on a task:
+  `reported` rows for runner-counted critical/high/medium regressions and a
+  `task_failure` row (severity `high`) when the baseline solved the task and
+  the candidate did not, with baseline and candidate outcome summaries.
+  `ExperimentStore.list_regressions` filters by experiment, candidate,
+  evaluation run and severity. Rows are append-only.
+- Migration 9 adds `BEFORE DELETE` triggers: experiments, candidates,
+  evaluation runs, task results, run observations and regressions are never
+  deleted (approvals and release events were already append-only). The
+  triggers stop every delete through SQL; they are not a boundary against a
+  process with write access to the database file, which could drop them
+  (see the ledger limit in `security.md`).
+
+New schema changes are new numbered files; applied migrations are never
+edited.
 
 ## Trust boundaries
 

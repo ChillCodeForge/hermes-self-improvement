@@ -217,3 +217,43 @@ def test_evaluate_selects_impact_scoped_suite_and_records_manifest_digests(setup
         impact=ImpactScope(target_areas=frozenset({"skills/demo"})),
     )
     assert smoke["suite_manifest_digest"] == expected["digest"]
+
+
+def test_experiment_ledger_fields_follow_creation_evaluation_and_promotion(setup):
+    store, candidate = setup["store"], setup["candidate"]
+    created = store.show_experiment("exp-e2e")
+    assert (created["candidate_commit"], created["candidate_hash"]) == (candidate.commit, candidate.content_hash)
+    evaluation_fields = ("model_config_digest", "environment_digest", "seeds", "aggregate_metrics", "gate_result")
+    assert all(created[field] is None for field in evaluation_fields)
+
+    for suite in ("SMOKE", "CORE"):
+        setup["evaluate"](suite)
+    # Staged runs without a regression do not decide the experiment.
+    assert all(store.show_experiment("exp-e2e")[field] is None for field in evaluation_fields)
+
+    setup["evaluate"]("FULL")
+    decided = store.show_experiment("exp-e2e")
+    full = store.candidate_evaluations("cand-e2e")[-1]
+    full_metrics = json.loads(full["evaluation"]["metrics_json"])
+    assert decided["decision"] == "passed"
+    assert decided["environment_digest"] == "sha256:" + "e" * 64
+    assert decided["model_config_digest"] is None  # the fake runner reports no model configuration
+    assert decided["seeds"] == {
+        task: sorted({row["seed"] for row in full["run_observations"] if row["task_id"] == task})
+        for task in ("full-task", "holdout-task")
+    }
+    assert decided["aggregate_metrics"] == full_metrics
+    assert decided["gate_result"]["policy"]["evaluation_id"] == full["evaluation"]["id"]
+    assert decided["gate_result"]["policy"]["passed"] is True and decided["gate_result"]["policy"]["suite"] == "FULL"
+    assert "promotion" not in decided["gate_result"]
+
+    manifest = setup["promoter"]().promote("exp-e2e", release_name="brain-v1", manifest_key=b"m" * 32)
+    promoted = store.show_experiment("exp-e2e")
+    assert promoted["decision"] == "promoted"
+    assert promoted["gate_result"]["policy"] == decided["gate_result"]["policy"]
+    gate = promoted["gate_result"]["promotion"]
+    assert gate["release_id"] == "brain-v1" and gate["release_status"] == "PROVISIONAL"
+    assert gate["promotion_gate"] == "auto" and gate["operator_approval"] is None
+    assert gate["manifest_sha256"] == manifest["manifest_sha256"]
+    assert gate["candidate_commit"] == candidate.commit == promoted["candidate_commit"]
+    assert (gate["full_suite_passed"], gate["holdout_passed"], gate["security_passed"]) == (True, True, True)
