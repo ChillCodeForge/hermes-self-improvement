@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   test:
+    name: Tests (non-root runner)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,4 +17,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -e '.[test]'
-      - run: pytest
+      # root_required OS-isolation tests are skipped here (reported by -rs);
+      # the isolation job below runs them as root.
+      - run: pytest -rs
+
+  isolation:
+    name: Tests as root in the Linux test container (OS isolation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same image and entry point as local runs. The container runs as root and
+      # HSI_REQUIRE_ROOT_TESTS=1 makes any skipped root_required test a failure,
+      # so provisioning, users, ACLs, and UID-switching are really exercised.
+      - run: bash scripts/docker-test.sh -rs
