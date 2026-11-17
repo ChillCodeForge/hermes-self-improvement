@@ -178,6 +178,26 @@ def assert_changed_paths_match_target(
     return touched
 
 
+def removed_skill_units(deleted_paths: Iterable[str]) -> tuple[str, ...]:
+    """Skill units whose ``SKILL.md`` entry file a diff deletes.
+
+    Hermes only loads a skill directory through its ``SKILL.md``; deleting
+    that file removes the skill from production. Callers pass the paths that
+    ``git diff --no-renames --diff-filter=D`` reports (rename detection would
+    hide a deletion behind a rename). The file name is compared
+    case-insensitively so an odd spelling can never dodge the removal gate.
+    """
+    units = set()
+    for path in deleted_paths:
+        pure = PurePosixPath(path)
+        if (
+            len(pure.parts) >= 4 and pure.parts[:2] == (BRAIN_ROOT, "skills")
+            and pure.name.casefold() == "skill.md"
+        ):
+            units.add("/".join(pure.parts[:3]))
+    return tuple(sorted(units))
+
+
 def find_case_collisions(paths: Iterable[str]) -> list[tuple[str, str]]:
     """Return pairs of distinct paths (or path prefixes) equal under casefold."""
     seen: dict[str, str] = {}

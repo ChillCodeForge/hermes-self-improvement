@@ -22,7 +22,7 @@ group/world-writable files. The shipped files equal the built-in defaults:
 | `thresholds.max_category_drop` | 2.0 |
 | `thresholds.max_token_increase_ratio` | 0.10 |
 | `thresholds.max_latency_increase_ratio` | 0.15 |
-| `promotion_gates` | skills `auto`; every other type `manual` |
+| `promotion_gates` | skills `auto`; every other type `manual`; a candidate that removes a skill is always manual |
 | `required_evidence_suites` | `SMOKE, CORE, FULL, SEALED_HOLDOUT` (FULL and SEALED_HOLDOUT cannot be removed) |
 
 `scoring.yaml` also carries run-count defaults (deterministic 1; LLM SMOKE 1-2,
@@ -64,12 +64,15 @@ Checks, in order. Any failure aborts before Git or the deployment changes:
    SEALED_HOLDOUT rows must come from the SEALED_HOLDOUT split.
 6. Regression policy: the latest FULL and holdout rows are re-assessed with
    the current policy and must pass.
-7. Type gate: auto types pass; manual types need a valid operator approval.
-8. Git: `candidate/<experiment-id>` still points to the evaluated commit,
+7. Git: `candidate/<experiment-id>` still points to the evaluated commit,
    `main` still equals the baseline, the baseline is an ancestor, the binary
    diff hash equals the evaluated one, no protected paths, only `brain/`
-   paths, changed paths equal the declared target units, no case collisions,
-   tag and release directory do not exist yet.
+   paths, changed paths equal the declared target units, no case collisions.
+8. Type gate: auto types pass; manual types need a valid operator approval.
+   A candidate whose verified diff deletes a `brain/skills/<name>/SKILL.md`
+   (`git diff --no-renames --diff-filter=D`) removes a skill and needs the
+   approval as well, whatever its type gate says (see "Skill removal").
+   Finally the release tag and release directory must not exist yet.
 
 Then the promoter extracts the commit via `git archive` into a read-only
 release directory (no symlinks, 100 MiB limit), writes an HMAC-signed
@@ -90,8 +93,8 @@ HERMES_OPERATOR_PRIVATE_KEY=operator.pem \
   hermes-improve approve <experiment-id> --operator alice --rationale "..."
 ```
 
-Only experiments with a passing evaluation and a manually gated type can be
-approved. The Ed25519-signed payload binds `experiment_id`, `candidate_id`,
+Only experiments with a passing evaluation and a manually gated type, or a
+candidate that removes a skill (pass `--repository REPO`), can be approved. The Ed25519-signed payload binds `experiment_id`, `candidate_id`,
 `candidate_hash`, `candidate_type`, `policy_version`, operator, rationale,
 key fingerprint and time. Approvals are stored in `promotion_approvals`, which
 rejects UPDATE and DELETE with triggers. The promoter accepts only approvals
@@ -99,6 +102,54 @@ signed by a key passed with `--operator-public-key`; that key must differ from
 the evaluator key. Approvals for another candidate hash or policy version, or
 with an edited payload, do not count. The accepted approval is copied into the
 release manifest.
+
+## Skill removal (Curator archive, delete, consolidate)
+
+Removing a skill is expressed with the existing candidate types and target
+rules; there is no removal type and no archive area in `brain/`:
+
+- `archive`, and a staged `delete` without `absorbed_into`, become a
+  `SKILL_PATCH` whose diff deletes every tracked file of
+  `brain/skills/<name>`.
+- `consolidate`, and a staged `delete` with `absorbed_into` plus new umbrella
+  content, become a `SKILL_MERGE` that rewrites the umbrella `SKILL.md` and
+  deletes every tracked file of the absorbed skill. If the umbrella would not
+  change, only the removal remains and the archive form is used, because a
+  `SKILL_MERGE` must touch both units.
+
+Why not move the skill into an archive directory, the way Hermes' Curator
+moves it to `skills/.archive/`? Every brain area is loaded by Hermes or owned
+by one candidate type; a new `brain/` archive area would need a 13th target
+rule or a cross-area type, and a hidden `.archive` component is rejected by
+the path rules on purpose. Git already is the archive: the removed files stay
+in the baseline commit, every earlier release directory and its tag, and
+`hermes-improve rollback brain-vN` reactivates them. Restoring a single skill
+later is an ordinary `SKILL_CREATE` candidate.
+
+Safety properties:
+
+- **Never auto-promoted.** `PromotionPolicy.requires_manual_approval` returns
+  true for any candidate whose diff deletes a `brain/skills/<name>/SKILL.md`,
+  independent of `promotion_gates` in `config/promotion.yaml` (where skill
+  types stay `auto` for ordinary patches). The promoter derives the removal
+  set from the verified Git diff with rename detection off, so a merge or a
+  hand-built `candidate create --delete` cannot slip a removal through as an
+  auto-promoted rename. `hermes-improve approve` needs `--repository` for
+  such candidates because the removal is read from the candidate diff; the
+  signed payload is the same as for manually gated types. The release
+  manifest lists `removed_skills`.
+- **Benchmarks still run.** Removal candidates go through the same SMOKE,
+  CORE, FULL and sealed-holdout evaluation. Impact narrowing keeps every unit
+  of a multi-unit target in scope, so SMOKE/CORE tasks of the removed skill
+  are selected; FULL is never narrowed. A task that passed on the baseline
+  and fails without the skill is a task-success regression and blocks the
+  evaluation and promotion.
+- **Path safety.** Deleted paths come from `main`'s tree for exactly
+  `brain/skills/<name>/` (exact case; a case variant is "does not exist"),
+  must all be regular files that pass the `SKILL_*` path rules, and the
+  builder refuses symlinked entries. Nothing outside the unit is touched.
+- **Rollback** of the release restores the skill (tested in
+  `tests/test_curator_removal.py`).
 
 ## Release statuses
 

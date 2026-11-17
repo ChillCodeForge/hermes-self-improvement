@@ -655,6 +655,10 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("experiment_id")
     approve.add_argument("--operator", required=True)
     approve.add_argument("--rationale", required=True)
+    approve.add_argument(
+        "--repository", type=Path,
+        help="candidate repository; needed to approve a skill-removal candidate of an auto-gated type",
+    )
     promote.add_argument(
         "--candidate-bundle", type=Path,
         help="handoff bundle to fetch the evaluated candidate branch from before promotion",
@@ -1151,6 +1155,7 @@ def main() -> int:
             rationale=args.rationale,
             private_key_pem=Path(key_path).read_bytes(),
             policy=PromotionPolicy.from_config(config_from_environment().promotion),
+            repository=args.repository,
         ), indent=2))
     elif args.command == "curator":
         if args.curator_command == "status":

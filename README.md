@@ -20,7 +20,7 @@ controlled Git-backed process.
 > paired statistics with effect sizes, token-per-success metrics,
 > Ed25519-signed reports, Git candidates for all 12 candidate types on
 > `candidate/<experiment-id>` branches, a manual signed-approval gate for
-> non-skill types, policy-checked promotion with atomic deployment, release
+> non-skill types and for every candidate that removes a skill, policy-checked promotion with atomic deployment, release
 > tags, PROVISIONAL/STABLE/ROLLED_BACK lifecycle and audited rollback,
 > an iterative evolution loop (built-in Qwen strategy, pinned GEPA adapter),
 > Dreaming-to-candidate generation with untrusted-evidence prompting, a
@@ -652,7 +652,7 @@ phase begins.
 | **5 — Benchmark miner** | Eligibility classes and reproducibility scoring | Mining proposals and operator review are implemented; proposals still require separate benchmark authoring and admission | Reproducible tasks are distinguished from Dreaming-only evidence |
 | **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact, near-duplicate and MinHash/LSH clustering with cluster-consistent splits, manifests, versioning and operator holdout rotation are implemented; clustering is lexical, so paraphrases can escape | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
-| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion are implemented and tested against fixtures in the real format; archive/delete conversion is refused | No Curator bypass around candidate evaluation and Git |
+| **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion (including archive, delete and consolidation as manually gated removal candidates) are implemented and tested against fixtures in the real format | No Curator bypass around candidate evaluation and Git |
 | **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; production collection and a Hermes replay runner remain absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous

@@ -25,6 +25,7 @@ from .target_paths import (
     find_case_collisions,
     is_protected_repository_path,
     parse_target,
+    removed_skill_units,
 )
 
 
@@ -238,17 +239,6 @@ class GitPromoter:
         evidence_runs = self._check_evidence(candidate_id, candidate, runs)
         candidate_type = CandidateType(candidate["candidate_type"])
         experiment_id = str(candidate["experiment_id"])
-        approval = None
-        if self.policy.requires_manual_approval(candidate_type):
-            approval = verify_promotion_approval(
-                self.store.list_promotion_approvals(experiment_id),
-                experiment_id=experiment_id,
-                candidate_id=candidate_id,
-                candidate_hash=candidate["content_hash"],
-                candidate_type=candidate_type,
-                policy_version=self.policy.version,
-                operator_public_keys=self.operator_public_keys,
-            )
         evaluation_metrics = json.loads(evaluation["metrics_json"])
 
         baseline = str(candidate["baseline_commit"])
@@ -293,6 +283,25 @@ class GitPromoter:
         ]
         if find_case_collisions(tree_paths):
             raise PolicyRejected("candidate tree contains paths that collide case-insensitively")
+        # The type gate runs on the verified Git diff: removing a production
+        # skill always needs a signed operator approval, whatever the type.
+        deleted_paths = [
+            path for path in self._git(
+                "diff", "--no-renames", "--diff-filter=D", "--name-only", "-z", baseline, commit,
+            ).decode().split("\0") if path
+        ]
+        removed_skills = removed_skill_units(deleted_paths)
+        approval = None
+        if self.policy.requires_manual_approval(candidate_type, removed_skills=removed_skills):
+            approval = verify_promotion_approval(
+                self.store.list_promotion_approvals(experiment_id),
+                experiment_id=experiment_id,
+                candidate_id=candidate_id,
+                candidate_hash=candidate["content_hash"],
+                candidate_type=candidate_type,
+                policy_version=self.policy.version,
+                operator_public_keys=self.operator_public_keys,
+            )
         if self._ref_exists(f"refs/tags/{release_name}"):
             raise ValueError(f"release tag already exists: {release_name}")
         destination = self.release_root / release_name
@@ -336,6 +345,7 @@ class GitPromoter:
                 "promotion_gate": "manual" if approval is not None else "auto",
                 "approval": approval,
                 "changed_paths": changed_paths,
+                "removed_skills": list(removed_skills),
                 "diff_sha256": diff_hash,
                 "release_target": release_name,
                 "created_at": utc_now(),

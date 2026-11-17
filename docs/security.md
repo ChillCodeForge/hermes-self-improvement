@@ -121,8 +121,13 @@ diff. The agent's `candidate sync-baseline` fetches production `main` through
 
 **Operator responsibility**
 
-- Branch protection on `main` with "Require review from Code Owners" and both
-  Tests jobs as required checks; CODEOWNERS has no effect without it.
+- Keep branch protection on `main` (enabled 2026-11-17): pull requests only,
+  "Require review from Code Owners" (team `@ChillCodeForge/chillcode`, which
+  needs write access to the repository), both Tests jobs as required checks,
+  no force pushes or branch deletion. CODEOWNERS has no effect without it.
+  Admins are not subject to the rules, so an admin merge (`gh pr merge
+  --admin`) stays possible; candidate, Dreaming, optimizer and Hermes
+  identities must never hold admin rights.
 - Running every role through `hermes-improve-as` (or an equivalent
   systemd unit), installing the CLI root-owned (`--install-from`), placing real
   sealed holdout files in `holdout/` before re-running `provision.sh`, and
