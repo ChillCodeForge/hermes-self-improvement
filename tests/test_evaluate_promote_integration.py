@@ -199,6 +199,11 @@ def test_promotion_rejects_cli_evidence_without_core_run(setup):
     setup["evaluate"]("FULL")
     core_id = setup["store"].candidate_evaluations("cand-e2e")[1]["evaluation"]["id"]
     with sqlite3.connect(setup["ledger"]) as db:
+        # The ledger refuses deletes through SQL; simulate tampering at file level
+        # (someone with write access to the database file drops the guards first).
+        for table in ("run_observations", "task_results", "evaluation_runs", "regressions"):
+            db.execute(f"DROP TRIGGER IF EXISTS {table}_never_delete")
+        db.execute("DELETE FROM regressions WHERE evaluation_run_id=?", (core_id,))
         for table in ("run_observations", "task_results"):
             db.execute(f"DELETE FROM {table} WHERE evaluation_id=?", (core_id,))
         db.execute("DELETE FROM evaluation_runs WHERE id=?", (core_id,))

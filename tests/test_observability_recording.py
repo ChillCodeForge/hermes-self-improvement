@@ -361,6 +361,7 @@ def test_cli_evaluate_records_suite_selection_needs_qwen_and_judge_metrics(tmp_p
         return json.loads(capsys.readouterr().out)
 
     evaluate("SMOKE")
+    evaluate("CORE")  # the sealed holdout in FULL is reserved for finalists
 
     def verdict(body):
         payload = json.loads(body["messages"][1]["content"])
@@ -380,7 +381,7 @@ def test_cli_evaluate_records_suite_selection_needs_qwen_and_judge_metrics(tmp_p
     selections = {
         item.input_features["suite"]: item for item in recorder.iter_records(decision_type="suite_selection")
     }
-    assert set(selections) == {"SMOKE", "FULL"}
+    assert set(selections) == {"SMOKE", "CORE", "FULL"}
     smoke = selections["SMOKE"]
     assert smoke.selected_option == "impact_narrowed" and smoke.available_options == ("impact_narrowed", "unnarrowed")
     assert smoke.input_features["applied_impact"]["target_areas"] == ["skills/demo"]
