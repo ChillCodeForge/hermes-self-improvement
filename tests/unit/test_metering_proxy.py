@@ -94,13 +94,37 @@ def test_non_generation_requests_are_forwarded_but_not_metered():
     assert report.generation_calls == 0 and report.complete
 
 
-def test_paths_outside_the_endpoint_base_are_refused():
-    with ScriptedModelStub(lambda *args: (200, "application/json", b"{}")) as upstream:
+def test_backend_probes_at_the_server_root_reach_the_upstream_unmetered():
+    # Hermes recognises Ollama via /api/tags and /api/show at the server root and
+    # applies its context-window floor from /api/show (lab finding F5).
+    show = json.dumps({"model_info": {"qwen3.context_length": 40960}}).encode()
+    with ScriptedModelStub(lambda method, path, body: (200, "application/json", show)) as upstream:
         with MeteringProxy(upstream.base_url) as proxy:
             root = proxy.base_url.rsplit("/v1", 1)[0]
-            with pytest.raises(urllib.error.HTTPError) as caught:
-                post(root + "/admin/chat/completions", {})
-    assert caught.value.code == 404 and upstream.requests == []
+            status, _type, body = post(root + "/api/show", {"model": "qwen3:1.7b"})
+            with urllib.request.urlopen(root + "/api/tags", timeout=10) as response:
+                response.read()
+            report = proxy.report()
+    assert status == 200 and body == show
+    assert [request[:2] for request in upstream.requests] == [("POST", "/api/show"), ("GET", "/api/tags")]
+    assert report.generation_calls == 0 and report.complete
+
+
+def test_ollama_native_chat_is_metered_streamed_and_unstreamed():
+    stream = b"".join(json.dumps(item).encode() + b"\n" for item in (
+        {"message": {"content": "o"}, "done": False},
+        {"message": {"content": "k"}, "done": True, "prompt_eval_count": 300, "eval_count": 12},
+    ))
+    single = json.dumps({"message": {"content": "ok"}, "done": True, "prompt_eval_count": 90, "eval_count": 4}).encode()
+    replies = iter([(200, "application/x-ndjson", stream), (200, "application/json", single)])
+    with ScriptedModelStub(lambda method, path, body: next(replies)) as upstream:
+        with MeteringProxy(upstream.base_url) as proxy:
+            root = proxy.base_url.rsplit("/v1", 1)[0]
+            assert post(root + "/api/chat", {"stream": True})[2] == stream
+            post(root + "/api/generate", {"stream": False})
+            report = proxy.report()
+    assert report.complete and report.generation_calls == 2
+    assert (report.input_tokens, report.output_tokens) == (390, 16)
 
 
 def test_upstream_redirects_are_not_followed():

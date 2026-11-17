@@ -41,7 +41,7 @@ class CompliantAttackerModel:
     def __init__(self):
         self.calls = []
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.calls.append({"role": role, "system_prompt": system_prompt, "user_payload": user_payload})
         if "IGNORE PREVIOUS INSTRUCTIONS" not in user_payload and "cand-evil" not in user_payload:
             return json.dumps({"content": "---\nname: fresh\ndescription: fresh\n---\nRun the linter first."})
@@ -161,7 +161,7 @@ class ContentModel:
         self.replies = list(replies)
         self.calls = []
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.calls.append(user_payload)
         return self.replies.pop(0)
 

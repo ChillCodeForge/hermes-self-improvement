@@ -66,6 +66,9 @@ def redact(value: Any, *, key: str = "") -> Any:
     raise ValueError(f"unsupported session data type: {type(value).__name__}")
 
 
+_DREAMING_STAGES = frozenset({"light", "rem"})
+
+
 class SessionQueue:
     """Durable local queue storing redacted session exports as JSON."""
 
@@ -81,6 +84,17 @@ class SessionQueue:
                     status TEXT NOT NULL DEFAULT 'queued',
                     ingested_at TEXT NOT NULL,
                     error TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            # Per-stage processing marks (lab finding F7). LIGHT records its
+            # mark here and leaves ``status`` alone, so a later REM run still
+            # sees the session; REM marks the session ``processed``.
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS session_stages (
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    stage TEXT NOT NULL,
+                    processed_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, stage)
                 )
             """)
 
@@ -146,6 +160,31 @@ class SessionQueue:
             return [row[0] for row in db.execute(
                 "SELECT session_id FROM sessions WHERE status='queued' ORDER BY ingested_at LIMIT ?", (limit,)
             )]
+
+    def pending_for_stage(self, stage: str, limit: int = 100) -> list[str]:
+        """Queued sessions that ``stage`` has not processed yet, oldest first."""
+        if stage not in _DREAMING_STAGES:
+            raise ValueError("unknown dreaming stage")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with sqlite3.connect(self.path) as db:
+            return [row[0] for row in db.execute(
+                """SELECT session_id FROM sessions WHERE status='queued' AND session_id NOT IN
+                   (SELECT session_id FROM session_stages WHERE stage=?) ORDER BY ingested_at LIMIT ?""",
+                (stage, limit),
+            )]
+
+    def mark_stage(self, session_id: str, stage: str) -> None:
+        """Record that ``stage`` processed ``session_id`` (idempotent)."""
+        if stage not in _DREAMING_STAGES:
+            raise ValueError("unknown dreaming stage")
+        with sqlite3.connect(self.path) as db:
+            if db.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone() is None:
+                raise KeyError(session_id)
+            db.execute(
+                "INSERT OR IGNORE INTO session_stages (session_id,stage,processed_at) VALUES (?,?,?)",
+                (session_id, stage, utc_now()),
+            )
 
     def session_ids(self, limit: int = 1000) -> list[str]:
         """All recorded session IDs regardless of processing status, oldest first (read-only)."""

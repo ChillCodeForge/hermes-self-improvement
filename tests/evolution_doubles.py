@@ -143,7 +143,7 @@ class ScriptedOptimizerModel:
         """Same shape as ``OpenAICompatibleQwen.stats`` (scripted token counts)."""
         return {role: dict(values) for role, values in self.stats_by_role.items()}
 
-    def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str:
+    def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str:
         self.calls.append({"role": role, "system_prompt": system_prompt, "user_payload": user_payload})
         usage = self.stats_by_role.setdefault(
             role, {"requests": 0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0.0},

@@ -50,7 +50,7 @@ manual JSON export, Hermes BatchRunner trajectory import, or optional Hermes on_
   `hermes-improve candidate generate`): the `qwen_optimizer` role writes skill
   text for up to five selected DEEP proposals; text is checked for secrets,
   protected paths and override phrases and committed only as a candidate.
-  Role prompts are files under `prompts/` with mandatory untrusted-evidence
+  Role prompts are files under `src/hermes_improve/prompts/` with mandatory untrusted-evidence
   framing; payloads are nonce-delimited escaped JSON.
 - Git promoter restricted to skill paths, with evidence and diff checks,
   release manifests, atomic symlink switching, and rollback.

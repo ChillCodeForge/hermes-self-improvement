@@ -859,17 +859,24 @@ def main() -> int:
         else:
             curator = None
         queue = SessionQueue(database.parent / "sessions.sqlite3")
-        session_ids = queue.queued(args.limit)
+        # LIGHT reads sessions it has not seen and only marks its own stage;
+        # REM reads every still-queued session and completes it (finding F7).
+        session_ids = queue.pending_for_stage(args.stage, args.limit)
         sessions = [queue.get(session_id) for session_id in session_ids]
         log = ObservabilityLog(database.parent / "observability.sqlite3")
         if args.stage == "light":
+            report = DreamingEngine(curator=curator).light(sessions)
+        elif not sessions:
+            # Nothing queued: no Qwen request, an empty REM report.
             report = DreamingEngine(curator=curator).light(sessions)
         else:
             model = OpenAICompatibleQwen(QwenConfig.from_env())
             with record_qwen_usage(database.parent, model, command="dream-rem"):
                 report = DreamingEngine(model, curator=curator).rem(sessions)
         for session_id in session_ids:
-            queue.set_status(session_id, "processed")
+            queue.mark_stage(session_id, args.stage)
+            if args.stage == "rem":
+                queue.set_status(session_id, "processed")
         log.record_dreaming_run(
             stage=args.stage, sessions_processed=report.sessions_processed, clusters=report.clusters,
             signals=len(report.signals), hypotheses=len(report.hypotheses),

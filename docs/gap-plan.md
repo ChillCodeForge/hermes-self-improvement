@@ -90,6 +90,7 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Spec audit fixes: §23 policy order/generalization/token gate, §16 finalist-only holdout, §26 ledger schema + migrations, §35/§36 report and Laya decisions, §29 session feed | #24 | **done** |
 | Test layout `tests/{unit,integration,security,e2e}` (§37) | #25 | **done** |
 | Token metering proxy for `HermesBatchRunner` (§24) | #26 | **done** |
+| Isolated lab findings: prompts as package data, JSON mode for Qwen roles, per-stage Dreaming queue, proxy forwards backend probes | #27 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -102,6 +103,15 @@ still need `require_token_measurement: false`.
 
 Open items:
 
+- Isolated lab run (2026-11-17: no internet, DinD daemon, Hermes v0.22.2,
+  local Qwen3 1.7B) found four defects, which #27 fixes. Prompts were
+  missing from non-editable installs. Qwen roles sent no JSON mode. LIGHT
+  Dreaming consumed the REM queue. The metering proxy hid Ollama from
+  Hermes' context-window check. Two smaller items remain open: the Docker
+  sandbox drops `DOCKER_HOST` (local daemon socket only), and
+  `test_cli_approve_and_promote_by_experiment_id` picks up a provisioned
+  `/srv/hermes-improve` layout. A positive live promotion needs a model with
+  at least 64K context (the Hermes floor).
 - Low-priority audit items: LIGHT dreaming counts distinct strings instead of
   reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
 

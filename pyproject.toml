@@ -28,6 +28,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 # Versioned ledger schema migrations (SQL files) ship with the package.
 "hermes_improve.migrations" = ["*.sql"]
+# Role prompts (dreaming, optimizer, judge) ship with the package so that a
+# non-editable install (scripts/provision.sh --install-from) can load them.
+"hermes_improve" = ["prompts/*/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -37,7 +37,7 @@ def test_prompt_loader_refuses_unframed_traversal_and_symlinked_prompts(tmp_path
     (tmp_path / "optimizer" / "link.md").symlink_to(tmp_path / "optimizer" / "real.md")
     with pytest.raises(ValueError, match="symbolic link"):
         load_prompt("optimizer/link.md", root=tmp_path)
-    with pytest.raises(FileNotFoundError, match="protected repository checkout"):
+    with pytest.raises(FileNotFoundError, match="installation is incomplete"):
         load_prompt("optimizer/missing.md", root=tmp_path)
 
 

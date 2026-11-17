@@ -18,7 +18,7 @@ from typing import Any
 from .ingestion import contains_secret_material
 
 
-PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts"
+PROMPT_ROOT = Path(__file__).resolve().parent / "prompts"
 UNTRUSTED_MARKER = "UNTRUSTED EVIDENCE"
 MAX_MODEL_PAYLOAD_BYTES = 1024 * 1024
 MAX_SKILL_CONTENT_BYTES = 256 * 1024
@@ -42,7 +42,7 @@ _PROTECTED_REFERENCES = (
 
 
 def load_prompt(name: str, *, root: Path | None = None) -> str:
-    """Load a role prompt from the protected checkout's ``prompts/`` tree."""
+    """Load a role prompt from ``hermes_improve/prompts/`` (shipped as package data)."""
     if not isinstance(name, str) or not _PROMPT_NAME.fullmatch(name):
         raise ValueError("prompt name must be dreaming/<name>.md or optimizer/<name>.md")
     base = Path(root) if root is not None else PROMPT_ROOT
@@ -53,7 +53,7 @@ def load_prompt(name: str, *, root: Path | None = None) -> str:
         raw = path.read_bytes()
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"prompt file {name} not found under {base}; run from the protected repository checkout"
+            f"prompt file {name} not found under {base}; the installation is incomplete (prompts ship as package data)"
         ) from exc
     if len(raw) > _MAX_PROMPT_BYTES:
         raise ValueError(f"prompt file {name} exceeds 64 KiB")

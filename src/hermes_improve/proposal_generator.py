@@ -100,6 +100,7 @@ def _generate_one(
         evidence["current_skill_text"] = existing
     response = model.complete(
         role="qwen_optimizer", system_prompt=system_prompt, user_payload=wrap_untrusted_evidence(evidence),
+        json_object=True,
     )
     try:
         content = _parse_content(response)

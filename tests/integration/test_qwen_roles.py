@@ -23,7 +23,7 @@ MODEL_NAME = re.compile(
 
 
 def _shipped_files():
-    for root in ("src", "config", "prompts"):
+    for root in ("src", "config"):
         for path in (REPO / root).rglob("*"):
             if path.is_file() and path.suffix in {".py", ".yaml", ".yml", ".md", ".json", ".toml"}:
                 yield path
@@ -90,7 +90,7 @@ class _Recorder:
     def __init__(self):
         self.calls = []
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.calls.append((role, system_prompt))
         if role == "qwen_dreamer":
             return json.dumps({"hypotheses": [{"summary": "s", "issue": "i", "evidence_session_ids": ["s1"]}]})

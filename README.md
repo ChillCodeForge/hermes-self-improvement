@@ -495,7 +495,7 @@ Dreaming has three stages:
 All archived sessions, user and assistant text, tool output, repositories,
 websites, logs, and errors are **untrusted evidence**, never instructions.
 Prompt-injection content must not alter system behavior or protected policy.
-Role prompts live in `prompts/dreaming/` and `prompts/optimizer/` and must carry
+Role prompts live in `src/hermes_improve/prompts/dreaming/` and `src/hermes_improve/prompts/optimizer/` and must carry
 the UNTRUSTED EVIDENCE framing; every model payload is escaped JSON inside a
 nonce-delimited envelope. Explicit injection tests cover promotion, config
 edits and holdout reads. These safeguards reduce, but cannot eliminate, the
@@ -683,7 +683,7 @@ hermes-self-improvement/
 │   ├── cli/ hermes/ curator/ self_evolution/ sessions/ dreaming/
 │   ├── benchmarks/ evaluator/ verifiers/ optimizer/ candidates/
 │   ├── experiments/ artifacts/ git/ promotion/ monitoring/ security/
-├── prompts/                # dreaming, optimizer, judge; separately versioned
+│   └── prompts/            # dreaming, optimizer, judge role prompts (package data)
 ├── brain/                  # production-tracked skills/prompts/workflows/etc.
 ├── benchmarks/             # public splits, manifests, fixtures (not holdout)
 ├── tests/                  # unit, integration, security, end-to-end

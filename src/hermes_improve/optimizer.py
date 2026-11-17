@@ -92,7 +92,7 @@ class OptimizerStrategy(Protocol):
 
 
 class OptimizerModel(Protocol):
-    def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str: ...
+    def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str: ...
 
 
 def mutation_evidence(request: MutationRequest) -> dict[str, Any]:
@@ -128,6 +128,7 @@ class ModelMutationStrategy:
             role="qwen_optimizer",
             system_prompt=load_prompt("optimizer/mutate_skill.md"),
             user_payload=wrap_untrusted_evidence(mutation_evidence(request)),
+            json_object=True,
         )
         return parse_variant_response(response, request.count)
 

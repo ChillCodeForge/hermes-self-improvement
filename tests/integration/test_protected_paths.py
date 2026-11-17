@@ -138,7 +138,7 @@ class _Author:
     def __init__(self):
         self.calls = []
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.calls.append(role)
         return json.dumps({"content": "---\nname: x\ndescription: d\n---\n\nHarmless skill text.\n"})
 
@@ -200,7 +200,7 @@ def test_deep_dreaming_drops_every_protected_or_non_skill_target():
             })
 
     class Model:
-        def complete(self, *, role, system_prompt, user_payload):
+        def complete(self, *, role, system_prompt, user_payload, json_object=False):
             return json.dumps({"candidates": batch})
 
     survivors = []
