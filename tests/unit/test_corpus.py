@@ -14,7 +14,7 @@ from hermes_improve.models import Eligibility, Split
 from hermes_improve.replay import fixture_tree_digest, is_command_benchmark
 from hermes_improve.suites import Suite, corpus_manifest, select_suite, verify_manifest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BENCHMARKS = ROOT / "benchmarks"
 
 

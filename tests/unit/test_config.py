@@ -16,7 +16,7 @@ from hermes_improve.models import CandidateType
 from hermes_improve.policy import PromotionPolicy
 
 
-SHIPPED = Path(__file__).parents[1] / "config"
+SHIPPED = Path(__file__).parents[2] / "config"
 
 
 def _copy(tmp_path: Path) -> Path:

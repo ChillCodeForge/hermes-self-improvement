@@ -528,7 +528,7 @@ def test_auto_types_need_no_approval_and_unlock_is_config_only(tmp_path):
         )
 
     config_dir = tmp_path / "config"
-    shutil.copytree(Path(__file__).parents[1] / "config", config_dir)
+    shutil.copytree(Path(__file__).parents[2] / "config", config_dir)
     for item in [config_dir, *config_dir.iterdir()]:
         os.chmod(item, 0o755 if item.is_dir() else 0o644)
     text = (config_dir / "promotion.yaml").read_text()

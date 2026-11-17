@@ -21,7 +21,7 @@ from hermes_improve.policy import PromotionPolicy
 from hermes_improve.store import ExperimentStore
 from test_evaluator import FixtureRunner, candidate, setup_store
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 # The layout written by the first release of the store (no metrics_json or
 # signature, no run observations, no benchmark proposals, no audit tables).

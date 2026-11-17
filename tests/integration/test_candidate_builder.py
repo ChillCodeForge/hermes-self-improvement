@@ -212,7 +212,7 @@ def test_candidate_create_cli_materializes_commit_and_reports_hash(tmp_path, mon
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",
@@ -261,7 +261,7 @@ def test_candidate_create_cli_uses_selected_deep_proposal_but_operator_content(
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",
@@ -303,7 +303,7 @@ def test_candidate_create_cli_rejects_unsupported_proposal_without_git_changes(
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",
@@ -333,7 +333,7 @@ def test_candidate_create_cli_bounds_dreaming_proposal_file_size(tmp_path, monke
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",
@@ -360,7 +360,7 @@ def test_candidate_create_cli_requires_exactly_one_metadata_source(tmp_path, mon
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",
@@ -407,7 +407,7 @@ def test_candidate_create_cli_rejects_invalid_dreaming_proposals(
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(state))
     monkeypatch.setenv(
         "HERMES_IMPROVE_BENCHMARKS",
-        str(Path(__file__).parents[1] / "benchmarks"),
+        str(Path(__file__).parents[2] / "benchmarks"),
     )
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",

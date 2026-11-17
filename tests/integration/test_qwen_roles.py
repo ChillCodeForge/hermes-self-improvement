@@ -14,7 +14,7 @@ from hermes_improve.dreaming import DreamingEngine
 from hermes_improve.judge import PairwiseJudge
 from hermes_improve.qwen import QWEN_ROLES, OpenAICompatibleQwen, QwenConfig
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 # Families and version spellings of real model names; none may appear in code or shipped config.
 MODEL_NAME = re.compile(
     r"(?i)\b(qwen[\d.]+[\w.-]*|qwen-\d[\w.-]*|gpt-[\d][\w.-]*|gpt-4o|claude-[\w.-]+|llama[-\d][\w.-]*"

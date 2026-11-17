@@ -145,7 +145,7 @@ def test_skill_split_creates_new_skill_from_existing(tmp_path):
     [
         (CandidateType.SKILL_PATCH, {"config/promotion.yaml": "schema_version: 2\n"}, (), "protected"),
         (CandidateType.SKILL_PATCH, {"src/hermes_improve/policy.py": "x = 1\n"}, (), "protected"),
-        (CandidateType.SKILL_PATCH, {"tests/test_policy.py": "x = 1\n"}, (), "protected"),
+        (CandidateType.SKILL_PATCH, {"tests/unit/test_policy.py": "x = 1\n"}, (), "protected"),
         (CandidateType.SKILL_PATCH, {"benchmarks/manifest.json": "{}"}, (), "protected"),
         (CandidateType.SKILL_PATCH, {"scripts/run.sh": "echo\n"}, (), "protected"),
         (CandidateType.SKILL_PATCH, {".github/workflows/ci.yml": "on: push\n"}, (), "protected"),
@@ -235,7 +235,7 @@ def test_cli_creates_any_type_from_file_arguments(tmp_path, monkeypatch, capsys)
     workflow = tmp_path / "release.yaml"
     workflow.write_text("steps:\n  - test\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(Path(__file__).parents[1] / "benchmarks"))
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(Path(__file__).parents[2] / "benchmarks"))
     monkeypatch.delenv("HERMES_IMPROVE_CONFIG", raising=False)
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",

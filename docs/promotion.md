@@ -214,7 +214,7 @@ Safety properties:
   must all be regular files that pass the `SKILL_*` path rules, and the
   builder refuses symlinked entries. Nothing outside the unit is touched.
 - **Rollback** of the release restores the skill (tested in
-  `tests/test_curator_removal.py`).
+  `tests/integration/test_curator_removal.py`).
 
 ## Release statuses
 

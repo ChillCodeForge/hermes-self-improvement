@@ -160,7 +160,7 @@ def test_report_computes_sections_from_persisted_state(tmp_path):
 def test_report_reads_public_benchmarks_only(tmp_path):
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1] / "benchmarks"
+    root = Path(__file__).resolve().parents[2] / "benchmarks"
     report = build_report(tmp_path / "home", root)
     # The curated public corpus: 26 WP-B command tasks + 6 WP-G skill_procedure tasks, no holdout.
     assert report["benchmarks"]["count"] == 32

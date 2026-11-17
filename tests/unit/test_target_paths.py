@@ -19,7 +19,7 @@ from hermes_improve.target_paths import (
 )
 
 
-REPO = Path(__file__).parents[1]
+REPO = Path(__file__).parents[2]
 
 
 def test_every_candidate_type_maps_to_a_brain_area():
@@ -65,7 +65,7 @@ def test_valid_paths_resolve_to_their_unit(candidate_type, path, unit):
         (CandidateType.SKILL_CREATE, "brain\\skills\\x\\SKILL.md", "POSIX"),
         (CandidateType.SKILL_CREATE, "config/promotion.yaml", "protected"),
         (CandidateType.SKILL_PATCH, "src/hermes_improve/policy.py", "protected"),
-        (CandidateType.SKILL_PATCH, "tests/test_policy.py", "protected"),
+        (CandidateType.SKILL_PATCH, "tests/unit/test_policy.py", "protected"),
         (CandidateType.SKILL_PATCH, "benchmarks/manifest.json", "protected"),
         (CandidateType.SKILL_PATCH, "scripts/docker-test.sh", "protected"),
         (CandidateType.SKILL_PATCH, ".github/workflows/ci.yml", "protected"),
