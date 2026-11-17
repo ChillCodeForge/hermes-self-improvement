@@ -295,7 +295,7 @@ the task intent `{type}`, `{scope}`, `{summary}`, `{why}`, `{ticket}`).
   analogue of `solve.sh`). The replay evidence of all six records comes from
   three `DockerCommandRunner` replays at the deterministic reference brain
   commit `96e5cbf` built by `tests/skill_procedure_support.py`;
-  `tests/test_skill_procedure_corpus.py` replays them again in a local
+  `tests/integration/test_skill_procedure_corpus.py` replays them again in a local
   process sandbox and must reproduce the same outcome and environment
   digests.
 

@@ -1,19 +1,6 @@
 import os
-import sys
-from pathlib import Path
 
 import pytest
-
-# Shared helpers (skill_procedure_support, ...) live one directory up.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "root_required: OS-isolation test that creates Unix users and switches UIDs; "
-        "runs only as root (e.g. inside scripts/docker-test.sh)",
-    )
 
 
 def pytest_collection_modifyitems(config, items):

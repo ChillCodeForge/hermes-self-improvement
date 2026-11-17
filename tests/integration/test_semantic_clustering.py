@@ -338,7 +338,7 @@ def test_cli_validate_with_configured_endpoint_rejects_paraphrase_leak(tmp_path,
         assert output["semantic_layer"]["model_id"] == "Qwen3-Embedding-0.6B"
 
 
-SHIPPED = Path(__file__).parents[1] / "config"
+SHIPPED = Path(__file__).parents[2] / "config"
 
 
 def _config_copy(tmp_path: Path) -> Path:

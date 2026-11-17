@@ -24,7 +24,7 @@ from hermes_improve.sandbox import LocalSandboxExecutor, SandboxLimits, SandboxP
 from hermes_improve.security import AccessController
 
 
-FIXTURES = Path(__file__).parent / "fixtures" / "hermes"
+FIXTURES = Path(__file__).parents[1] / "fixtures" / "hermes"
 IMAGE = "example/hermes-tools@sha256:" + "b" * 64
 MODEL = HermesModelConfig(model="qwen3-coder", base_url="http://127.0.0.1:8000/v1")
 

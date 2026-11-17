@@ -16,7 +16,7 @@ from hermes_improve.replay import fixture_tree_digest, replay_benchmark
 from hermes_improve.store import ExperimentStore
 
 COMMIT = "c" * 40
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def command_record(identifier: str = "cmd-task", split: str = "TRAIN") -> dict:

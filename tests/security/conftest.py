@@ -7,14 +7,6 @@ import pytest
 _REASON = "requires root to create role users and switch UIDs (run scripts/docker-test.sh)"
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "root_required: OS-isolation test that creates Unix users and switches UIDs; "
-        "runs only as root (e.g. inside scripts/docker-test.sh)",
-    )
-
-
 def _is_root() -> bool:
     return os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0
 

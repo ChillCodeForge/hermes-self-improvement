@@ -32,7 +32,7 @@ PROTECTED_FILES = (
     "benchmarks/manifests/corpus.json",
     "src/hermes_improve/policy.py",
     "src/hermes_improve/evaluator.py",
-    "tests/test_policy.py",
+    "tests/unit/test_policy.py",
     "tests/security/test_os_isolation.py",
     "scripts/provision.sh",
     ".github/workflows/ci.yml",

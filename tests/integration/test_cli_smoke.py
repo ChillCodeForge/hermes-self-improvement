@@ -14,7 +14,7 @@ from hermes_improve.policy import PromotionPolicy
 from hermes_improve.store import ExperimentStore
 from test_promotion import _add_candidate, _repository, git
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 # Spec §34, in spec order, with the minimal arguments each command requires.
 SPEC_COMMANDS = (

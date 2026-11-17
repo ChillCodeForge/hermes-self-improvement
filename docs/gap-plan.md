@@ -88,6 +88,7 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Curator archive/delete/consolidate as gated removal candidates | #22 | **done** |
 | Semantic clustering layer (embeddings) | #23 | **done** |
 | Spec audit fixes: §23 policy order/generalization/token gate, §16 finalist-only holdout, §26 ledger schema + migrations, §35/§36 report and Laya decisions, §29 session feed | #24 | **done** |
+| Test layout `tests/{unit,integration,security,e2e}` (§37) | #25 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them.
@@ -102,8 +103,6 @@ Open items:
   proxy in front of the model endpoint); operators with model-free benchmarks
   set it to `false` explicitly and the report records the token check as
   skipped.
-- Test layout (§37): tests are flat under `tests/` (plus `tests/security`
-  and `tests/e2e`), not split into `unit/` and `integration/`.
 - Low-priority audit items: LIGHT dreaming counts distinct strings instead of
   reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
 
