@@ -7,23 +7,23 @@
 # tests/security/test_isolation_unit.py asserts that every protected path below
 # keeps an owner rule.
 
-/src/hermes_improve/evaluator.py            @ChillCodeForge
-/src/hermes_improve/verifier.py             @ChillCodeForge
-/src/hermes_improve/verifiers.py            @ChillCodeForge
-/src/hermes_improve/policy.py               @ChillCodeForge
-/src/hermes_improve/promotion.py            @ChillCodeForge
-/src/hermes_improve/security.py             @ChillCodeForge
-/src/hermes_improve/isolation.py            @ChillCodeForge
-/src/hermes_improve/role_handoff.py         @ChillCodeForge
-/src/hermes_improve/evaluation_signing.py   @ChillCodeForge
-/src/hermes_improve/benchmarks.py           @ChillCodeForge
-/src/hermes_improve/docker_runner.py        @ChillCodeForge
-/src/hermes_improve/statistics.py           @ChillCodeForge
-/src/hermes_improve/cli.py                  @ChillCodeForge
-/benchmarks/                                @ChillCodeForge
-/config/                                    @ChillCodeForge
-/scripts/                                   @ChillCodeForge
-/.github/                                   @ChillCodeForge
-/tests/security/                            @ChillCodeForge
-/docs/security.md                           @ChillCodeForge
-/pyproject.toml                             @ChillCodeForge
+/src/hermes_improve/evaluator.py            @ChillCodeForge/chillcode
+/src/hermes_improve/verifier.py             @ChillCodeForge/chillcode
+/src/hermes_improve/verifiers.py            @ChillCodeForge/chillcode
+/src/hermes_improve/policy.py               @ChillCodeForge/chillcode
+/src/hermes_improve/promotion.py            @ChillCodeForge/chillcode
+/src/hermes_improve/security.py             @ChillCodeForge/chillcode
+/src/hermes_improve/isolation.py            @ChillCodeForge/chillcode
+/src/hermes_improve/role_handoff.py         @ChillCodeForge/chillcode
+/src/hermes_improve/evaluation_signing.py   @ChillCodeForge/chillcode
+/src/hermes_improve/benchmarks.py           @ChillCodeForge/chillcode
+/src/hermes_improve/docker_runner.py        @ChillCodeForge/chillcode
+/src/hermes_improve/statistics.py           @ChillCodeForge/chillcode
+/src/hermes_improve/cli.py                  @ChillCodeForge/chillcode
+/benchmarks/                                @ChillCodeForge/chillcode
+/config/                                    @ChillCodeForge/chillcode
+/scripts/                                   @ChillCodeForge/chillcode
+/.github/                                   @ChillCodeForge/chillcode
+/tests/security/                            @ChillCodeForge/chillcode
+/docs/security.md                           @ChillCodeForge/chillcode
+/pyproject.toml                             @ChillCodeForge/chillcode
