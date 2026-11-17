@@ -128,7 +128,7 @@ class InjectedModel:
         self.last_payload = ""
         self.last_system_prompt = ""
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.last_payload = user_payload
         self.last_system_prompt = system_prompt
         if role == "qwen_dreamer":

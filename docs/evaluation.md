@@ -206,15 +206,20 @@ replace batch_runner.
 Tokens are therefore measured between Hermes and the model endpoint. For every
 run `HermesBatchRunner` starts a `MeteringProxy` on `127.0.0.1` (random port)
 and passes its URL to batch_runner as `--base_url`; the proxy forwards each
-request unchanged (method, path below the configured base path, query,
-headers including `Authorization`, body) to the configured endpoint and relays
+request unchanged (method, path, query, headers including `Authorization`,
+body) to the configured endpoint host and relays
 the response unchanged, streaming SSE chunk by chunk. From every 2xx response
 to a generation path (`…/chat/completions`, `…/completions`, `…/responses`,
-`…/messages`) it reads the `usage` object: the top-level `usage` of JSON
+`…/messages`, Ollama `/api/chat` and `/api/generate`) it reads the token
+counts: the top-level `usage` of JSON
 responses, the final chunk of OpenAI streams (Hermes sends
 `stream_options.include_usage`, `agent/chat_completion_helpers.py`), the
 `response.completed` event of the Responses API, and `message_start` plus
-`message_delta` of Anthropic streams. The run record artifact stores the
+`message_delta` of Anthropic streams, and `prompt_eval_count`/`eval_count`
+of Ollama native responses (JSON or NDJSON). Paths outside the base path are
+forwarded too: Hermes probes the server root (Ollama `/api/tags`,
+`/api/show`) to recognise the backend, and its 64K context floor and Ollama
+`num_ctx` handling depend on that probe. Only generation paths are metered. The run record artifact stores the
 per-call usage under `token_usage`; headers are never stored or logged.
 
 A run counts as measured (`token_usage_reported=True`) only when all of these
@@ -235,14 +240,15 @@ run, and `context_tokens` is the largest single-call prompt. Limits: the proxy
 only sees traffic to the configured endpoint, so auxiliary models that Hermes
 would reach through a different provider configuration are not counted (each
 run uses a fresh `HERMES_HOME` without such configuration, and the
-`api_calls` check catches main-loop traffic that bypasses it). Provider
-detection inside Hermes sees a loopback URL instead of the real host, which is
-identical for baseline and candidate runs. `token_metering=False` on the
+`api_calls` check catches main-loop traffic that bypasses it). Provider detection by
+hostname (for example hosted-provider URLs) sees a loopback URL instead of the
+real host; detection by probing the server (local servers such as Ollama) works
+through the proxy. `token_metering=False` on the
 runner restores the unmetered behaviour; with the default
 `require_token_measurement: true` such runs fail the policy with "token
 efficiency not measured" (see `promotion.md`).
 
-## Judge (`judge.py`, `prompts/judge/`)
+## Judge (`judge.py`, `src/hermes_improve/prompts/judge/`)
 
 The `qwen_judge` role is used only for benchmarks with no deterministic checks
 and non-empty `verification.subjective`; if such a benchmark is selected

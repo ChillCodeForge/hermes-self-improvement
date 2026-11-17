@@ -20,7 +20,7 @@ _SKILL_CANDIDATE_TYPES = {
 
 
 class DreamingModel(Protocol):
-    def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str: ...
+    def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,7 @@ class DreamingEngine:
             role="qwen_dreamer",
             system_prompt=system_prompt,
             user_payload=payload,
+            json_object=True,
         )
         parsed = _parse_hypotheses(response)
         return DreamingReport(light.sessions_processed, light.clusters, light.signals, tuple(parsed))
@@ -109,6 +110,7 @@ class DreamingEngine:
             role="qwen_optimizer",
             system_prompt=system_prompt,
             user_payload=payload,
+            json_object=True,
         )
         value = json.loads(response)
         if not isinstance(value, dict):

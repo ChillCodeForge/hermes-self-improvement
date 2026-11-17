@@ -107,7 +107,7 @@ def test_candidate_generate_cli_creates_candidates_from_selected_proposals(tmp_p
     class AuthorModel:
         requests = 0
 
-        def complete(self, *, role, system_prompt, user_payload):
+        def complete(self, *, role, system_prompt, user_payload, json_object=False):
             assert role == "qwen_optimizer" and "UNTRUSTED EVIDENCE" in system_prompt
             self.requests += 1
             return json.dumps({"content": "---\nname: generated\n---\nPrefer pinned images."})

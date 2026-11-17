@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -138,6 +138,10 @@ def resolve_role_models(models: "ModelsConfig", environ: Mapping[str, str]) -> d
     return resolved
 
 
+class _ResponseFormatRejected(Exception):
+    """The endpoint answered HTTP 400/422 naming ``response_format`` (no JSON mode support)."""
+
+
 class OpenAICompatibleQwen:
     """Small synchronous adapter for local OpenAI-compatible chat endpoints.
 
@@ -156,6 +160,7 @@ class OpenAICompatibleQwen:
         self._stats: dict[str, dict[str, float | int]] = {}
         self._log_lock = threading.Lock()
         self._log_dir = Path(config.log_dir) if config.log_dir else None
+        self._json_mode_supported = True
         if self._log_dir is not None:
             self._log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
@@ -169,25 +174,44 @@ class OpenAICompatibleQwen:
             raise ValueError(f"unknown Qwen logical role: {role}")
         return self._log_dir / f"{role}.jsonl" if self._log_dir is not None else None
 
-    def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str:
+    def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str:
+        """One chat completion for a logical role.
+
+        ``json_object=True`` (callers whose contract is a single JSON object:
+        Dreaming REM/DEEP, optimizer, candidate content, judge) sends
+        ``response_format: {"type": "json_object"}``. Small local models
+        otherwise answer with a top-level array or prose and every strict
+        parse fails (lab finding F6). An endpoint that rejects the field with
+        HTTP 400/422 naming ``response_format`` is retried once without it, and
+        JSON mode stays off for this client afterwards.
+        """
         if role not in QWEN_ROLES:
             raise ValueError(f"unknown Qwen logical role: {role}")
         if not isinstance(system_prompt, str) or not isinstance(user_payload, str):
             raise TypeError("Qwen prompts and payloads must be strings")
         model = self.config.model_for(role)
-        body = json.dumps({
+        request: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": f"[logical_role={role}]\n{system_prompt}"},
                 {"role": "user", "content": user_payload},
             ],
             "temperature": 0,
-        }).encode("utf-8")
+        }
+        if json_object is True and self._json_mode_supported:
+            request["response_format"] = {"type": "json_object"}
+        body = json.dumps(request).encode("utf-8")
         if len(body) > _MAX_REQUEST_BYTES:
             raise ValueError("Qwen request exceeds the 1 MiB payload limit")
         started = time.monotonic()
         try:
-            content, prompt_tokens, completion_tokens = self._request(body)
+            try:
+                content, prompt_tokens, completion_tokens = self._request(body)
+            except _ResponseFormatRejected:
+                self._json_mode_supported = False
+                request.pop("response_format", None)
+                body = json.dumps(request).encode("utf-8")
+                content, prompt_tokens, completion_tokens = self._request(body)
         except (RuntimeError, ValueError) as exc:
             self._log(role, model, body, None, started, 0, 0, str(exc))
             raise
@@ -216,6 +240,11 @@ class OpenAICompatibleQwen:
                     if len(raw) > _MAX_RESPONSE_BYTES:
                         raise ValueError("Qwen response exceeds the 2 MiB limit")
                     payload = json.loads(raw)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read(4096) if exc.fp is not None else b""
+                if exc.code in {400, 422} and b"response_format" in detail:
+                    raise _ResponseFormatRejected() from exc
+                raise RuntimeError(f"local model request failed: {exc}") from exc
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 raise RuntimeError(f"local model request failed: {exc}") from exc
         if not isinstance(payload, dict):

@@ -14,6 +14,15 @@ itself into a decision, or promotes.
 | Candidate generation | `proposal_generator.generate_candidates_from_proposals`, `hermes-improve candidate generate` | `qwen_optimizer` | For up to five operator-selected DEEP proposals, the model writes the full SKILL.md text; the result is committed through `candidate_builder.create_skill_candidate` on `candidate/<experiment-id>`. | Target, type and hypothesis come only from the validated proposal, never from the model reply. No evaluation, no promotion. |
 
 `hermes-improve dream --stage light|rem|deep` runs the first three stages.
+Each queued session is processed once per stage. LIGHT reads sessions that
+LIGHT has not seen yet and records only its own stage mark
+(`session_stages`), so the session stays queued. REM reads every
+still-queued session and then marks it `processed`. The documented order
+"LIGHT daily, REM periodically" therefore gives REM the same evidence.
+Without queued sessions, REM sends no Qwen request. The Qwen roles whose
+contract is one JSON object (REM, DEEP, candidate content, optimizer
+variants, judge) request `response_format: {"type": "json_object"}`; an
+endpoint that rejects the field is asked again once without it.
 `candidate generate` takes the DEEP JSON file plus one to five distinct
 `--proposal-index` values and prints one outcome per proposal: `created`
 (awaiting evaluation), `rejected` (with reason) or `duplicate`.
@@ -35,7 +44,7 @@ Generation checks, per proposal:
 
 ## Untrusted-evidence framing (spec §28)
 
-- Role prompts are files under `prompts/dreaming/` and `prompts/optimizer/`.
+- Role prompts are files under `src/hermes_improve/prompts/dreaming/` and `src/hermes_improve/prompts/optimizer/`.
   `prompting.load_prompt` refuses names outside those directories, symbolic
   links, files over 64 KiB, and any prompt that lacks the literal
   `UNTRUSTED EVIDENCE` framing.
@@ -145,7 +154,7 @@ runs under the evaluator identity and consumes the lineage holdout generation.
 ## Strategies
 
 - `ModelMutationStrategy` (`qwen-optimizer`, version `1`): one
-  `qwen_optimizer` call per generation with `prompts/optimizer/mutate_skill.md`;
+  `qwen_optimizer` call per generation with `src/hermes_improve/prompts/optimizer/mutate_skill.md`;
   reply `{"variants": [{"content", "rationale"}]}`. Invalid JSON raises and
   marks the run failed.
 - `GepaOptimizeStrategy` (`gepa-optimize`, version `gepa-0.1.4`,
@@ -159,7 +168,7 @@ runs under the evaluator identity and consumes the lineage holdout generation.
   evaluator; GEPA receives per-TRAIN-task quality deltas and the VALIDATION
   mean only. Duplicates of earlier experiments, rejected text, gate failures
   and over-budget text score `-1000`. `make_reflective_dataset` returns escaped
-  JSON records; the reflection prompt is `prompts/optimizer/gepa_reflection.md`
+  JSON records; the reflection prompt is `src/hermes_improve/prompts/optimizer/gepa_reflection.md`
   inside a nonce envelope. GEPA's best candidates come back as proposals and
   still face the SMOKE gate, the improvement threshold, FULL and the holdout;
   their CORE results are reused instead of re-run. The holdout is never part of
@@ -194,6 +203,6 @@ runs under the evaluator identity and consumes the lineage holdout generation.
 - No live Qwen endpoint was exercised; model behavior is tested with labeled
   test doubles (`tests/evolution_doubles.py`), and the runner in loop tests is a
   test double that derives outcomes from markers in the committed skill.
-- Prompts are read from the repository checkout (`prompts/` next to `src/`); a
-  non-editable wheel install without the checkout fails with an explicit
-  "prompt file not found" error.
+- Prompts ship as package data in `src/hermes_improve/prompts/`, so the
+  non-editable install that `scripts/provision.sh --install-from` creates can
+  load them (`tests/unit/test_prompt_packaging.py`).

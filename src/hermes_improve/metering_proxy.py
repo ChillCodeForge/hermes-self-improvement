@@ -25,7 +25,17 @@ Usage shapes understood:
 * OpenAI Responses API: ``usage`` or ``response.usage`` with
   ``input_tokens``/``output_tokens`` (streaming: ``response.completed``);
 * Anthropic Messages: ``message.usage`` in ``message_start`` plus ``usage`` in
-  ``message_delta``; per field the largest reported value is kept.
+  ``message_delta``; per field the largest reported value is kept;
+* Ollama native ``/api/chat`` and ``/api/generate``: ``prompt_eval_count`` and
+  ``eval_count`` of the final (``done``) object, JSON or NDJSON stream.
+
+Every path is forwarded to the upstream host, not only paths below the
+configured base path. Hermes probes the server root to recognise the backend,
+for example Ollama ``/api/tags`` and ``/api/show``. Its context-window floor
+(64K in v0.22.2) and the Ollama ``num_ctx`` handling depend on that probe.
+Before this change the proxy answered such probes with 404, Hermes did not
+recognise Ollama behind the loopback URL, and it ran a model it would refuse
+when called directly (lab finding F5). Only generation paths are metered.
 
 The proxy never modifies request or response bodies and never logs headers
 (the ``Authorization`` header carries the model API key). It listens on
@@ -50,7 +60,7 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "trailers", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding",
 }
-_GENERATION_SUFFIXES = ("/chat/completions", "/completions", "/responses", "/messages")
+_GENERATION_SUFFIXES = ("/chat/completions", "/completions", "/responses", "/messages", "/api/chat", "/api/generate")
 _MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_PARSED_RESPONSE_BYTES = 64 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
@@ -122,6 +132,9 @@ def _token_count(value: object) -> int | None:
 def _usage_from(container: object) -> tuple[int | None, int | None]:
     if not isinstance(container, Mapping):
         return None, None
+    if "prompt_eval_count" in container or "eval_count" in container:
+        # Ollama native API: counters at the top level of the final object.
+        return _token_count(container.get("prompt_eval_count")), _token_count(container.get("eval_count"))
     usage = container.get("usage")
     if not isinstance(usage, Mapping):
         return None, None
@@ -151,13 +164,16 @@ def usage_from_body(body: bytes, streamed: bool) -> tuple[int | None, int | None
         try:
             return extract_usage(json.loads(body))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return None, None
+            pass  # not one JSON document: try NDJSON (Ollama native streaming)
     tokens_in = tokens_out = None
     for raw_line in body.splitlines():
         line = raw_line.strip()
-        if not line.startswith(b"data:"):
-            continue
-        payload = line[5:].strip()
+        if streamed:
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+        else:
+            payload = line
         if not payload or payload == b"[DONE]":
             continue
         try:
@@ -229,9 +245,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _forward(self, body: bytes) -> None:
         split = urllib.parse.urlsplit(self.path)
         path = split.path
-        base = self.server.base_path
-        if base and path != base and not path.startswith(base + "/"):
-            self.send_error(404, "path outside the metered model endpoint")
+        if not path.startswith("/") or split.scheme or split.netloc:
+            self.send_error(400, "origin-form request path required")
             return
         upstream = self.server.upstream
         target = urllib.parse.urlunsplit((upstream.scheme, upstream.netloc, path, split.query, ""))

@@ -18,13 +18,13 @@ from typing import Any, Protocol, Sequence
 
 
 JUDGE_ROLE = "qwen_judge"
-DEFAULT_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts" / "judge"
+DEFAULT_PROMPT_DIR = Path(__file__).resolve().parent / "prompts" / "judge"
 _SYSTEM_PROMPT_FILE = "pairwise_system.md"
 _RESULTS = ("candidate", "baseline", "tie", "unreliable")
 
 
 class ChatModel(Protocol):
-    def complete(self, *, role: str, system_prompt: str, user_payload: str) -> str: ...
+    def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -182,7 +182,9 @@ class PairwiseJudge:
         error = None
         for attempt in range(1, self.config.max_attempts + 1):
             try:
-                answer = self.model.complete(role=JUDGE_ROLE, system_prompt=self.system_prompt, user_payload=payload)
+                answer = self.model.complete(
+                    role=JUDGE_ROLE, system_prompt=self.system_prompt, user_payload=payload, json_object=True,
+                )
                 return parse_judgment(answer), attempt, None
             except (ValueError, RuntimeError) as exc:
                 error = str(exc)[:500]

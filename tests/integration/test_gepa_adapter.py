@@ -66,7 +66,7 @@ class FencedReflectionModel:
         self.bodies = list(bodies)
         self.calls = []
 
-    def complete(self, *, role, system_prompt, user_payload):
+    def complete(self, *, role, system_prompt, user_payload, json_object=False):
         self.calls.append({"role": role, "system_prompt": system_prompt, "user_payload": user_payload})
         body = self.bodies.pop(0) if len(self.bodies) > 1 else self.bodies[0]
         return f"Here is the rewrite:\n```markdown\n{body}\n```"
