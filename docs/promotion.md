@@ -22,6 +22,10 @@ group/world-writable files. The shipped files equal the built-in defaults:
 | `thresholds.max_category_drop` | 2.0 |
 | `thresholds.max_token_increase_ratio` | 0.10 |
 | `thresholds.max_latency_increase_ratio` | 0.15 |
+| `thresholds.min_holdout_quality_delta` (optional) | 0.0 |
+| `thresholds.token_exception_min_quality_ci_lower` (optional, `null` disables) | 3.0 |
+| `thresholds.latency_exception_min_quality_ci_lower` (optional, `null` disables) | 3.0 |
+| `require_token_measurement` (optional) | `true` |
 | `promotion_gates` | skills `auto`; every other type `manual`; a candidate that removes a skill is always manual |
 | `required_evidence_suites` | `SMOKE, CORE, FULL, SEALED_HOLDOUT` (FULL and SEALED_HOLDOUT cannot be removed) |
 
@@ -35,6 +39,67 @@ builds the policy; a config digest is recorded in each release manifest.
 Unlocking auto-promotion for a type means changing its gate in the protected
 config; bumping `policy_version` at the same time invalidates evaluations and
 approvals made under the old policy.
+
+The optional keys fall back to the defaults above when omitted; the defaults
+are the strict settings. A provisioned layout (`scripts/provision.sh`) points
+every role's `HERMES_IMPROVE_CONFIG` at `<root>/config` once all four YAML
+files exist there (root-owned like the rest of that directory); otherwise the
+roles run with the built-in defaults.
+
+## Regression policy (`PromotionPolicy.assess`)
+
+There is no overall score. The hard constraints of spec §23 are evaluated in
+this order (`policy.CONSTRAINT_ORDER`); `reasons` are sorted by it, and
+`metrics.primary_reason` is the first failed one, `metrics.failed_constraints`
+lists the failed constraint names in order. "Final rows" are FULL rows plus
+SEALED_HOLDOUT rows.
+
+1. **Security**: any row with `security_pass=False` fails.
+2. **Deterministic correctness**: any row with `deterministic_pass=False` fails.
+3. **Critical regressions** and 4. **high regressions**: summed over every row,
+   must not exceed 0 / 0. The **medium regression rate** of the final rows
+   must not exceed 1% (same severity group, evaluated right after).
+   Then the **evidence** precondition: FULL rows and SEALED_HOLDOUT rows must
+   both be present.
+5. **Task success must not regress**: any task (any suite) that the baseline
+   solved and the candidate did not blocks, listed by task ID. A task that both
+   arms fail is not a regression and is left to the quality gate. The previous
+   rule ("candidate must succeed on every final task") was stricter than the
+   spec and blocked candidates that fixed some hard tasks but not all; the
+   per-task no-loss rule keeps the safety intent (a gain elsewhere can never
+   offset a lost task).
+6. **Generalization**: the sealed holdout on its own. Its mean quality delta
+   must be at least `min_holdout_quality_delta` (default 0.0), and its
+   candidate success count must not fall below the baseline's. FULL rows can
+   therefore not carry a holdout regression through the pooled mean.
+7. **Category regressions**: per category, the pooled mean delta of final rows
+   must not drop by more than `max_category_drop` (2.0).
+8. **Quality**: pooled final-row mean delta at least `min_quality_delta` (3.0)
+   and the 95% CI lower bound not below 0.
+9. **Token efficiency**: if any final row has `token_usage_reported=False`,
+   the constraint cannot be evaluated. With `require_token_measurement: true`
+   (default) that is a blocking reason "token efficiency not measured: runner
+   reported no token usage"; with `false` the check is recorded as skipped in
+   `metrics.token_check`. A missing measurement is blocking rather than a
+   manual-gate trigger because the signed operator approval does not supply the
+   missing number, and the manual gate only covers the type risk. When
+   measured, summed candidate tokens above baseline × 1.10 fail (a measured
+   zero baseline is not skipped) unless the significant-gain exception applies.
+10. **Latency**: the 95% CI lower bound of the per-task excess over
+    baseline × 1.15 must not be above 0, unless the significant-gain exception
+    applies.
+
+Significant-gain exception (§23 "unless significant quality gain" for tokens,
+"unless justified" for latency, defined the same way): at least two final
+rows, and the pooled 95% CI lower bound of the quality delta strictly above
+`token_exception_min_quality_ci_lower` / `latency_exception_min_quality_ci_lower`
+(both default 3.0, i.e. the whole interval clears the minimum quality delta).
+`metrics.token_exception_applied` and `metrics.latency_exception_applied` record
+its use; `null` disables an exception.
+
+A stored task row that predates `TaskOutcome.token_usage_reported` is read as
+unmeasured (the field defaults to `false`), so re-assessment at promotion time
+fails closed under `require_token_measurement: true`.
 
 ## `hermes-improve promote <experiment-id>`
 

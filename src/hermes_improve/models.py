@@ -281,6 +281,11 @@ class TaskOutcome:
     judge_result: str = ""
     judge_confidence: float | None = None
     judge_uncertainty: float | None = None
+    # True only when every paired run of this task reported real token usage
+    # (``RunObservation.token_usage_reported``). Defaults to False so rows that
+    # do not state it (including rows stored before the field existed) count as
+    # unmeasured and cannot pass the token-efficiency constraint silently.
+    token_usage_reported: bool = False
 
 
 @dataclass(frozen=True)

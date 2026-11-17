@@ -89,6 +89,8 @@ def test_docker_runner_captures_workspace_changes_and_runs_verifiers_in_sandbox(
     result = runner.run(commit, task, 7)
 
     assert result.success and result.deterministic_pass and result.quality == 100.0
+    # No model runs and no token usage is measured: the zero must not pass as a measurement.
+    assert result.tokens == 0 and result.token_usage_reported is False
     assert [row["type"] for row in result.verifier_results] == [
         "exit_code", "json_path_equals", "file_content", "unchanged_path", "git_diff", "unit_test",
     ]

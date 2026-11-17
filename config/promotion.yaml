@@ -11,6 +11,22 @@ thresholds:
   max_category_drop: 2.0
   max_token_increase_ratio: 0.1
   max_latency_increase_ratio: 0.15
+  # Generalization: mean quality delta of the sealed holdout alone must be at
+  # least this (Full rows cannot carry a holdout regression), and holdout task
+  # success must not drop.
+  min_holdout_quality_delta: 0.0
+  # Exceptions (spec §23 "unless significant quality gain" / "unless
+  # justified"): a token or latency increase above its ratio is allowed only
+  # when there are at least two final tasks and the 95% CI lower bound of the
+  # pooled Full+holdout quality delta is strictly above this value.
+  # null disables the exception.
+  token_exception_min_quality_ci_lower: 3.0
+  latency_exception_min_quality_ci_lower: 3.0
+# Token efficiency is a hard constraint. true: final evidence whose runner did
+# not report token usage fails with "token efficiency not measured". Set false
+# only for benchmark sets without a model in the loop (deterministic command
+# runners); the policy then records the token check as skipped.
+require_token_measurement: true
 # auto   = may promote after the full evidence gate
 # manual = additionally requires an Ed25519-signed operator approval
 # Unlocking a type means changing its gate here (and normally bumping

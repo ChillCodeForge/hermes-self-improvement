@@ -109,6 +109,7 @@ def test_outcomes_depend_on_the_skill_text(tmp_path):
         assert observation.success is (not ticket_task), item.id
         assert [name for name, ok in results.items() if not ok] == (["ticket_reference"] if ticket_task else [])
         assert observation.quality == pytest.approx(100.0 if not ticket_task else 100.0 * 8 / 11)
+        assert observation.token_usage_reported is False
     trace = json.loads(ArtifactStore(tmp_path / "artifacts").get(observation.artifact_digests[0]))
     assert trace["isolation"] == "local-process"
     assert trace["filesystem_changes"] == ["A trace.log"]

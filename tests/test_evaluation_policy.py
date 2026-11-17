@@ -257,3 +257,33 @@ def test_unreliable_judge_blocks_and_missing_judge_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="requires a configured judge"):
         evaluate(store, runner, ids=("essay",))
     assert runner.calls == []
+
+
+def test_outcome_records_whether_both_arms_reported_token_usage(tmp_path):
+    store, _ = store_with(tmp_path, [record("task")])
+    measured = evaluate(store, Runner(), suite="CORE")
+    assert measured.outcomes[0].token_usage_reported is True
+    # One arm without token usage makes the whole task row unmeasured.
+    unmeasured = evaluate(store, Runner(token_usage_reported=False), suite="CORE")
+    assert unmeasured.outcomes[0].token_usage_reported is False
+
+
+def test_unmeasured_token_usage_reaches_the_policy_as_a_blocking_reason(tmp_path):
+    store, access = store_with(
+        tmp_path, [record("full-task", suites=("FULL",))], [record("holdout-task", split="SEALED_HOLDOUT")],
+    )
+    report = evaluate(
+        store, Runner(token_usage_reported=False, quality=90.0), suite="FULL", ids=("full-task", "holdout-task"),
+        holdout_grant=access.evaluator_holdout_grant(Role.EVALUATOR),
+    )
+    assert not report.passed
+    assert "token efficiency not measured: runner reported no token usage" in report.reasons
+    assert report.metrics["token_check"] == "not measured"
+
+
+def test_cheaper_failure_ignores_unmeasured_token_counts():
+    pairs = [(
+        observation("b", 1, success=True, tokens=0, reported=False),
+        observation("c", 1, success=False, tokens=0, reported=False),
+    )]
+    assert efficiency_report(pairs)["cheaper_failures"] == []
