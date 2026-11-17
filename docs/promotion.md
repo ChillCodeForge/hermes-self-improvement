@@ -85,6 +85,9 @@ SEALED_HOLDOUT rows.
    missing number, and the manual gate only covers the type risk. When
    measured, summed candidate tokens above baseline × 1.10 fail (a measured
    zero baseline is not skipped) unless the significant-gain exception applies.
+   `HermesBatchRunner` measures tokens through its loopback metering proxy
+   (`evaluation.md`, "Token metering"); the Docker and local command runners
+   run no model and always report unmeasured.
 10. **Latency**: the 95% CI lower bound of the per-task excess over
     baseline × 1.15 must not be above 0, unless the significant-gain exception
     applies.

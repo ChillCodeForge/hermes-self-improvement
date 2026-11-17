@@ -20,6 +20,8 @@
 /src/hermes_improve/clustering.py           @ChillCodeForge/chillcode
 /src/hermes_improve/embeddings.py           @ChillCodeForge/chillcode
 /src/hermes_improve/docker_runner.py        @ChillCodeForge/chillcode
+/src/hermes_improve/hermes_runner.py        @ChillCodeForge/chillcode
+/src/hermes_improve/metering_proxy.py       @ChillCodeForge/chillcode
 /src/hermes_improve/statistics.py           @ChillCodeForge/chillcode
 /src/hermes_improve/cli.py                  @ChillCodeForge/chillcode
 /src/hermes_improve/migrations/             @ChillCodeForge/chillcode

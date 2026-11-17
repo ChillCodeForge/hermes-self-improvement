@@ -186,25 +186,61 @@ environment is not inherited. `data/<run>/trajectories.jsonl` is parsed:
 a missing row means the prompt failed (`exit_state=agent_error`, never success),
 a non-zero batch_runner exit is an infrastructure error. Tool-call and turn
 limits are enforced on the parsed trajectory. The trajectory, diff and run
-record are stored as artifacts. Known gaps: batch_runner has no sampling seed
-(the seed is passed only as `HERMES_EVAL_SEED`), and no token usage is
-available, so these runs report `token_usage_reported=False` and token
-metrics are shown as unavailable rather than zero. Blocker, verified in the
-Hermes v0.22.2 source: `AIAgent.run_conversation` returns `input_tokens`,
-`output_tokens` and related counters, but `batch_runner._process_single_prompt`
-copies only `completed`, `partial`, `api_calls`, tool stats and the converted
-trajectory into its result row, and it constructs `AIAgent` without a
-`session_db`, so `_ensure_db_session` never writes a SessionDB row (no
-`state.db` session with token columns exists for the run). The only per-task
-token source is `hermes -z PROMPT --usage-file PATH` (one-shot CLI), which
-writes no trajectory (no tool stats, turns or tool-call limits to enforce) and
-loads memory and `AGENTS.md` from the working directory, so it cannot replace
-batch_runner here. Consequence: with the default
-`require_token_measurement: true`, FULL/holdout evidence from this runner fails
-the policy with "token efficiency not measured" (see `promotion.md`). Live execution requires a
+record are stored as artifacts. Known gap: batch_runner has no sampling seed
+(the seed is passed only as `HERMES_EVAL_SEED`). Live execution requires a
 Hermes install (`--hermes-agent-dir`) and a reachable model endpoint; CI
 exercises the adapter with a fixture that mimics the real CLI flags and row
 schema.
+
+### Token metering (`metering_proxy.py`)
+
+Hermes itself reports no tokens on this path. Verified in the Hermes v0.22.2
+source: `AIAgent.run_conversation` returns `input_tokens`, `output_tokens` and
+related counters, but `batch_runner._process_single_prompt` copies only
+`completed`, `partial`, `api_calls`, tool stats and the converted trajectory
+into its result row, and it constructs `AIAgent` without a `session_db`, so no
+SessionDB row with token columns exists for the run. `hermes -z PROMPT
+--usage-file PATH` reports tokens but writes no trajectory, so it cannot
+replace batch_runner.
+
+Tokens are therefore measured between Hermes and the model endpoint. For every
+run `HermesBatchRunner` starts a `MeteringProxy` on `127.0.0.1` (random port)
+and passes its URL to batch_runner as `--base_url`; the proxy forwards each
+request unchanged (method, path below the configured base path, query,
+headers including `Authorization`, body) to the configured endpoint and relays
+the response unchanged, streaming SSE chunk by chunk. From every 2xx response
+to a generation path (`…/chat/completions`, `…/completions`, `…/responses`,
+`…/messages`) it reads the `usage` object: the top-level `usage` of JSON
+responses, the final chunk of OpenAI streams (Hermes sends
+`stream_options.include_usage`, `agent/chat_completion_helpers.py`), the
+`response.completed` event of the Responses API, and `message_start` plus
+`message_delta` of Anthropic streams. The run record artifact stores the
+per-call usage under `token_usage`; headers are never stored or logged.
+
+A run counts as measured (`token_usage_reported=True`) only when all of these
+hold, otherwise it reports `tokens=0` with `token_usage_reported=False`:
+
+- every 2xx generation response carried a valid usage (non-negative integer
+  input and output counts); one response without usage, for example from a
+  server that ignores `stream_options`, or a body cut off mid-stream makes the
+  whole run unmeasured instead of undercounting it;
+- no generation request was still open when the run ended (5 s grace);
+- the proxy saw at least as many successful generation calls as the
+  trajectory's `api_calls`; fewer means model traffic bypassed the proxy.
+
+Non-2xx responses (rate limits, provider errors, refused redirects) are
+relayed to Hermes and counted as failed calls; they carry no completion.
+`tokens = input + output`, `input_tokens`/`output_tokens` are sums over the
+run, and `context_tokens` is the largest single-call prompt. Limits: the proxy
+only sees traffic to the configured endpoint, so auxiliary models that Hermes
+would reach through a different provider configuration are not counted (each
+run uses a fresh `HERMES_HOME` without such configuration, and the
+`api_calls` check catches main-loop traffic that bypasses it). Provider
+detection inside Hermes sees a loopback URL instead of the real host, which is
+identical for baseline and candidate runs. `token_metering=False` on the
+runner restores the unmetered behaviour; with the default
+`require_token_measurement: true` such runs fail the policy with "token
+efficiency not measured" (see `promotion.md`).
 
 ## Judge (`judge.py`, `prompts/judge/`)
 

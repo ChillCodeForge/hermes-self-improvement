@@ -25,6 +25,30 @@ REAL_FLAGS = {
 }
 
 
+def call_model(flags, count, stream):
+    """POST ``count`` chat completions to ``--base_url`` like Hermes' OpenAI client.
+
+    Streaming requests set ``stream_options.include_usage`` exactly as Hermes
+    v0.22.2 does (``agent/chat_completion_helpers.py``); the body is read
+    to the end so the server sees a complete exchange.
+    """
+    import urllib.request
+
+    for index in range(count):
+        body = {"model": flags.get("model"), "messages": [{"role": "user", "content": f"turn {index}"}]}
+        if stream:
+            body.update(stream=True, stream_options={"include_usage": True})
+        headers = {"Content-Type": "application/json"}
+        if flags.get("api_key"):
+            headers["Authorization"] = "Bearer " + flags["api_key"]
+        request = urllib.request.Request(
+            flags["base_url"].rstrip("/") + "/chat/completions",
+            data=json.dumps(body).encode(), headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+
+
 def main():
     config = json.loads(Path(__file__).with_name("fake_config.json").read_text())
     flags = {}
@@ -56,6 +80,7 @@ def main():
     answer = found.group(1) if found else "unknown"
     workspace = Path(os.environ["TERMINAL_CWD"])
     (workspace / "answer.txt").write_text(answer + "\n")
+    call_model(flags, int(config.get("model_calls", 0)), bool(config.get("stream", False)))
     calls = 500 if mode == "tool_storm" else 1
     record = {
         "prompt_index": 0,

@@ -17,16 +17,21 @@ pinned image, networking disabled, no forwarded environment or volumes,
 non-persistent containers. Live execution needs a Hermes installation and a
 reachable model endpoint; neither is exercised in CI.
 
-Hermes provides no token usage on this path, so observations from this runner
-set ``token_usage_reported=False``; token-efficiency metrics are then reported
-as unavailable rather than as zero, and the promotion policy blocks with
-"token efficiency not measured" unless ``require_token_measurement`` is false.
-Verified in Hermes v0.22.2: ``run_conversation`` returns token counters, but
-``batch_runner`` keeps only completion flags, ``api_calls``, tool stats and the
-trajectory, and builds ``AIAgent`` without a ``session_db``, so no SessionDB
-session row (with its token columns) is written either. ``hermes -z
---usage-file`` reports tokens but produces no trajectory, so it cannot replace
-batch_runner for this runner (see ``docs/evaluation.md``).
+Hermes provides no token usage on this path. Verified in Hermes v0.22.2:
+``run_conversation`` returns token counters, but ``batch_runner`` keeps only
+completion flags, ``api_calls``, tool stats and the trajectory, and builds
+``AIAgent`` without a ``session_db``, so no SessionDB session row (with its
+token columns) is written either. Tokens are therefore measured outside
+Hermes: by default every run starts a ``MeteringProxy`` on 127.0.0.1, passes
+its URL to batch_runner as ``--base_url`` and reads the ``usage`` object of
+each model response (``metering_proxy.py``). A run reports
+``token_usage_reported=True`` only when every successful generation response
+carried usage, no request was cut off, and the proxy saw at least as many
+generation calls as the trajectory's ``api_calls`` (fewer would mean model
+traffic bypassed the proxy). Otherwise, or with ``token_metering=False``, the
+observation carries ``token_usage_reported=False`` and the promotion policy
+blocks with "token efficiency not measured" unless
+``require_token_measurement`` is false (see ``docs/evaluation.md``).
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from typing import Any, Callable, Mapping
 from .artifacts import ArtifactStore
 from .errors import IntegrityError
 from .ingestion import redact_text
+from .metering_proxy import MeteringProxy, UsageReport
 from .models import Benchmark, RunObservation, canonical_json
 from .sandbox import (
     SandboxExecutor,
@@ -216,7 +222,9 @@ class HermesBatchRunner:
         allow_local_terminal: bool = False,
         verifier_http_allowlist: frozenset[str] = frozenset(),
         registry: VerifierRegistry | None = None,
+        token_metering: bool = True,
     ) -> None:
+        self.token_metering = token_metering is True
         self.repository = Path(repository).resolve()
         self.artifacts = artifacts
         self.hermes_agent_dir = Path(hermes_agent_dir).resolve()
@@ -292,16 +300,31 @@ class HermesBatchRunner:
             dataset = root / "dataset.jsonl"
             dataset.write_text(json.dumps({"prompt": prompt}) + "\n", encoding="utf-8")
             run_name = "eval-" + hashlib.sha256(f"{benchmark.id}:{commit}:{seed}".encode()).hexdigest()[:16]
-            argv, env = self._command(dataset, run_name, workspace, hermes_home, root, image, seed)
-            started = time.monotonic()
-            exit_code, output, timed_out = self._invoke(argv, env, run_dir)
-            latency_ms = (time.monotonic() - started) * 1000
+            usage: UsageReport | None = None
+            with contextlib.ExitStack() as stack:
+                base_url = self.model.base_url
+                if self.token_metering:
+                    proxy = stack.enter_context(
+                        MeteringProxy(self.model.base_url, timeout=self.limits.timeout_seconds)
+                    )
+                    base_url = proxy.base_url
+                argv, env = self._command(dataset, run_name, workspace, hermes_home, root, image, seed, base_url)
+                started = time.monotonic()
+                exit_code, output, timed_out = self._invoke(argv, env, run_dir)
+                latency_ms = (time.monotonic() - started) * 1000
+                if self.token_metering:
+                    usage = proxy.report()
             if exit_code != 0 and not timed_out:
                 raise RuntimeError(f"Hermes batch_runner failed (exit {exit_code}): {redact_text(output[-2000:])}")
             trajectory = None if timed_out else load_single_trajectory(
                 run_dir / "data" / run_name / "trajectories.jsonl"
             )
             exit_state = self._exit_state(trajectory, timed_out)
+            tokens_measured = (
+                usage is not None
+                and usage.complete
+                and (trajectory is None or usage.generation_calls >= trajectory.api_calls)
+            )
             result_dir = root / "result"
             snapshot = root / "workspace.tar"
             with tarfile.open(snapshot, "w") as archive:
@@ -342,6 +365,10 @@ class HermesBatchRunner:
                 "model_config_digest": self.model.digest,
                 "limits": asdict(self.limits),
                 "seed_note": "batch_runner exposes no sampling seed; seed is passed as HERMES_EVAL_SEED only",
+                "token_usage": (
+                    {**usage.as_record(), "measured": tokens_measured} if usage is not None
+                    else {"measured": False, "reason": "token metering disabled"}
+                ),
             }, sort_keys=True).encode())
         success = verification.passed and exit_state == "completed"
         digests = tuple(item for item in (record_digest, trajectory_digest, diff_digest) if item)
@@ -352,7 +379,10 @@ class HermesBatchRunner:
             environment_digest=environment_digest,
             success=success,
             quality=verification.quality,
-            tokens=0,
+            tokens=(usage.input_tokens + usage.output_tokens) if usage is not None and tokens_measured else 0,
+            input_tokens=usage.input_tokens if usage is not None and tokens_measured else 0,
+            output_tokens=usage.output_tokens if usage is not None and tokens_measured else 0,
+            context_tokens=usage.max_context_tokens if usage is not None and tokens_measured else 0,
             latency_ms=latency_ms,
             deterministic_pass=verification.passed,
             security_pass=True,
@@ -362,7 +392,7 @@ class HermesBatchRunner:
             exit_code=context.exit_code,
             final_output=redacted_output,
             artifact_digests=digests,
-            token_usage_reported=False,
+            token_usage_reported=tokens_measured,
             context_chars=trajectory.context_chars if trajectory else 0,
             turns=trajectory.assistant_turns if trajectory else 0,
             api_calls=trajectory.api_calls if trajectory else 0,
@@ -400,7 +430,8 @@ class HermesBatchRunner:
         return path
 
     def _command(
-        self, dataset: Path, run_name: str, workspace: Path, hermes_home: Path, root: Path, image: str, seed: int
+        self, dataset: Path, run_name: str, workspace: Path, hermes_home: Path, root: Path, image: str, seed: int,
+        base_url: str,
     ) -> tuple[list[str], dict[str, str]]:
         argv = [
             self.python, str(self.batch_runner),
@@ -409,7 +440,7 @@ class HermesBatchRunner:
             f"--run_name={run_name}",
             f"--distribution={self.model.distribution}",
             f"--model={self.model.model}",
-            f"--base_url={self.model.base_url}",
+            f"--base_url={base_url}",
             f"--max_turns={self.limits.max_turns}",
             "--num_workers=1",
         ]

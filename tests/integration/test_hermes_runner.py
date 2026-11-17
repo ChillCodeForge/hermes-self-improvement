@@ -22,6 +22,7 @@ from hermes_improve.models import Benchmark, Candidate, CandidateType
 from hermes_improve.policy import PromotionPolicy
 from hermes_improve.sandbox import LocalSandboxExecutor, SandboxLimits, SandboxPolicyError
 from hermes_improve.security import AccessController
+from openai_stub import ScriptedModelStub, chat_completion_json, chat_completion_sse
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "hermes"
@@ -50,12 +51,12 @@ def brain_repo(tmp_path):
     return repo, baseline, git(repo, "rev-parse", "HEAD")
 
 
-def hermes_install(tmp_path, mode="normal"):
+def hermes_install(tmp_path, mode="normal", **fake):
     agent = tmp_path / "hermes-agent"
     agent.mkdir(parents=True)
     shutil.copy(FIXTURES / "batch_runner.py", agent / "batch_runner.py")
     log = tmp_path / "batch-calls.jsonl"
-    (agent / "fake_config.json").write_text(json.dumps({"log": str(log), "mode": mode}))
+    (agent / "fake_config.json").write_text(json.dumps({"log": str(log), "mode": mode, **fake}))
     return agent, log
 
 
@@ -84,15 +85,15 @@ def benchmark_record(identifier="hermes-task", checks=None, subjective=None, str
     return record
 
 
-def make_runner(tmp_path, mode="normal", **kwargs):
+def make_runner(tmp_path, mode="normal", fake=None, **kwargs):
     repo, baseline, candidate = brain_repo(tmp_path)
-    agent, log = hermes_install(tmp_path, mode)
+    agent, log = hermes_install(tmp_path, mode, **(fake or {}))
     fixtures = tmp_path / "fixtures"
     (fixtures / "repo").mkdir(parents=True)
     (fixtures / "repo" / "fixture.txt").write_text("input\n")
     runner = HermesBatchRunner(
         repo, ArtifactStore(tmp_path / "artifacts"),
-        hermes_agent_dir=agent, model=MODEL,
+        hermes_agent_dir=agent, model=kwargs.pop("model", MODEL),
         executor_factory=lambda benchmark: LocalSandboxExecutor(acknowledge_no_isolation=True),
         python_executable=sys.executable, fixtures_root=fixtures,
         terminal_env="local", allow_local_terminal=True,
@@ -148,6 +149,8 @@ def test_hermes_runner_invokes_batch_runner_with_isolated_brain_and_parses_resul
     assert not bad.success and not bad.deterministic_pass
     assert good.final_output == "The answer is 42."
     assert (good.tool_calls, good.failed_tool_calls, good.turns, good.api_calls, good.retries) == (1, 0, 2, 3, 1)
+    # The fake made no model calls although the trajectory reports 3: traffic that
+    # bypassed the metering proxy must never count as measured.
     assert good.token_usage_reported is False and good.tokens == 0
     assert good.filesystem_changes == ("A answer.txt",)
     assert good.environment_digest == bad.environment_digest
@@ -243,3 +246,80 @@ def test_paired_evaluation_through_hermes_runner_uses_run_policy(tmp_path):
             subject, baseline_commit=baseline, benchmark_ids=["hermes-task"], suite="CORE",
             benchmark_version=store.version, seeds=[1],
         )
+
+
+def flags_of(log, index=0):
+    call = json.loads(log.read_text().splitlines()[index])
+    return dict(arg[2:].split("=", 1) for arg in call["argv"])
+
+
+def test_metering_proxy_measures_tokens_of_every_model_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("HSI_TEST_MODEL_KEY", "sk-test-only")
+    replies = iter([chat_completion_json(100, 20), chat_completion_sse(140, 30), chat_completion_json(180, 10)])
+
+    def reply(method, path, body):
+        raw = next(replies)
+        return 200, "text/event-stream" if raw.startswith(b"data:") else "application/json", raw
+
+    with ScriptedModelStub(reply) as upstream:
+        model = HermesModelConfig(model="qwen3-coder", base_url=upstream.base_url, api_key_env="HSI_TEST_MODEL_KEY")
+        runner, _baseline, candidate, log = make_runner(tmp_path, fake={"model_calls": 3}, model=model)
+        observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+
+    assert observation.success and observation.api_calls == 3
+    assert observation.token_usage_reported is True
+    assert (observation.input_tokens, observation.output_tokens, observation.tokens) == (420, 60, 480)
+    assert observation.context_tokens == 180
+    flags = flags_of(log)
+    assert flags["base_url"].startswith("http://127.0.0.1:") and flags["base_url"] != upstream.base_url
+    assert [request[1] for request in upstream.requests] == ["/v1/chat/completions"] * 3
+    assert all(request[2]["Authorization"] == "Bearer sk-test-only" for request in upstream.requests)
+    record = json.loads(runner.artifacts.get(observation.artifact_digests[0]))
+    assert record["token_usage"]["measured"] is True and record["token_usage"]["generation_calls"] == 3
+    assert "sk-test-only" not in json.dumps(record)
+
+
+def test_metering_marks_run_unmeasured_when_a_response_lacks_usage(tmp_path):
+    replies = iter([chat_completion_json(100, 20), chat_completion_json(None, None), chat_completion_json(1, 1)])
+    with ScriptedModelStub(lambda method, path, body: (200, "application/json", next(replies))) as upstream:
+        model = HermesModelConfig(model="qwen3-coder", base_url=upstream.base_url)
+        runner, _baseline, candidate, _log = make_runner(tmp_path, fake={"model_calls": 3}, model=model)
+        observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    assert observation.token_usage_reported is False
+    assert (observation.tokens, observation.input_tokens, observation.output_tokens) == (0, 0, 0)
+
+
+def test_metering_detects_model_traffic_that_bypassed_the_proxy(tmp_path):
+    with ScriptedModelStub(lambda method, path, body: (200, "application/json", chat_completion_json(9, 9))) as upstream:
+        model = HermesModelConfig(model="qwen3-coder", base_url=upstream.base_url)
+        runner, _baseline, candidate, _log = make_runner(tmp_path, fake={"model_calls": 1}, model=model)
+        observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    assert observation.api_calls == 3 and len(upstream.requests) == 1
+    assert observation.token_usage_reported is False and observation.tokens == 0
+
+
+def test_token_metering_can_be_disabled_and_then_reports_unmeasured(tmp_path):
+    runner, _baseline, candidate, log = make_runner(tmp_path, token_metering=False)
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    assert flags_of(log)["base_url"] == MODEL.base_url
+    assert observation.token_usage_reported is False and observation.tokens == 0
+
+
+def test_measured_hermes_runs_reach_the_efficiency_report(tmp_path):
+    def reply(method, path, body):
+        return 200, "application/json", chat_completion_json(50, 10)
+
+    with ScriptedModelStub(reply) as upstream:
+        model = HermesModelConfig(model="qwen3-coder", base_url=upstream.base_url)
+        runner, baseline, candidate, _log = make_runner(tmp_path, fake={"model_calls": 3}, model=model)
+        store = store_with(tmp_path, [benchmark_record()])
+        subject = Candidate("cand-m", "exp-m", CandidateType.SKILL_PATCH, "brain/skills/answer",
+                            baseline, candidate, "diff")
+        report = PairedEvaluator(store, runner, PromotionPolicy()).evaluate(
+            subject, baseline_commit=baseline, benchmark_ids=["hermes-task"], suite="SMOKE",
+            benchmark_version=store.version,
+        )
+    efficiency = report.metrics["efficiency"]
+    assert efficiency["candidate"]["token_usage_reported"] is True
+    assert efficiency["candidate"]["tokens_per_success"] == 180
+    assert report.outcomes[0].token_usage_reported is True
