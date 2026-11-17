@@ -327,6 +327,7 @@ class LocalSandboxExecutor:
                 output += "\ncommand timed out"
             snapshot = None
             if snapshot_dir is not None and not timed_out:
+                Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
                 snapshot = Path(snapshot_dir) / "workspace.tar"
                 with tarfile.open(snapshot, "w") as archive:
                     archive.add(workspace, arcname=".")
@@ -543,9 +544,14 @@ def git_tree_digest(repository: Path, commit: str, max_bytes: int) -> str:
     return hashlib.sha256(output.stdout).hexdigest()
 
 
-def export_git_commit(repository: Path, commit: str, destination: Path) -> None:
+def export_git_commit(
+    repository: Path, commit: str, destination: Path, *, paths: Sequence[str] = (),
+) -> None:
+    """Extract ``commit`` (optionally only the tree below ``paths``) into ``destination``."""
+    pathspec = [validate_relative_path(path, label="export path", allow_root=False).as_posix() for path in paths]
     result = subprocess.run(
-        ["git", "-c", "core.hooksPath=/dev/null", "-C", str(repository), "archive", "--format=tar", commit],
+        ["git", "-c", "core.hooksPath=/dev/null", "-C", str(repository), "archive", "--format=tar", commit,
+         *(["--", *pathspec] if pathspec else [])],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         check=False, env=git_env(),
     )

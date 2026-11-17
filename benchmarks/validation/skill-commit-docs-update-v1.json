@@ -1,0 +1,164 @@
+{
+  "benchmark": {
+    "cluster_id": "skill-commit-docs-update",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git-commit-hygiene"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "96e5cbf41f35d403ddc010db99762269f1f9b809",
+      "environment_digest": "d44f529f2393ec5fe98561ffa08c627e5af4cdf5b5661f7b32016e5c3cc95a80",
+      "outcome_digest": "741497fc59cc6433819c259ee9c2ceb4628ca681d9ac1c902c88f672b1822aaa",
+      "passed": true,
+      "replayed_at": "2026-11-17T10:50:55.526942+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "harness/skill-executor.sh",
+      "git-commit-hygiene"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": ".",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "harness": "fixtures/skill-harness",
+    "harness_digest": "sha256:20d2059d89073474263dc3451655b6f379804791885c671220af6c4d025185ab",
+    "input_data": "sha256:b1b5e982eeecf69ba31826776c5af7a1af9fc370c8b5af63052b106a95335ab6",
+    "network_policy": "disabled",
+    "repository_fixture": "fixtures/skill-commit-docs-update",
+    "timeout_seconds": 60,
+    "type": "skill_procedure"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "skill-commit-docs-update",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "WP-G brain-consuming corpus; fixture, reference skill and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-17T10:50:55.526942+00:00"
+  },
+  "task": {
+    "prompt": "Documentation work on docs/guide.md and a fresh docs/faq.md is ready. Commit exactly those pages; build.log, vendored node_modules and a development certificate are leftovers.",
+    "title": "Commit the installation guide update without build output"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "easy",
+    "required_capabilities": [
+      "git-cli",
+      "commit-hygiene"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "one_new_commit"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "intended_paths_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_secret_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_generated_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "subject_follows_convention"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "body_explains_why"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "strays_preserved"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "ticket_reference"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "allowed_paths": [
+          "trace.log"
+        ],
+        "required_paths": [
+          "trace.log"
+        ],
+        "type": "git_diff"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

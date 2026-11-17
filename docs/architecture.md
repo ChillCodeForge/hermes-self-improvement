@@ -104,8 +104,14 @@ trusted.
   sealed holdout itself; finalists are evaluated by `evaluate` under the
   evaluator identity.
 - Live Qwen endpoint validation, production telemetry ingestion, installation
-  hardening, and a complete end-to-end Hermes skill improvement/deployment
-  workflow.
+  hardening, and an end-to-end improvement driven by a live Hermes agent. The
+  automated E2E test (`tests/e2e/test_full_improvement_loop.py`, spec §39)
+  runs the whole loop - worse candidate rejected after screening, better
+  candidate through SMOKE/CORE/FULL/sealed holdout, promotion, release tag,
+  deployment switch, post-promotion observation, rollback - with real
+  components on brain-consuming `skill_procedure` benchmarks, single-user,
+  in Docker, and as provisioned role users. The skill executor interprets a
+  declared procedure; it is not an LLM agent.
 
 These are explicit gaps, not completed features. See `security.md` and
 `operations.md` before attempting deployment.

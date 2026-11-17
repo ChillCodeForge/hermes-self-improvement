@@ -125,12 +125,22 @@ class BenchmarkStore:
 
     @property
     def version(self) -> str:
-        entries = [
-            {"id": benchmark.id, "version": benchmark.version, "digest": benchmark.digest}
-            for benchmark in self.validate()
-        ]
-        body = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
-        return f"sha256:{hashlib.sha256(body).hexdigest()}"
+        """Version of the *public* benchmark manifest (the experiment/evaluation binding).
+
+        Experiments are created by the generator, which can never read the
+        sealed holdout, so the shared identity covers public records only. The
+        whole set (including the holdout) is still validated for leakage; the
+        holdout's own identity is ``holdout_version`` and is signed into FULL
+        evaluation reports separately.
+        """
+        public = [benchmark for benchmark in self.validate() if benchmark.split is not Split.SEALED_HOLDOUT]
+        return _manifest_version(public)
+
+    @property
+    def holdout_version(self) -> str | None:
+        """Version of the sealed holdout records, or ``None`` without a holdout."""
+        holdout = [benchmark for benchmark in self.validate() if benchmark.split is Split.SEALED_HOLDOUT]
+        return _manifest_version(holdout) if holdout else None
 
     def list(self, role: Role = Role.OPERATOR, grant: HoldoutGrant | None = None) -> list[dict[str, str]]:
         visible = []
@@ -410,3 +420,12 @@ def lint_public_corpus(benchmarks: Iterable[Benchmark]) -> None:
 
 def validate_benchmarks(root: Path, *, holdout_root: Path | None = None) -> list[Benchmark]:
     return BenchmarkStore(root, holdout_root=holdout_root).validate()
+
+
+def _manifest_version(benchmarks: Iterable[Benchmark]) -> str:
+    entries = [
+        {"id": benchmark.id, "version": benchmark.version, "digest": benchmark.digest}
+        for benchmark in benchmarks
+    ]
+    body = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(body).hexdigest()}"

@@ -1,0 +1,5 @@
+type=feat
+scope=cli
+summary=print the version with --version
+why=Operators need the installed version in incident reports.
+ticket=OPS-42

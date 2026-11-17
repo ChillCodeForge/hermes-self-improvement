@@ -1,0 +1,4 @@
+type=docs
+scope=guide
+summary=document pipx installation and upgrades
+why=Users asked how to install and upgrade without pip conflicts.

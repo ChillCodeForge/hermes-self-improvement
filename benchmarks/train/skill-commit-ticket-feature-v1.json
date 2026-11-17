@@ -1,0 +1,165 @@
+{
+  "benchmark": {
+    "cluster_id": "skill-commit-ticket-feature",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git-commit-hygiene"
+    ],
+    "split": "TRAIN",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "96e5cbf41f35d403ddc010db99762269f1f9b809",
+      "environment_digest": "b7d064b44f27dedfb89a8342ccd80a288e6e7a879b370b10dfccc06777c33056",
+      "outcome_digest": "8efe2e4b56c47d3d03590366719472a29a36c694cd91543ed24b8ccc889a230c",
+      "passed": true,
+      "replayed_at": "2026-11-17T10:50:50.197167+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "harness/skill-executor.sh",
+      "git-commit-hygiene"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": ".",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "harness": "fixtures/skill-harness",
+    "harness_digest": "sha256:20d2059d89073474263dc3451655b6f379804791885c671220af6c4d025185ab",
+    "input_data": "sha256:78de109d369e3f969328bb58bcc71ebcaad36fca11c0c877e5be844a653cf4bb",
+    "network_policy": "disabled",
+    "repository_fixture": "fixtures/skill-commit-ticket-feature",
+    "timeout_seconds": 60,
+    "type": "skill_procedure"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "skill-commit-ticket-feature",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "WP-G brain-consuming corpus; fixture, reference skill and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-17T10:50:50.197167+00:00"
+  },
+  "task": {
+    "prompt": "Package the new orders route (api/routes.py plus api/schemas.py) as a single commit that follows CONTRIBUTING.md, which asks for the HSI tracker issue as a trailer.",
+    "title": "Commit the orders endpoint with its tracker reference"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "git-cli",
+      "commit-hygiene"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "one_new_commit"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "intended_paths_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_secret_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_generated_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "subject_follows_convention"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "body_explains_why"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "strays_preserved"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "ticket_reference"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "allowed_paths": [
+          "trace.log"
+        ],
+        "required_paths": [
+          "trace.log"
+        ],
+        "type": "git_diff"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

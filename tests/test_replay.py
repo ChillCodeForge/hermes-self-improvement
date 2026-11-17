@@ -129,7 +129,8 @@ def test_cli_replay_uses_runner_reports_and_persists(tmp_path, monkeypatch, caps
     outcomes = {"cmd-a": lambda seed: (0, True), "cmd-b": lambda seed: (seed, seed == 0)}
 
     class CliRunner:
-        def __init__(self, repository, artifacts):
+        def __init__(self, repository, artifacts, *, benchmark_root):
+            assert benchmark_root == tmp_path / "public"  # trusted root for skill_procedure fixtures
             self.repository = repository
 
         def run(self, commit, benchmark, seed):

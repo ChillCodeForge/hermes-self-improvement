@@ -1,0 +1,165 @@
+{
+  "benchmark": {
+    "cluster_id": "skill-commit-ticket-hotfix",
+    "criticality": "high",
+    "impact_areas": [
+      "skills/git-commit-hygiene"
+    ],
+    "split": "REGRESSION",
+    "suites": [
+      "SMOKE",
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "96e5cbf41f35d403ddc010db99762269f1f9b809",
+      "environment_digest": "b516daf69dccde570c45ab9dd78de4fe67e7409149d5ec1e9eb64a4fb7498cf4",
+      "outcome_digest": "abacc7961b4daac6ad9447a74ba0bce6a50b52378c778384b9f9cce8d029e90a",
+      "passed": true,
+      "replayed_at": "2026-11-17T10:51:14.579693+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "harness/skill-executor.sh",
+      "git-commit-hygiene"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": ".",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "harness": "fixtures/skill-harness",
+    "harness_digest": "sha256:20d2059d89073474263dc3451655b6f379804791885c671220af6c4d025185ab",
+    "input_data": "sha256:05404bd438623e87a03473474d18af229ffdf3f1833e5af6f7a882d48d545a51",
+    "network_policy": "disabled",
+    "repository_fixture": "fixtures/skill-commit-ticket-hotfix",
+    "timeout_seconds": 60,
+    "type": "skill_procedure"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "skill-commit-ticket-hotfix",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "WP-G brain-consuming corpus; fixture, reference skill and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-17T10:51:14.579693+00:00"
+  },
+  "task": {
+    "prompt": "A security patch to auth/token.py once shipped without its SEC reference. Commit the expiry comparison fix with the required Refs trailer and keep keys/dev.key plus tmp.log out of the commit.",
+    "title": "Regression: security hotfix commits must cite their SEC issue"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "git-cli",
+      "commit-hygiene"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "one_new_commit"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "intended_paths_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_secret_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_generated_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "subject_follows_convention"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "body_explains_why"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "strays_preserved"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "ticket_reference"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "allowed_paths": [
+          "trace.log"
+        ],
+        "required_paths": [
+          "trace.log"
+        ],
+        "type": "git_diff"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}
