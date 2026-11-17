@@ -92,4 +92,3 @@ Open items that are outside what this repository can prove on its own:
 - Archive/delete Curator mutations are refused because candidates cannot yet
   remove skills through the Curator adapter path.
 - Clustering is lexical (MinHash); paraphrased tasks can escape leakage checks.
-- CODEOWNERS only takes effect once branch protection is enabled by a repo admin.
