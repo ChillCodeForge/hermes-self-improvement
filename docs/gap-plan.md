@@ -67,7 +67,10 @@ pass. Every merge must keep the full suite green in the Linux test container.
 
 All work packages are merged into `main`; the suite has 655 passing tests
 (5 skipped: optional `gepa` extra and Docker-image tests) in the Linux test
-container, and every package passed GitHub Actions.
+container, and every package passed GitHub Actions. Since #19, CI runs the
+suite twice: on the plain runner (root tests skipped) and as root in the
+Linux test container via `scripts/docker-test.sh`, where a skipped
+`root_required` test fails the job.
 
 | Package | PR | Status |
 |---|---|---|
@@ -75,7 +78,7 @@ container, and every package passed GitHub Actions.
 | WP-0 Discovery | #9 | **done** |
 | WP-E Curator, monitoring, report, Laya | #10 | **done** |
 | WP-A Brain, config, candidate types, manual gate, promotion | #11 | **done** |
-| WP-F OS isolation, provisioning | #12 | **done** (root CI job pending, see below) |
+| WP-F OS isolation, provisioning | #12 | **done** (root CI job added in #19) |
 | WP-C Verifiers, run policy, judge, metrics, Hermes runner, sandbox | #13 | **done** |
 | WP-D Evolution loop, GEPA adapter, Dreaming → candidate | #14 | **done** |
 | WP-B Schema, eligibility, clustering, suites, holdout rotation, replay, corpus | #15 | **done** (closes #7) |
@@ -84,10 +87,6 @@ container, and every package passed GitHub Actions.
 
 Open items that are outside what this repository can prove on its own:
 
-- The GitHub Actions job that runs the suite as root in the test container
-  (so the `root_required` isolation tests run in CI) is written but not
-  pushed: the pushing token lacks the `workflow` scope. Until then, root tests
-  run only through `scripts/docker-test.sh`.
 - Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
   not exercised (see "Real external blockers").
 - Archive/delete Curator mutations are refused because candidates cannot yet
