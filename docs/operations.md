@@ -257,14 +257,42 @@ once policy passes, but never rolls back by itself.
   ground-truth types, reproducibility, splits) and spent holdout generations.
 - **Dreaming**: runs, sessions processed, clusters, hypotheses, and
   proposal-to-candidate conversion rate from the CLI's observability log.
-- **Qwen**: requests, tokens, average latency per request by role from REM/DEEP
-  runs. GPU runtime is `unavailable` (no source exists); judge uncertainty is
-  `no data` because judge results are not persisted yet.
+- **Qwen**: requests, tokens, average latency per request, and usage by role,
+  persisted by every Qwen-backed command (`dream --stage rem|deep`,
+  `candidate generate`, `evolve`, `evaluate --judge`), including failed runs.
+  `judge_uncertainty` aggregates the per-task judge uncertainty stored in the
+  experiment store's `task_results` (judged tasks, mean, max, and the number of
+  `unreliable` verdicts); `no data` until a judged evaluation exists.
+  `gpu_runtime` is described below.
 - **Production**: active brain version and status, releases by status,
   critical post-promotion observations, releases with rollback decisions,
   rollback count.
 
 Missing sources print `no data`.
+
+### GPU runtime
+
+There is no built-in GPU source. The operator can configure one through the
+environment of the process that runs the Qwen-backed command:
+
+```text
+HERMES_GPU_METRICS_URL=http://127.0.0.1:8080/metrics
+HERMES_GPU_RUNTIME_METRICS=llamacpp:prompt_seconds_total,llamacpp:tokens_predicted_seconds_total
+HERMES_GPU_METRICS_ALLOW_REMOTE=true   # only if the endpoint is not loopback
+```
+
+`HERMES_GPU_METRICS_URL` is the model server's Prometheus text endpoint
+(llama.cpp `--metrics`, vLLM `/metrics`); `HERMES_GPU_RUNTIME_METRICS` lists
+cumulative counters measured in seconds that the server actually exports (the
+llama.cpp names above are an example; for vLLM pick the matching `_sum` series
+of its request-time histograms). Both must be set together. The command scrapes
+the endpoint before and after its Qwen work and stores the difference of the
+summed counters per command. The value therefore includes any other traffic
+the server handled in that window. A failed scrape, a missing counter, or a
+counter that went backwards (server restart) is stored as an unmeasured sample
+with its reason and never changes the command's result. The report shows
+`gpu_runtime` as total seconds, measured/unmeasured commands, and seconds per
+command; with no samples it shows `unavailable` and `gpu_runtime_reason`.
 
 ## Limits
 

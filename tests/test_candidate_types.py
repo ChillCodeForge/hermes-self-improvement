@@ -254,6 +254,22 @@ def test_cli_creates_any_type_from_file_arguments(tmp_path, monkeypatch, capsys)
     assert result["target"] == "brain/workflows/release.yaml"
     assert Path(result["worktree"], "brain/workflows/release.yaml").is_file()
     assert git(repo, "rev-parse", "candidate/exp-wf") == result["commit"]
+    # Spec §36: the configured risk lookup is recorded and matches the experiment's stored risk.
+    from hermes_improve.config import RISK_LEVELS, config_from_environment
+    from hermes_improve.decisions import DecisionRecorder
+    from hermes_improve.store import ExperimentStore
+
+    database = tmp_path / "state" / "experiments.sqlite3"
+    [risk] = DecisionRecorder(database).iter_records(decision_type="risk")
+    assert risk.selected_option == ExperimentStore(database).show_experiment("exp-wf")["risk"]
+    assert risk.selected_option == config_from_environment().taxonomy.candidate_risk[CandidateType.WORKFLOW]
+    assert risk.available_options == RISK_LEVELS
+    assert risk.input_features == {
+        "candidate_type": "WORKFLOW", "target": "brain/workflows/release.yaml",
+        "changed_files": 1, "deleted_files": 0, "experiment_id": "exp-wf",
+    }
+    assert risk.source == "taxonomy-candidate-risk" and risk.confidence is None
+    assert risk.model_version.startswith("taxonomy-")
 
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "candidate", "create",

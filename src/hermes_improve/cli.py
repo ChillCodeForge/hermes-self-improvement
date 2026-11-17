@@ -58,6 +58,12 @@ from .suites import (
     ImpactScope, Suite, corpus_manifest, impact_scope_for_candidate, select_evaluation_suite, select_suite,
     suite_manifest,
 )
+# Observability and decision-history helpers (spec §35/§36).
+from contextlib import nullcontext
+from .eligibility import assess_benchmark, eligibility_decision_fields
+from .evaluator import needs_qwen_decision_fields
+from .observability import record_qwen_usage
+from .suites import suite_selection_decision_fields
 
 
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
@@ -709,6 +715,27 @@ def _curator_status(database: Path, hermes_home: Path) -> dict[str, object]:
     }
 
 
+def _record_risk_decision(database: Path, config, candidate_type: CandidateType, args, result) -> None:
+    """Decision history (spec §36) for the configured candidate-type risk lookup; recorded after use."""
+    from .config import RISK_LEVELS
+
+    DecisionRecorder(database).record(
+        decision_type="risk",
+        input_features={
+            "candidate_type": candidate_type.value,
+            "target": result.target,
+            "changed_files": len(args.file),
+            "deleted_files": len(args.delete),
+            "experiment_id": result.experiment_id,
+        },
+        available_options=RISK_LEVELS,
+        selected_option=config.taxonomy.candidate_risk[candidate_type],
+        confidence=None,
+        source="taxonomy-candidate-risk",
+        model_version=f"taxonomy-{config.digest[:16]}",
+    )
+
+
 def _conversion_payload(conversion) -> dict[str, object]:
     candidate = conversion.candidate
     return {
@@ -767,9 +794,9 @@ def main() -> int:
             if not isinstance(hypotheses, list) or not all(isinstance(row, dict) for row in hypotheses):
                 raise ValueError("--hypotheses must contain a JSON array of objects")
             model = OpenAICompatibleQwen(QwenConfig.from_env())
-            result = DreamingEngine(model).deep(hypotheses)
+            with record_qwen_usage(database.parent, model, command="dream-deep"):
+                result = DreamingEngine(model).deep(hypotheses)
             log = ObservabilityLog(database.parent / "observability.sqlite3")
-            log.record_qwen_stats(model.stats)
             log.record_dreaming_run(
                 stage="deep", sessions_processed=0, clusters={}, signals=0, hypotheses=len(result),
             )
@@ -791,10 +818,8 @@ def main() -> int:
             report = DreamingEngine(curator=curator).light(sessions)
         else:
             model = OpenAICompatibleQwen(QwenConfig.from_env())
-            try:
+            with record_qwen_usage(database.parent, model, command="dream-rem"):
                 report = DreamingEngine(model, curator=curator).rem(sessions)
-            finally:
-                log.record_qwen_stats(model.stats)
         for session_id in session_ids:
             queue.set_status(session_id, "processed")
         log.record_dreaming_run(
@@ -836,6 +861,14 @@ def main() -> int:
                 cluster_index=corpus_similarity_index(store.load_public(), semantic=semantic),
             )
             added = ExperimentStore(database).save_benchmark_candidate(candidate, args.session_id)
+            DecisionRecorder(database).record(**eligibility_decision_fields(
+                eligibility=candidate.eligibility,
+                reproducibility_score=candidate.reproducibility_score,
+                ground_truth_type=candidate.ground_truth_type,
+                reasons=candidate.reasons,
+                subject={"origin": "mined_session", "task_fingerprint": candidate.task_fingerprint},
+                source="benchmark-miner",
+            ))
             print(json.dumps(candidate.__dict__ | {
                 "eligibility": candidate.eligibility.value,
                 "status": "created" if added else "deduplicated",
@@ -904,6 +937,19 @@ def main() -> int:
             benchmark = parse_benchmark_document(document, source=args.file.name)
             path = store.admit_public(benchmark)
             leakage = store.last_leakage_report
+            assessed = assess_benchmark(benchmark)
+            DecisionRecorder(database).record(**eligibility_decision_fields(
+                eligibility=assessed.eligibility,
+                reproducibility_score=assessed.reproducibility_score,
+                ground_truth_type=assessed.ground_truth.value,
+                reasons=assessed.reasons,
+                subject={
+                    "origin": "admitted_benchmark", "benchmark_id": benchmark.id,
+                    "benchmark_version": benchmark.version,
+                    "declared_eligibility": str(benchmark.eligibility["class"]),
+                },
+                source="benchmark-admission",
+            ))
             print(json.dumps({
                 "status": "admitted",
                 "benchmark_id": benchmark.id,
@@ -962,15 +1008,17 @@ def main() -> int:
             proposals.append({
                 "candidate_type": candidate_type.value, "target": target, "hypothesis": hypothesis,
             })
-        outcomes = generate_candidates_from_proposals(
-            proposals,
-            model=OpenAICompatibleQwen(QwenConfig.from_env()),
-            repository=args.repository,
-            store=ExperimentStore(database),
-            benchmark_version=BenchmarkStore(benchmark_root).version,
-            source_sessions=tuple(args.source_session),
-            policy_version=config_from_environment().promotion.policy_version,
-        )
+        author_model = OpenAICompatibleQwen(QwenConfig.from_env())
+        with record_qwen_usage(database.parent, author_model, command="candidate-generate"):
+            outcomes = generate_candidates_from_proposals(
+                proposals,
+                model=author_model,
+                repository=args.repository,
+                store=ExperimentStore(database),
+                benchmark_version=BenchmarkStore(benchmark_root).version,
+                source_sessions=tuple(args.source_session),
+                policy_version=config_from_environment().promotion.policy_version,
+            )
         print(json.dumps({
             "candidates": [
                 outcome.to_dict() | {"proposal_index": indexes[outcome.proposal_index]}
@@ -1022,10 +1070,13 @@ def main() -> int:
         )
         if gateway.holdout_available:
             raise AccessDenied("evolve runs as the generator and must never see sealed holdout tasks")
-        report = EvolutionLoop(
+        loop = EvolutionLoop(
             repository=args.repository, store=store, gateway=gateway, strategy=strategy,
             expected_strategy_version=expected_version, config=config,
-        ).run(args.candidate_id)
+            decisions=DecisionRecorder(database),
+        )
+        with record_qwen_usage(database.parent, model, command="evolve"):
+            report = loop.run(args.candidate_id)
         print(json.dumps(report.to_dict() | {
             "next_steps": [
                 f"hermes-improve evaluate {item.candidate_id} (evaluator identity: FULL + sealed holdout)"
@@ -1070,6 +1121,7 @@ def main() -> int:
             raise ValueError("--file/--delete require --type and --hypothesis")
         config = config_from_environment()
         candidate_type = CandidateType(args.type)
+        risk = config.taxonomy.candidate_risk[candidate_type]
         result = create_candidate(
             args.repository,
             ExperimentStore(database),
@@ -1082,10 +1134,11 @@ def main() -> int:
             benchmark_version=BenchmarkStore(benchmark_root).version,
             source_sessions=tuple(args.source_session),
             policy_version=config.promotion.policy_version,
-            risk=config.taxonomy.candidate_risk[candidate_type],
+            risk=risk,
             worktree_root=args.worktree_root,
             parent_experiment_id=args.parent_experiment,
         )
+        _record_risk_decision(database, config, candidate_type, args, result)
         print(json.dumps(_candidate_summary(result, args.worktree_root), indent=2))
     elif args.command == "candidate" and args.candidate_command == "create":
         if args.proposal_file is not None:
@@ -1354,6 +1407,14 @@ def main() -> int:
             )
             if holdout else None
         )
+        decision_recorder = DecisionRecorder(database)
+        decision_recorder.record(**suite_selection_decision_fields(
+            suite=suite, candidate_type=candidate.candidate_type, requested_impact=impact,
+            applied_impact=applied_impact, selected=selected, holdout=holdout,
+            manifest_digest=selection_manifest["digest"],
+        ))
+        for item in (*selected, *holdout):
+            decision_recorder.record(**needs_qwen_decision_fields(item, suite=suite, judge_configured=args.judge))
         seeds = None
         if args.seeds is not None:
             try:
@@ -1366,6 +1427,7 @@ def main() -> int:
         artifact_store = ArtifactStore(database.parent / "artifacts")
         args.benchmark_root = public_root
         args.holdout_root = holdout_root
+        judge_model = OpenAICompatibleQwen(QwenConfig.from_env()) if args.judge else None
         evaluator = PairedEvaluator(
             access_store,
             build_runner(args, artifact_store),
@@ -1374,7 +1436,7 @@ def main() -> int:
             evaluator_signing_key=Path(private_key_path).read_bytes(),
             artifact_store=artifact_store,
             run_policy=RunPolicy.from_config(config.scoring),
-            judge=PairwiseJudge(OpenAICompatibleQwen(QwenConfig.from_env())) if args.judge else None,
+            judge=PairwiseJudge(judge_model) if judge_model is not None else None,
         )
         if holdout_ids:
             experiment = store.show_experiment(stored_candidate["experiment_id"])
@@ -1383,22 +1445,26 @@ def main() -> int:
                 [item for item in benchmarks if item.split is Split.SEALED_HOLDOUT],
                 experiment["lineage_id"],
             )
-        report = evaluator.evaluate(
-            candidate,
-            baseline_commit=stored_candidate["base_commit"],
-            benchmark_ids=suite_ids + holdout_ids,
-            seeds=seeds,
-            suite=suite,
-            benchmark_version=access_store.version,
-            holdout_grant=grant,
-            evaluation_id=f"eval-{suite.lower()}-{args.candidate_id}-{__import__('uuid').uuid4().hex}",
-            suite_selection={
-                "suite_manifest_digest": selection_manifest["digest"],
-                "holdout_manifest_digest": holdout_manifest["digest"] if holdout_manifest else None,
-                "impact": applied_impact.to_dict(),
-                "task_ids": suite_ids,
-            },
-        )
+        with (
+            record_qwen_usage(database.parent, judge_model, command="evaluate-judge")
+            if judge_model is not None else nullcontext()
+        ):
+            report = evaluator.evaluate(
+                candidate,
+                baseline_commit=stored_candidate["base_commit"],
+                benchmark_ids=suite_ids + holdout_ids,
+                seeds=seeds,
+                suite=suite,
+                benchmark_version=access_store.version,
+                holdout_grant=grant,
+                evaluation_id=f"eval-{suite.lower()}-{args.candidate_id}-{__import__('uuid').uuid4().hex}",
+                suite_selection={
+                    "suite_manifest_digest": selection_manifest["digest"],
+                    "holdout_manifest_digest": holdout_manifest["digest"] if holdout_manifest else None,
+                    "impact": applied_impact.to_dict(),
+                    "task_ids": suite_ids,
+                },
+            )
         print(json.dumps(report_payload(report), indent=2))
     elif args.command in {"promote", "rollback"}:
         layout = enforce_isolation("promoter")

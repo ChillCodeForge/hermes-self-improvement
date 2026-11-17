@@ -47,10 +47,34 @@ Recorded today:
   `model_version=monitoring-policy-1`).
 - `curator_signal` — every Curator signal shown by `curator status`
   (`no_action/propose_candidate`, confidence = signal impact score).
+- `benchmark_eligibility` — every `benchmarks mine` (`source=benchmark-miner`,
+  features: task fingerprint, reproducibility score, ground-truth type,
+  reasons) and every `benchmarks add` admission (`source=benchmark-admission`,
+  features additionally: benchmark ID/version and declared class). Options are
+  `EXCLUDED/DREAMING_ONLY/SOFT_BENCHMARK/HARD_BENCHMARK`; confidence is the
+  fixed confidence of the ranked ground-truth source, null for pre-screen
+  exclusions (`model_version=eligibility-rules-1`).
+- `risk` — every `candidate create --file/--delete`, the configured
+  `taxonomy.candidate_risk` lookup (`LOW/MEDIUM/HIGH/CRITICAL`; features:
+  candidate type, target, file counts, experiment ID;
+  `source=taxonomy-candidate-risk`, `model_version=taxonomy-<config digest>`).
+- `needs_qwen` — every selected task of an `evaluate` run: the route from
+  `evaluator.judge_route` (`deterministic_verification/qwen_judge/exit_code_only`;
+  features: split, suite, deterministic check count, subjective criteria count,
+  whether `--judge` was given, and task ID/version for public tasks only).
+- `suite_selection` — every `evaluate` run (`impact_narrowed/unnarrowed`;
+  features: suite, candidate type, requested and applied impact scope, whether
+  narrowing fell back, selected and holdout task counts, suite manifest digest).
+- `experiment_priority` — every finalist ranking in `evolve`: each improved
+  variant ordered by CORE score is `finalist` (top `max_finalists`) or
+  `deferred` (features: run, lineage, generation, candidate, SMOKE/CORE
+  scores, rank, pending count, `max_finalists`; `source=evolution-loop`).
 
-The other decision types (benchmark eligibility, risk, needs_qwen, suite
-selection, experiment priority) are accepted by the API, but their decision
-points live in modules owned by other work packages and are not yet wired.
+Every record is written after the deterministic rule has decided, from the
+same values the rule used; nothing reads the history back, so recording cannot
+change a decision. Rule-based decisions without a calibrated confidence record
+`confidence = null` rather than an invented number. A recording error (for
+example a database failure) fails the command instead of being swallowed.
 
 ## What future fine-tuning would need
 
@@ -62,8 +86,9 @@ points live in modules owned by other work packages and are not yet wired.
 2. **Volume and balance.** Hundreds of labeled examples per decision type,
    with rare classes (critical regressions) represented, before any training is
    meaningful.
-3. **Wired decision points** for the remaining types, recorded with the same
-   features the deterministic rule saw.
+3. **Richer features.** The recorded features are the ones the rules saw;
+   a learned model may need more context (for example task text embeddings),
+   which must not include sealed-holdout content.
 4. **Leakage control.** Features must never contain sealed-holdout task
    content or results; exports would need the same split discipline as
    benchmarks.

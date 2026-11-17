@@ -10,7 +10,7 @@ against an unchanged baseline, checked for regressions, and promoted through a
 controlled Git-backed process.
 
 > **Project status:** Version `0.1.0` implements the complete gated loop as
-> code with automated tests (655 passing, `scripts/docker-test.sh`):
+> code with an automated test suite (`scripts/docker-test.sh`):
 > redacted session ingestion (export, `batch_runner` trajectories, opt-in
 > Hermes hooks), benchmark mining with eligibility/reproducibility scoring,
 > a Pydantic/YAML benchmark schema, exact/near/MinHash clustering with
@@ -517,10 +517,20 @@ QWEN_MAX_CONCURRENCY
 ```
 
 Logical roles—`qwen_solver`, `qwen_optimizer`, `qwen_dreamer`, and
-`qwen_judge`—use role-specific prompts. The adapter exposes in-memory request,
-token, and latency counters; it does not persist them or capture GPU runtime.
-Blind A/B swaps and abstention are implemented as a helper but are not part of
-the deterministic promotion gate. No live endpoint has been validated.
+`qwen_judge`—use role-specific prompts. The model variables are the ones named
+in `config/models.yaml`. Every Qwen-backed command (`dream --stage rem|deep`,
+`candidate generate`, `evolve`, `evaluate --judge`) persists the adapter's
+per-role request, token, and latency counters to `observability.sqlite3`, also
+when the command fails. GPU runtime is measured only when the operator points
+`HERMES_GPU_METRICS_URL` at the model server's Prometheus endpoint and names
+its cumulative seconds counters in `HERMES_GPU_RUNTIME_METRICS`; otherwise the
+report says `unavailable` and why (see `docs/operations.md`).
+`evaluate --judge` wires the blind pairwise judge into evaluation: each
+subjective-only task is judged with A/B and swapped order, and a
+position-dependent answer is `unreliable`. A judge verdict can only add
+blocking reasons to the evaluation report, never make a candidate pass;
+deterministic verifiers always take precedence. No live endpoint has been
+validated.
 
 ## Experiment, artifact, and decision history
 

@@ -46,9 +46,10 @@ class QwenConfig:
         environ = os.environ if environ is None else environ
         endpoint = models.endpoint_env
         base_url = environ.get(endpoint["base_url"], "").rstrip("/")
-        model = environ.get("QWEN_MODEL", "")
+        model_env = shared_model_env(models)
+        model = environ.get(model_env, "")
         if not base_url or not model:
-            raise ValueError(f"{endpoint['base_url']} and QWEN_MODEL must be set for local model requests")
+            raise ValueError(f"{endpoint['base_url']} and {model_env} must be set for local model requests")
         timeout = float(environ.get(endpoint["timeout"], "60"))
         concurrency = int(environ.get(endpoint["max_concurrency"], "2"))
         if timeout <= 0 or concurrency < 1:
@@ -56,7 +57,9 @@ class QwenConfig:
         config = cls(
             base_url=base_url,
             model=model,
-            judge_model=environ.get("QWEN_JUDGE_MODEL"),
+            judge_model=(
+                environ.get(models.roles["qwen_judge"].model_env) if "qwen_judge" in models.roles else None
+            ),
             api_key=environ.get(endpoint["api_key"]),
             timeout=timeout,
             max_concurrency=concurrency,
@@ -101,6 +104,22 @@ class QwenConfig:
 
 
 QWEN_ROLES = frozenset({"qwen_solver", "qwen_optimizer", "qwen_dreamer", "qwen_judge"})
+
+
+def shared_model_env(models: "ModelsConfig") -> str:
+    """Environment variable naming the shared default model, taken from the role configuration.
+
+    It is the variable all roles fall back to when they name a single common
+    ``fallback_model_env``; otherwise the ``qwen_solver`` role's own
+    ``model_env``. The variable name is not hardcoded here.
+    """
+    fallbacks = {entry.fallback_model_env for entry in models.roles.values() if entry.fallback_model_env}
+    if len(fallbacks) == 1:
+        return next(iter(fallbacks))
+    solver = models.roles.get("qwen_solver")
+    if solver is None:
+        raise ValueError("model configuration must define the qwen_solver role")
+    return solver.model_env
 
 
 def resolve_role_models(models: "ModelsConfig", environ: Mapping[str, str]) -> dict[str, str]:

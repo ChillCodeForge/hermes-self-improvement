@@ -320,3 +320,47 @@ def select_evaluation_suite(
     if suite is Suite.FULL and not holdout:
         raise ValueError("promotion evaluation requires at least one FULL and one sealed holdout benchmark")
     return selected, holdout, applied
+
+
+SUITE_SELECTION_RULES_VERSION = "suite-selection-rules-1"
+
+
+def suite_selection_decision_fields(
+    *,
+    suite: Suite | str,
+    candidate_type: str,
+    requested_impact: ImpactScope,
+    applied_impact: ImpactScope,
+    selected: Sequence[Benchmark],
+    holdout: Sequence[Benchmark],
+    manifest_digest: str,
+) -> dict[str, Any]:
+    """Decision-history fields (spec §36) for one impact-aware suite selection.
+
+    Records whether the selection was narrowed to the candidate's impact scope
+    or ran on the un-narrowed suite (no scope, FULL, or the empty-narrowing
+    fallback). Pure and recorded after ``select_evaluation_suite`` returned, so
+    it cannot change the selection. Sealed holdout tasks are counted, never
+    named. The rules are deterministic and carry no calibrated confidence.
+    """
+    suite = Suite(str(suite).upper())
+    return {
+        "decision_type": "suite_selection",
+        "input_features": {
+            "suite": suite.value,
+            "candidate_type": str(getattr(candidate_type, "value", candidate_type)),
+            "requested_impact": requested_impact.to_dict(),
+            "applied_impact": applied_impact.to_dict(),
+            "narrowing_fell_back": not requested_impact.empty and applied_impact.empty,
+            "selected_tasks": len(selected),
+            "holdout_tasks": len(holdout),
+            "suite_manifest_digest": manifest_digest,
+        },
+        "available_options": ("impact_narrowed", "unnarrowed"),
+        "selected_option": (
+            "unnarrowed" if applied_impact.empty or suite is Suite.FULL else "impact_narrowed"
+        ),
+        "confidence": None,
+        "source": "suite-selection-rules",
+        "model_version": SUITE_SELECTION_RULES_VERSION,
+    }
