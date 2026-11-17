@@ -1,0 +1,5 @@
+type=feat
+scope=api
+summary=add the orders endpoint
+why=The storefront needs to list orders for a customer.
+ticket=HSI-101

@@ -43,7 +43,7 @@ work-level breakdown. Items are marked **done** only when code and tests exist.
 | §35 Observability | stats in pieces | `hermes-improve report` covering Hermes/Improvement/Benchmarks/Dreaming/Qwen/Production → **WP-E** |
 | §36 Laya | — | decision-history table + recording at eligibility/risk/severity/suite/priority decision points → **WP-E** |
 | §32–33 OS isolation | UID checks, docker sandbox | `scripts/provision.sh` (users, groups, modes, ACLs), network allowlist for sandbox, tests that run as root in a container and prove the boundaries → **WP-F** |
-| §38–39 Tests / E2E | many unit tests | full 16-step automated E2E (bad candidate rejected → better candidate promoted → rollback) → **WP-G** (after merge) |
+| §38–39 Tests / E2E | many unit tests | full 16-step automated E2E → **WP-G**: `tests/e2e/test_full_improvement_loop.py` on brain-consuming `skill_procedure` benchmarks |
 | §40 Docs | 7 docs | `dreaming.md`, `git-workflow.md`, `promotion.md`, `laya-future.md`; refresh all others to the implemented state → each WP + **WP-G** |
 | §4 Discovery | initial notes | verified versions/APIs of local Hermes, self-evolution, GEPA, DSPy, Qwen stack → **WP-0** |
 

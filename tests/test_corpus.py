@@ -9,6 +9,7 @@ from pathlib import Path
 from hermes_improve.benchmark_schema import DIFFICULTIES, TAXONOMY_CATEGORIES
 from hermes_improve.benchmarks import BenchmarkStore, lint_public_corpus
 from hermes_improve.clustering import cluster_texts
+from hermes_improve.docker_runner import is_skill_procedure_benchmark
 from hermes_improve.models import Eligibility, Split
 from hermes_improve.replay import fixture_tree_digest, is_command_benchmark
 from hermes_improve.suites import Suite, corpus_manifest, select_suite, verify_manifest
@@ -24,7 +25,7 @@ def corpus():
 def test_corpus_validates_and_passes_lint():
     rows = corpus()
     lint_public_corpus(rows)
-    assert 20 <= len(rows) <= 30
+    assert 20 <= len(rows) <= 40
 
 
 def test_corpus_contains_only_public_splits_and_no_holdout_tree():
@@ -43,6 +44,8 @@ def test_corpus_covers_taxonomy_and_difficulties():
 
 def test_every_record_is_a_replay_verified_hard_command_benchmark_bound_to_its_fixture():
     for item in corpus():
+        if is_skill_procedure_benchmark(item):
+            continue  # brain-consuming records: see test_skill_procedure_corpus.py
         assert is_command_benchmark(item), item.id
         assert Eligibility(item.eligibility["class"]) is Eligibility.HARD_BENCHMARK, item.id
         evidence = item.eligibility["replay_evidence"]

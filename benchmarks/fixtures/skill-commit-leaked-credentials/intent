@@ -1,0 +1,4 @@
+type=fix
+scope=db
+summary=reject non-positive connection timeouts
+why=A zero timeout made the pool hang forever.

@@ -21,7 +21,7 @@ from .candidate_builder import create_candidate, create_skill_candidate
 from .config import config_from_environment
 from .approvals import approve_promotion
 from .errors import AccessDenied
-from .docker_runner import DockerCommandRunner
+from .docker_runner import DockerCommandRunner, LocalSkillProcedureRunner
 from .hermes_plugin import HookSignalStore
 from .observability import ObservabilityLog, build_report, build_status, render_text
 from .shadow_replay import CommandReplayRunner, ShadowReplayer
@@ -50,6 +50,7 @@ from .role_handoff import export_candidate, import_bundle_ref, import_candidate,
 from .run_policy import RunPolicy
 from .sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits
 from .security import SpentHoldoutRegistry, consume_holdout_generation
+from .target_paths import assert_evaluable_candidate_paths
 from .store import ExperimentStore
 from .suites import (
     ImpactScope, Suite, corpus_manifest, impact_scope_for_candidate, select_evaluation_suite, select_suite,
@@ -319,10 +320,23 @@ def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
     if args.network is not None or args.network_allow:
         network = NetworkPolicy("allowlist", args.network, frozenset(args.network_allow))
     http_allowlist = frozenset(args.verifier_http_allow)
+    benchmark_root = getattr(args, "benchmark_root", None)
+    holdout_root = getattr(args, "holdout_root", None)
     if args.runner == "docker":
         return DockerCommandRunner(
             args.repository, artifact_store, default_timeout=args.timeout, network=network,
-            verifier_http_allowlist=http_allowlist,
+            verifier_http_allowlist=http_allowlist, benchmark_root=benchmark_root, holdout_root=holdout_root,
+        )
+    if args.runner == "local":
+        if not getattr(args, "acknowledge_no_container_isolation", False):
+            raise ValueError("--runner local requires --acknowledge-no-container-isolation")
+        if network.mode != "disabled" or http_allowlist:
+            raise ValueError("--runner local supports disabled networking only")
+        if benchmark_root is None:
+            raise ValueError("--runner local needs the evaluator benchmark root")
+        return LocalSkillProcedureRunner(
+            args.repository, artifact_store, benchmark_root=benchmark_root, holdout_root=holdout_root,
+            default_timeout=args.timeout, acknowledge_no_isolation=True,
         )
     model_name, model_base_url, model_api_key_env = args.model, args.model_base_url, args.model_api_key_env
     if not model_name or not model_base_url:
@@ -366,7 +380,7 @@ def _replay_benchmarks(args: argparse.Namespace, store: BenchmarkStore, database
     if not benchmarks:
         raise ValueError("no public command benchmarks to replay")
     artifact_store = ArtifactStore(database.parent / "artifacts")
-    runner = DockerCommandRunner(args.repository, artifact_store)
+    runner = DockerCommandRunner(args.repository, artifact_store, benchmark_root=store.root)
     experiment_store = ExperimentStore(database)
     results = []
     for benchmark in sorted(benchmarks, key=lambda item: (item.id, item.version)):
@@ -486,7 +500,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="FULL also evaluates the sealed holdout; SMOKE/CORE are staged, non-deciding runs",
     )
     evaluate.add_argument("--seeds", help="explicit comma-separated seeds; default derives them from the run policy")
-    evaluate.add_argument("--runner", choices=["docker", "hermes"], default="docker")
+    evaluate.add_argument(
+        "--runner", choices=["docker", "hermes", "local"], default="docker",
+        help="local: skill_procedure benchmarks only, in a process sandbox without container isolation",
+    )
+    evaluate.add_argument(
+        "--acknowledge-no-container-isolation", action="store_true",
+        help="required with --runner local (development hosts and tests without Docker)",
+    )
     evaluate.add_argument("--timeout", type=float, default=120, help="per-run sandbox timeout in seconds")
     evaluate.add_argument("--max-turns", type=int, default=30)
     evaluate.add_argument("--max-tool-calls", type=int, default=200)
@@ -950,7 +971,7 @@ def main() -> int:
         artifact_store = ArtifactStore(database.parent / "artifacts")
         gateway = EvaluationGateway(
             BenchmarkStore(benchmark_root),
-            DockerCommandRunner(args.repository, artifact_store),
+            DockerCommandRunner(args.repository, artifact_store, benchmark_root=benchmark_root),
             PromotionPolicy.from_config(hermes_config.promotion),
             generator_store=BenchmarkStore(benchmark_root),
             run_policy=RunPolicy.from_config(hermes_config.scoring),
@@ -1257,6 +1278,14 @@ def main() -> int:
         )
         if candidate.content_hash != stored_candidate["content_hash"]:
             raise ValueError("candidate metadata differs from its stored immutable content hash")
+        changed_paths = subprocess.run(
+            ["git", "-c", "core.hooksPath=/dev/null", "-C", str(args.repository), "diff", "--name-only", "-z",
+             stored_candidate["base_commit"], stored_candidate["commit_id"]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""),
+                 "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_OPTIONAL_LOCKS": "0"},
+        ).stdout.decode("utf-8").split("\0")
+        assert_evaluable_candidate_paths(candidate.candidate_type, candidate.target, changed_paths)
         access_store = BenchmarkStore(
             benchmark_root,
             holdout_root=holdout_root,
@@ -1290,6 +1319,8 @@ def main() -> int:
                 raise ValueError("--seeds must contain non-negative integers")
         grant = access_store.access.evaluator_holdout_grant(Role.EVALUATOR) if holdout_ids else None
         artifact_store = ArtifactStore(database.parent / "artifacts")
+        args.benchmark_root = public_root
+        args.holdout_root = holdout_root
         evaluator = PairedEvaluator(
             access_store,
             build_runner(args, artifact_store),

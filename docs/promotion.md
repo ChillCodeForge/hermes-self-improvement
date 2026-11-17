@@ -124,10 +124,14 @@ symlink and `main`.
 
 ## Current limitations
 
-- The `evaluate` CLI produces FULL plus holdout evidence only. With the default
-  `required_evidence_suites`, SMOKE and CORE evidence must currently come from
-  `PairedEvaluator.evaluate(suite="SMOKE"|"CORE")` until the evaluator CLI adds
-  suite selection; otherwise promotion is rejected with "required SMOKE
-  evidence is missing".
+- With the default `required_evidence_suites`, run `evaluate --suite SMOKE`,
+  `--suite CORE` and `--suite FULL` (which adds the sealed holdout) before
+  promoting; otherwise promotion is rejected with "required SMOKE evidence is
+  missing". `tests/e2e/test_full_improvement_loop.py` exercises this sequence
+  including promotion, rollback and the role-user variant.
+- The experiment benchmark version is the public manifest version
+  (`BenchmarkStore.version`), so candidates created by the generator, which
+  cannot read the sealed holdout, bind to the same version the evaluator
+  signs.
 - OS-level separation of operator, evaluator and promoter identities is not
   enforced here; it depends on deployment provisioning.

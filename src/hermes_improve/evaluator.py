@@ -216,6 +216,10 @@ class PairedEvaluator:
             "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
             "suite": suite.upper(),
             "suite_selection": dict(suite_selection) if suite_selection is not None else None,
+            "sealed_holdout_version": (
+                self.benchmarks.holdout_version
+                if any(benchmark.split is Split.SEALED_HOLDOUT for benchmark in benchmarks) else None
+            ),
             "run_policy": {
                 **self.run_policy.describe(),
                 "llm_influenced": llm_influenced,
@@ -249,7 +253,9 @@ class PairedEvaluator:
             signature = sign_report(report, self.evaluator_signing_key)
             self.experiment_store.record_evaluation(
                 evaluation_id, candidate.candidate_id, report, signature=signature,
-                decides_experiment=suite.upper() in {"FULL", "SEALED_HOLDOUT"},
+                decides_experiment=(
+                    suite.upper() in {"FULL", "SEALED_HOLDOUT"} or staged_regression(report.outcomes)
+                ),
             )
         return report
 
@@ -382,3 +388,21 @@ class PairedEvaluator:
             raise IntegrityError("runner deterministic status contradicts its verifier results")
         if observation.success and not observation.deterministic_pass and observation.verifier_results:
             raise IntegrityError("runner reported success despite failed deterministic verifiers")
+
+
+def staged_regression(outcomes: Iterable[TaskOutcome]) -> bool:
+    """True when staged (SMOKE/CORE) evidence already proves a regression.
+
+    A staged run never marks an experiment ``passed`` - only FULL with the
+    sealed holdout can. But when screening shows that the candidate fails a
+    task the baseline solves, fails a security verifier, or carries a critical
+    or high regression, the experiment is recorded as ``rejected`` right away,
+    so a non-finalist is rejected without ever consuming the sealed holdout.
+    """
+    return any(
+        (row.baseline_success and not row.candidate_success)
+        or not row.security_pass
+        or row.critical_regressions > 0
+        or row.high_regressions > 0
+        for row in outcomes
+    )

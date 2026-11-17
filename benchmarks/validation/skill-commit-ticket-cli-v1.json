@@ -1,0 +1,164 @@
+{
+  "benchmark": {
+    "cluster_id": "skill-commit-ticket-cli",
+    "criticality": "normal",
+    "impact_areas": [
+      "skills/git-commit-hygiene"
+    ],
+    "split": "VALIDATION",
+    "suites": [
+      "CORE",
+      "FULL"
+    ]
+  },
+  "eligibility": {
+    "class": "HARD_BENCHMARK",
+    "replay_evidence": {
+      "commit": "96e5cbf41f35d403ddc010db99762269f1f9b809",
+      "environment_digest": "254fa70f6c705954db5563823df96046b9093fd894efc63cbdde9953b844efbc",
+      "outcome_digest": "1e9f4885dc10dc73e229ce0ecebbf0521c23a1c5ca43dcffec194496b1805e8b",
+      "passed": true,
+      "replayed_at": "2026-11-17T10:51:01.190526+00:00",
+      "reproducible": true,
+      "runs": 3
+    },
+    "replay_verified": true,
+    "reproducibility_score": 1.0
+  },
+  "environment": {
+    "command": [
+      "sh",
+      "harness/skill-executor.sh",
+      "git-commit-hygiene"
+    ],
+    "container_image": "alpine/git:latest@sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "cwd": ".",
+    "dependency_digest": "sha256:2306e2b05ee0ef99f5d25b0779f645b24ae9f91ba187107503592fcdfe78da3a",
+    "harness": "fixtures/skill-harness",
+    "harness_digest": "sha256:20d2059d89073474263dc3451655b6f379804791885c671220af6c4d025185ab",
+    "input_data": "sha256:129de8fc4fb13f25f4875be731c0036bb3517c717cfbb325f2bc1d13ddb3c29d",
+    "network_policy": "disabled",
+    "repository_fixture": "fixtures/skill-commit-ticket-cli",
+    "timeout_seconds": 60,
+    "type": "skill_procedure"
+  },
+  "ground_truth": {
+    "confidence": 1.0,
+    "expected_exit_code": 0,
+    "type": "deterministic_tests"
+  },
+  "id": "skill-commit-ticket-cli",
+  "schema_version": 1,
+  "security": {
+    "contains_secrets": false,
+    "sanitized": true
+  },
+  "source": {
+    "provenance": "WP-G brain-consuming corpus; fixture, reference skill and deterministic check authored together",
+    "type": "manual",
+    "verified_at": "2026-11-17T10:51:01.190526+00:00"
+  },
+  "task": {
+    "prompt": "cli/main.py gained a --version flag. Create the commit as the repository guidelines describe, citing operations issue OPS-42, and leave the server log alone.",
+    "title": "Commit the version flag referencing the operations ticket"
+  },
+  "taxonomy": {
+    "categories": [
+      "git"
+    ],
+    "difficulty": "medium",
+    "required_capabilities": [
+      "git-cli",
+      "commit-hygiene"
+    ]
+  },
+  "verification": {
+    "deterministic": [
+      {
+        "type": "exit_code"
+      },
+      {
+        "expected": "pass",
+        "path": [
+          "status"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "one_new_commit"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "intended_paths_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_secret_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "no_generated_committed"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "subject_follows_convention"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "body_explains_why"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "strays_preserved"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "expected": true,
+        "path": [
+          "results",
+          "ticket_reference"
+        ],
+        "type": "json_path_equals"
+      },
+      {
+        "allowed_paths": [
+          "trace.log"
+        ],
+        "required_paths": [
+          "trace.log"
+        ],
+        "type": "git_diff"
+      }
+    ],
+    "subjective": []
+  },
+  "version": 1
+}

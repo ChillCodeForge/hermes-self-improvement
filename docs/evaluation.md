@@ -12,7 +12,8 @@ stricter than the policy (judge blocks), never more lenient.
 hermes-improve evaluate <candidate-id> --repository <brain-repo> --holdout-root <dir>
     [--suite SMOKE|CORE|FULL]          # default FULL; FULL also runs the sealed holdout
     [--seeds 1,2,3]                    # default: derived from the run policy
-    [--runner docker|hermes]           # default docker
+    [--runner docker|hermes|local]     # default docker; local: skill_procedure only
+    [--acknowledge-no-container-isolation]   # required with --runner local
     [--timeout S] [--max-turns N] [--max-tool-calls N]
     [--network NAME --network-allow HOST:PORT ...]
     [--verifier-http-allow HOST:PORT ...]
@@ -25,8 +26,25 @@ The command must run as `HERMES_EVALUATOR_UID` and signs with
 `HERMES_EVALUATOR_PRIVATE_KEY`. Every suite run is recorded as one signed
 evaluation. SMOKE and CORE runs are staged evidence:
 `ExperimentStore.record_evaluation(..., decides_experiment=False)` leaves the
-experiment decision untouched; FULL (including the sealed holdout, which is
-consumed per lineage) sets `passed`/`rejected`.
+experiment decision untouched, unless the staged run already proves a
+regression (`evaluator.staged_regression`: a task the baseline solves fails
+for the candidate, a security verifier fails, or a critical/high regression is
+reported); then the experiment is recorded `rejected` without ever consuming
+the sealed holdout. A staged run never marks an experiment `passed`. FULL
+(including the sealed holdout, which is consumed per lineage) sets
+`passed`/`rejected`.
+
+Before anything runs, `evaluate` (and `candidate import`) re-derive the
+candidate's changed paths from Git and refuse candidates that touch
+protected paths (`benchmarks/`, `config/`, `src/`, ...), anything outside
+`brain/`, or paths outside their declared target units
+(`target_paths.assert_evaluable_candidate_paths`). Otherwise a candidate could
+edit the fixtures or checks it is graded with.
+
+The report's `benchmark_version` is the public manifest version, which the
+generator also records when it creates the experiment. FULL reports
+additionally sign `metrics.sealed_holdout_version` and the holdout manifest
+digest (`suite_selection.holdout_manifest_digest`).
 
 Task selection uses `suites.select_evaluation_suite` (WP-B `select_suite`). Skill
 candidates get an impact scope from their target (`brain/skills/<name>` ->
@@ -136,7 +154,20 @@ acknowledged explicitly; it provides no kernel isolation.
 `DockerCommandRunner` (deterministic) exports the commit with `git archive`,
 runs `environment.command` in the sandbox, snapshots the workspace, runs the
 verifiers, and stores a run record and the unified diff in the
-content-addressed `ArtifactStore`.
+content-addressed `ArtifactStore`. For `environment.type: "skill_procedure"`
+records it exports only `brain/` of the commit and adds the harness and task
+fixture from the evaluator's benchmark roots (public, or holdout for
+SEALED_HOLDOUT tasks), verified against the record's `harness_digest` and
+`input_data`; the environment digest covers both (see `benchmarking.md`).
+
+`LocalSkillProcedureRunner` (`--runner local
+--acknowledge-no-container-isolation`) runs the same composition through
+`LocalSandboxExecutor` for hosts without Docker and for the default test path.
+It refuses every benchmark that is not `skill_procedure`, because those run
+commands from the evaluated commit; for `skill_procedure` tasks the executed
+program is the evaluator-owned harness and the candidate only supplies data.
+It has no kernel isolation beyond the evaluator's own Unix user (scrubbed
+environment, private copy, rlimits).
 
 `HermesBatchRunner` (LLM-influenced) runs Hermes' unmodified `batch_runner.py`
 (`--dataset_file --batch_size=1 --run_name --distribution --model --base_url

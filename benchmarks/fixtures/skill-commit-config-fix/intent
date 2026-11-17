@@ -1,0 +1,4 @@
+type=fix
+scope=config
+summary=skip empty values when loading settings
+why=Empty values in the settings file crashed startup.

@@ -24,6 +24,7 @@ from typing import Any
 from .errors import IntegrityError
 from .models import Candidate, CandidateType
 from .store import ExperimentStore
+from .target_paths import assert_evaluable_candidate_paths
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _GIT_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -231,6 +232,11 @@ def import_candidate(
     )
     if candidate.content_hash != meta["content_hash"]:
         raise IntegrityError("recomputed candidate content hash differs from the exported record")
+    changed = _git(Path(mirror), "diff", "--name-only", "-z", base, commit).decode("utf-8").split("\0")
+    try:
+        assert_evaluable_candidate_paths(candidate_type, meta["target"], changed)
+    except ValueError as exc:
+        raise IntegrityError(f"candidate cannot be evaluated: {exc}") from exc
     ledger.create_experiment_with_candidate(
         candidate,
         lineage_id=experiment["lineage_id"],

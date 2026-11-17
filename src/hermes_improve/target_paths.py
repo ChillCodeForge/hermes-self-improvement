@@ -192,3 +192,24 @@ def find_case_collisions(paths: Iterable[str]) -> list[tuple[str, str]]:
                 collisions.append((existing, prefix))
                 break
     return collisions
+
+
+def assert_evaluable_candidate_paths(
+    candidate_type: CandidateType, target: str, changed_paths: Iterable[str],
+) -> tuple[str, ...]:
+    """Evaluator-side guard: a candidate may change only its declared brain units.
+
+    Benchmarks read fixtures, harnesses and checks from the evaluated tree (or
+    from protected roots next to it); a candidate commit that also touched
+    ``benchmarks/``, ``config/``, evaluator code or any path outside its
+    declared target could otherwise change the yardstick it is measured with.
+    The promoter applies the same rules again before release.
+    """
+    paths = [path for path in changed_paths if path]
+    protected = sorted(path for path in paths if is_protected_repository_path(path))
+    if protected:
+        raise ValueError(f"candidate diff touches protected paths: {', '.join(protected[:20])}")
+    outside = sorted(path for path in paths if not path.startswith(f"{BRAIN_ROOT}/"))
+    if outside:
+        raise ValueError(f"candidate diff touches paths outside brain/: {', '.join(outside[:20])}")
+    return assert_changed_paths_match_target(candidate_type, target, paths)
