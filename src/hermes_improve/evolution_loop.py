@@ -37,6 +37,7 @@ from .decisions import DecisionRecorder
 from .errors import AccessDenied, IntegrityError
 from .evaluator import BenchmarkRunner, PairedEvaluator
 from .ingestion import redact_text
+from .holdout_gate import HoldoutSpendingRunner
 from .models import Candidate, CandidateType, Eligibility, EvaluationReport, Role, Split
 from .optimizer import (
     MAX_VARIANTS_PER_REQUEST,
@@ -289,21 +290,30 @@ class EvaluationGateway:
                 "the sealed holdout generation was already spent for this lineage; "
                 "rotate the holdout before evaluating further finalists"
             )
-        consume_holdout_generation(
-            self._registry, self._holdout_manifest, f"{lineage_id}/finalist/{candidate.candidate_id}",
+        # Spend the holdout generation right before the first holdout task runs
+        # (not at grant time): an infrastructure failure during the FULL tasks
+        # leaves it unspent, while any started holdout task spends it for good.
+        registry, manifest = self._registry, self._holdout_manifest
+        spend_key = f"{lineage_id}/finalist/{candidate.candidate_id}"
+        runner = self._final.runner
+        self._final.runner = HoldoutSpendingRunner(
+            runner, lambda: consume_holdout_generation(registry, manifest, spend_key),
         )
-        report = self._final.evaluate(
-            candidate,
-            baseline_commit=candidate.base_commit,
-            benchmark_ids=self._suite_ids["FULL"] + self._holdout_ids,
-            seeds=seeds,
-            suite="FULL",
-            benchmark_version=self._benchmark_version,
-            holdout_grant=self._grant,
-            evaluation_id=(
-                f"eval-{candidate.candidate_id}-{secrets.token_hex(8)}" if self._persist_final else None
-            ),
-        )
+        try:
+            report = self._final.evaluate(
+                candidate,
+                baseline_commit=candidate.base_commit,
+                benchmark_ids=self._suite_ids["FULL"] + self._holdout_ids,
+                seeds=seeds,
+                suite="FULL",
+                benchmark_version=self._benchmark_version,
+                holdout_grant=self._grant,
+                evaluation_id=(
+                    f"eval-{candidate.candidate_id}-{secrets.token_hex(8)}" if self._persist_final else None
+                ),
+            )
+        finally:
+            self._final.runner = runner
         return bool(report.passed)
 
     def _filter(self, candidate: Candidate, stage: str, report: EvaluationReport) -> StageFeedback:
