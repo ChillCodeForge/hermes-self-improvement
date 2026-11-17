@@ -162,9 +162,9 @@ def test_report_reads_public_benchmarks_only(tmp_path):
 
     root = Path(__file__).resolve().parents[1] / "benchmarks"
     report = build_report(tmp_path / "home", root)
-    # The curated public corpus (WP-B): 26 deterministic command tasks, no holdout.
-    assert report["benchmarks"]["count"] == 26
-    assert report["benchmarks"]["split_distribution"] == {"TRAIN": 10, "VALIDATION": 8, "REGRESSION": 8}
-    assert report["benchmarks"]["ground_truth_types"] == {"deterministic_tests": 26}
+    # The curated public corpus: 26 WP-B command tasks + 6 WP-G skill_procedure tasks, no holdout.
+    assert report["benchmarks"]["count"] == 32
+    assert report["benchmarks"]["split_distribution"] == {"TRAIN": 12, "VALIDATION": 10, "REGRESSION": 10}
+    assert report["benchmarks"]["ground_truth_types"] == {"deterministic_tests": 32}
     assert report["benchmarks"]["reproducibility"] == {"mean": 1.0, "min": 1.0, "max": 1.0}
     assert report["benchmarks"]["spent_holdouts"] == "no data"

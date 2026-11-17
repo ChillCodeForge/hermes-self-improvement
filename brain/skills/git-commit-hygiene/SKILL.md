@@ -36,6 +36,26 @@ Use this skill before every `git commit`.
 8. After committing, confirm with `git log --oneline -1` and
    `git status --short` that the tree is in the expected state.
 
+## Procedure
+
+Machine-readable form of the steps above. The evaluator's skill executor runs
+it against benchmark repositories (operations: `inspect`, `stage-all`,
+`stage-tracked`, `stage-untracked GLOB...`, `unstage GLOB...`, `review-staged`,
+`subject TEMPLATE`, `body TEMPLATE`, `trailer KEY TEMPLATE`, `commit`,
+`commit-no-verify`, `verify`; templates use the task's `{type}`, `{scope}`,
+`{summary}`, `{why}` and `{ticket}`).
+
+```hermes-procedure
+inspect
+stage-all
+unstage .env .env.* *.env *.pem *.key *__pycache__/* *.pyc *.log node_modules/*
+review-staged
+subject {type}({scope}): {summary}
+body {why}
+commit
+verify
+```
+
 ## Failure handling
 
 - A pre-commit hook fails: read the hook output, fix the cause, re-stage, and

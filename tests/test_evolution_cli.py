@@ -17,7 +17,7 @@ def _wire(monkeypatch, tmp_path, model):
     runners = []
     monkeypatch.setattr(
         cli, "DockerCommandRunner",
-        lambda repository, artifacts: runners.append(SkillMarkerRunner(repository)) or runners[-1],
+        lambda repository, artifacts, benchmark_root: runners.append(SkillMarkerRunner(repository)) or runners[-1],
     )
     return runners
 

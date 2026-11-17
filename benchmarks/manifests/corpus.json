@@ -1,35 +1,35 @@
 {
   "schema_version": 1,
-  "benchmark_version": "sha256:c401810318984735de0b47bfe0f9260a6988da215861be36b3d5c0b9fbbd656e",
-  "record_count": 26,
+  "benchmark_version": "sha256:9ae243a5fcda8f33d2f98ff86236035ac2273f2ed27b38161aba61dac090b5f1",
+  "record_count": 32,
   "counts": {
     "split": {
-      "REGRESSION": 8,
-      "TRAIN": 10,
-      "VALIDATION": 8
+      "REGRESSION": 10,
+      "TRAIN": 12,
+      "VALIDATION": 10
     },
     "category": {
       "coding": 3,
       "data-transform": 4,
       "devops": 3,
       "docs": 3,
-      "git": 4,
+      "git": 10,
       "mcp": 3,
       "research": 3,
       "shell": 3
     },
     "difficulty": {
-      "easy": 11,
+      "easy": 13,
       "hard": 2,
-      "medium": 13
+      "medium": 17
     },
     "suite": {
-      "CORE": 23,
-      "FULL": 26,
-      "SMOKE": 14
+      "CORE": 29,
+      "FULL": 32,
+      "SMOKE": 18
     },
     "eligibility": {
-      "HARD_BENCHMARK": 26
+      "HARD_BENCHMARK": 32
     }
   },
   "records": [
@@ -329,7 +329,77 @@
         "FULL",
         "SMOKE"
       ]
+    },
+    {
+      "id": "skill-commit-config-fix",
+      "version": 1,
+      "digest": "acf9351f6e61d1ae64ff084a3098675a11caca1da3a8977a90400fc1ebcf2d9b",
+      "split": "TRAIN",
+      "cluster_id": "skill-commit-config-fix",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "skill-commit-docs-update",
+      "version": 1,
+      "digest": "dc51cf625a632443b74ef649a4c91c8cf902d90156a4c86bdb7f80dae87a2087",
+      "split": "VALIDATION",
+      "cluster_id": "skill-commit-docs-update",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "skill-commit-leaked-credentials",
+      "version": 1,
+      "digest": "ce5cf6b2cc4b3930e3bfa0331c932be1d6e8635fd96be455c92e723c73cdf2a3",
+      "split": "REGRESSION",
+      "cluster_id": "skill-commit-leaked-credentials",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "skill-commit-ticket-cli",
+      "version": 1,
+      "digest": "66c5ba3f9c16cfe3b5493e25547d3af7e9616fd25ab91a741bc38c0643e9667e",
+      "split": "VALIDATION",
+      "cluster_id": "skill-commit-ticket-cli",
+      "suites": [
+        "CORE",
+        "FULL"
+      ]
+    },
+    {
+      "id": "skill-commit-ticket-feature",
+      "version": 1,
+      "digest": "05b2d96cb5c22746fe5d2a2aa82ae9df5860a548071b7a7e36fa6ccd8c24a769",
+      "split": "TRAIN",
+      "cluster_id": "skill-commit-ticket-feature",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
+    },
+    {
+      "id": "skill-commit-ticket-hotfix",
+      "version": 1,
+      "digest": "dc95651eb7fe4b21b831b95129210eb1ffbe9df64ea1165cd86e62b3e56ea6be",
+      "split": "REGRESSION",
+      "cluster_id": "skill-commit-ticket-hotfix",
+      "suites": [
+        "CORE",
+        "FULL",
+        "SMOKE"
+      ]
     }
   ],
-  "digest": "sha256:5128e02db7ab6cdb45ebf6776cc8fd70e2378b59e7f553281dfe309981596347"
+  "digest": "sha256:a60807d19472cf6a0865cf5c91cb21c97a055a030a7f7a921ecd909abba891ff"
 }

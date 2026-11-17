@@ -1,0 +1,5 @@
+type=fix
+scope=auth
+summary=treat tokens as expired at the exact expiry time
+why=Tokens stayed valid for one extra second after expiry.
+ticket=SEC-7
