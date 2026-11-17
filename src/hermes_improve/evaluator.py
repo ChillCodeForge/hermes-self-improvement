@@ -320,6 +320,7 @@ class PairedEvaluator:
             judge_result=verdict.result if verdict is not None else "",
             judge_confidence=verdict.confidence if verdict is not None else None,
             judge_uncertainty=verdict.uncertainty if verdict is not None else None,
+            token_usage_reported=all(run.token_usage_reported for run in (*baseline_runs, *candidate_runs)),
         )
 
     @staticmethod

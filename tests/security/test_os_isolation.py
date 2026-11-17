@@ -203,7 +203,7 @@ from hermes_improve.store import ExperimentStore
 store = ExperimentStore(os.path.join(os.environ["HERMES_IMPROVE_HOME"], "experiments.sqlite3"))
 candidate = store.get_candidate(sys.argv[1])
 outcomes = tuple(
-    TaskOutcome(f"task-{suite}", split, suite, True, True, 5, 10, 100, 100, categories=("skills",),
+    TaskOutcome(f"task-{suite}", split, suite, True, True, 5, 10, 100, 100, categories=("skills",), token_usage_reported=True,
                 baseline_latency_ms=100, candidate_latency_ms=100, baseline_tool_calls=5, candidate_tool_calls=5)
     for suite, split in (
         ("SMOKE", Split.REGRESSION), ("CORE", Split.REGRESSION),

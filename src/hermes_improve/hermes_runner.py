@@ -17,9 +17,16 @@ pinned image, networking disabled, no forwarded environment or volumes,
 non-persistent containers. Live execution needs a Hermes installation and a
 reachable model endpoint; neither is exercised in CI.
 
-Hermes trajectories do not contain token usage, so observations from this
-runner set ``token_usage_reported=False``; token-efficiency metrics are then
-reported as unavailable rather than as zero.
+Hermes provides no token usage on this path, so observations from this runner
+set ``token_usage_reported=False``; token-efficiency metrics are then reported
+as unavailable rather than as zero, and the promotion policy blocks with
+"token efficiency not measured" unless ``require_token_measurement`` is false.
+Verified in Hermes v0.22.2: ``run_conversation`` returns token counters, but
+``batch_runner`` keeps only completion flags, ``api_calls``, tool stats and the
+trajectory, and builds ``AIAgent`` without a ``session_db``, so no SessionDB
+session row (with its token columns) is written either. ``hermes -z
+--usage-file`` reports tokens but produces no trajectory, so it cannot replace
+batch_runner for this runner (see ``docs/evaluation.md``).
 """
 
 from __future__ import annotations

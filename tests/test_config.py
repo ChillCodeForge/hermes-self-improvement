@@ -83,6 +83,50 @@ def test_thresholds_flow_into_policy(tmp_path):
     assert policy.min_quality_delta == 7.5
 
 
+def test_generalization_token_and_exception_settings_flow_into_policy(tmp_path):
+    root = _copy(tmp_path)
+    _replace(root / "promotion.yaml", "min_holdout_quality_delta: 0.0", "min_holdout_quality_delta: 1.5")
+    _replace(root / "promotion.yaml", "require_token_measurement: true", "require_token_measurement: false")
+    _replace(root / "promotion.yaml", "token_exception_min_quality_ci_lower: 3.0",
+             "token_exception_min_quality_ci_lower: null")
+    _replace(root / "promotion.yaml", "latency_exception_min_quality_ci_lower: 3.0",
+             "latency_exception_min_quality_ci_lower: 8")
+    policy = PromotionPolicy.from_config(load_config(root).promotion)
+    assert policy.min_holdout_quality_delta == 1.5
+    assert policy.require_token_measurement is False
+    assert policy.token_exception_min_quality_ci_lower is None
+    assert policy.latency_exception_min_quality_ci_lower == 8.0
+
+
+def test_omitted_optional_policy_keys_fall_back_to_strict_defaults(tmp_path):
+    root = _copy(tmp_path)
+    for line in (
+        "  min_holdout_quality_delta: 0.0\n", "  token_exception_min_quality_ci_lower: 3.0\n",
+        "  latency_exception_min_quality_ci_lower: 3.0\n", "require_token_measurement: true\n",
+    ):
+        _replace(root / "promotion.yaml", line, "")
+    policy = PromotionPolicy.from_config(load_config(root).promotion)
+    assert policy == PromotionPolicy()
+    assert policy.require_token_measurement is True
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("require_token_measurement: true", "require_token_measurement: 0", "true or false"),
+        ("require_token_measurement: true", "require_token_measurement: \"no\"", "true or false"),
+        ("min_holdout_quality_delta: 0.0", "min_holdout_quality_delta: .inf", "finite"),
+        ("min_holdout_quality_delta: 0.0", "min_holdout_quality_delta: null", "finite"),
+        ("token_exception_min_quality_ci_lower: 3.0", "token_exception_min_quality_ci_lower: yes", "finite"),
+    ],
+)
+def test_invalid_generalization_and_token_settings_are_rejected(tmp_path, old, new, message):
+    root = _copy(tmp_path)
+    _replace(root / "promotion.yaml", old, new)
+    with pytest.raises(ConfigError, match=message):
+        load_config(root)
+
+
 @pytest.mark.parametrize(
     ("filename", "old", "new", "message"),
     [

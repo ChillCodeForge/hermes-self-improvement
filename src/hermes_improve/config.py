@@ -79,6 +79,10 @@ class PromotionConfig:
     max_category_drop: float = 2.0
     max_token_increase_ratio: float = 0.10
     max_latency_increase_ratio: float = 0.15
+    min_holdout_quality_delta: float = 0.0
+    require_token_measurement: bool = True
+    token_exception_min_quality_ci_lower: float | None = 3.0
+    latency_exception_min_quality_ci_lower: float | None = 3.0
     promotion_gates: Mapping[CandidateType, str] = DEFAULT_PROMOTION_GATES
     required_evidence_suites: tuple[str, ...] = EVIDENCE_SUITES
 
@@ -320,6 +324,17 @@ def _non_negative_number(value: Any, name: str) -> float:
     return float(value)
 
 
+def _finite_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ConfigError(f"{name} must be a finite number")
+    return float(value)
+
+
+def _optional_finite_number(value: Any, name: str) -> float | None:
+    """A finite number, or ``null`` to disable the rule it configures."""
+    return None if value is None else _finite_number(value, name)
+
+
 def _candidate_type_mapping(section: Any, name: str, allowed: tuple[str, ...]) -> Mapping[CandidateType, str]:
     if not isinstance(section, dict):
         raise ConfigError(f"{name} must be a mapping of every candidate type")
@@ -344,17 +359,26 @@ def _parse_promotion(document: Mapping[str, Any]) -> PromotionConfig:
     _exact_keys(document, "promotion.yaml", {
         "schema_version", "policy_version", "thresholds", "promotion_gates",
         "required_evidence_suites",
-    })
+    }, {"require_token_measurement"})
     _schema(document, "promotion.yaml")
     version = document["policy_version"]
     if not isinstance(version, str) or not _SAFE_VERSION.fullmatch(version):
         raise ConfigError("promotion.yaml policy_version must be a safe string identifier")
     thresholds = document["thresholds"]
+    # The generalization and exception keys are optional; when absent the
+    # strict built-in defaults apply (they never relax the policy).
     _exact_keys(thresholds, "promotion.yaml thresholds", {
         "max_critical_regressions", "max_high_regressions", "max_medium_regression_rate",
         "min_quality_delta", "max_category_drop", "max_token_increase_ratio",
         "max_latency_increase_ratio",
+    }, {
+        "min_holdout_quality_delta", "token_exception_min_quality_ci_lower",
+        "latency_exception_min_quality_ci_lower",
     })
+    defaults = PromotionConfig()
+    require_tokens = document.get("require_token_measurement", defaults.require_token_measurement)
+    if not isinstance(require_tokens, bool):
+        raise ConfigError("promotion.yaml require_token_measurement must be true or false")
     suites = document["required_evidence_suites"]
     if (
         not isinstance(suites, list) or not suites
@@ -381,6 +405,17 @@ def _parse_promotion(document: Mapping[str, Any]) -> PromotionConfig:
             thresholds["max_token_increase_ratio"], "max_token_increase_ratio", upper=10.0),
         max_latency_increase_ratio=_ratio(
             thresholds["max_latency_increase_ratio"], "max_latency_increase_ratio", upper=10.0),
+        min_holdout_quality_delta=_finite_number(
+            thresholds.get("min_holdout_quality_delta", defaults.min_holdout_quality_delta),
+            "min_holdout_quality_delta"),
+        require_token_measurement=require_tokens,
+        token_exception_min_quality_ci_lower=_optional_finite_number(
+            thresholds.get("token_exception_min_quality_ci_lower", defaults.token_exception_min_quality_ci_lower),
+            "token_exception_min_quality_ci_lower"),
+        latency_exception_min_quality_ci_lower=_optional_finite_number(
+            thresholds.get(
+                "latency_exception_min_quality_ci_lower", defaults.latency_exception_min_quality_ci_lower),
+            "latency_exception_min_quality_ci_lower"),
         promotion_gates=_candidate_type_mapping(
             document["promotion_gates"], "promotion.yaml promotion_gates", PROMOTION_GATES),
         required_evidence_suites=tuple(item for item in EVIDENCE_SUITES if item in suites),
@@ -539,7 +574,11 @@ def _default_documents() -> dict[str, Any]:
                 "max_category_drop": promotion.max_category_drop,
                 "max_token_increase_ratio": promotion.max_token_increase_ratio,
                 "max_latency_increase_ratio": promotion.max_latency_increase_ratio,
+                "min_holdout_quality_delta": promotion.min_holdout_quality_delta,
+                "token_exception_min_quality_ci_lower": promotion.token_exception_min_quality_ci_lower,
+                "latency_exception_min_quality_ci_lower": promotion.latency_exception_min_quality_ci_lower,
             },
+            "require_token_measurement": promotion.require_token_measurement,
             "promotion_gates": {kind.value: gate for kind, gate in promotion.promotion_gates.items()},
             "required_evidence_suites": list(promotion.required_evidence_suites),
         },

@@ -18,7 +18,7 @@ from test_promotion import _add_candidate, _outcomes, _promoter, _record_run, _r
 def _final(**overrides):
     base = dict(
         task_id="full-1", split=Split.REGRESSION, suite="FULL", baseline_success=True, candidate_success=True,
-        baseline_quality=5, candidate_quality=10, baseline_tokens=100, candidate_tokens=100,
+        baseline_quality=5, candidate_quality=10, baseline_tokens=100, candidate_tokens=100, token_usage_reported=True,
         categories=("skills",), baseline_latency_ms=100, candidate_latency_ms=100,
     )
     holdout = dict(base, task_id="holdout-1", split=Split.SEALED_HOLDOUT, suite="SEALED_HOLDOUT")
