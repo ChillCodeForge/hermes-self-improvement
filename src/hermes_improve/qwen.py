@@ -9,10 +9,15 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Mapping
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from .config import ModelsConfig
 
 
 _MAX_REQUEST_BYTES = 1024 * 1024
@@ -28,28 +33,48 @@ class QwenConfig:
     timeout: float = 60
     max_concurrency: int = 2
     log_dir: str | None = None
+    # Per logical role model, resolved from config/models.yaml role entries
+    # (environment-variable names only; no model name is ever hardcoded).
+    role_models: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
     @classmethod
-    def from_env(cls) -> "QwenConfig":
-        base_url = os.environ.get("QWEN_BASE_URL", "").rstrip("/")
-        model = os.environ.get("QWEN_MODEL", "")
+    def from_env(cls, models: "ModelsConfig | None" = None, environ: Mapping[str, str] | None = None) -> "QwenConfig":
+        if models is None:
+            from .config import config_from_environment
+
+            models = config_from_environment().models
+        environ = os.environ if environ is None else environ
+        endpoint = models.endpoint_env
+        base_url = environ.get(endpoint["base_url"], "").rstrip("/")
+        model = environ.get("QWEN_MODEL", "")
         if not base_url or not model:
-            raise ValueError("QWEN_BASE_URL and QWEN_MODEL must be set for local model requests")
-        timeout = float(os.environ.get("QWEN_TIMEOUT", "60"))
-        concurrency = int(os.environ.get("QWEN_MAX_CONCURRENCY", "2"))
+            raise ValueError(f"{endpoint['base_url']} and QWEN_MODEL must be set for local model requests")
+        timeout = float(environ.get(endpoint["timeout"], "60"))
+        concurrency = int(environ.get(endpoint["max_concurrency"], "2"))
         if timeout <= 0 or concurrency < 1:
-            raise ValueError("QWEN_TIMEOUT and QWEN_MAX_CONCURRENCY must be positive")
+            raise ValueError(f"{endpoint['timeout']} and {endpoint['max_concurrency']} must be positive")
         config = cls(
             base_url=base_url,
             model=model,
-            judge_model=os.environ.get("QWEN_JUDGE_MODEL"),
-            api_key=os.environ.get("QWEN_API_KEY"),
+            judge_model=environ.get("QWEN_JUDGE_MODEL"),
+            api_key=environ.get(endpoint["api_key"]),
             timeout=timeout,
             max_concurrency=concurrency,
-            log_dir=os.environ.get("QWEN_LOG_DIR") or None,
+            log_dir=environ.get("QWEN_LOG_DIR") or None,
+            role_models=MappingProxyType(resolve_role_models(models, environ)),
         )
         config.validate_endpoint()
         return config
+
+    def model_for(self, role: str) -> str:
+        """Model name used for ``role``: its configured model, else the shared default."""
+        if role not in QWEN_ROLES:
+            raise ValueError(f"unknown Qwen logical role: {role}")
+        if role in self.role_models:
+            return self.role_models[role]
+        if role == "qwen_judge" and self.judge_model:
+            return self.judge_model
+        return self.model
 
     def validate_endpoint(self) -> None:
         parsed = urlparse(self.base_url)
@@ -70,16 +95,36 @@ class QwenConfig:
             or (self.judge_model is not None and not self.judge_model.strip())
         ):
             raise ValueError("model, positive timeout, and positive concurrency are required")
+        for role, model in self.role_models.items():
+            if role not in QWEN_ROLES or not isinstance(model, str) or not model.strip():
+                raise ValueError(f"role model for {role!r} must be a non-empty model name of a known role")
 
 
 QWEN_ROLES = frozenset({"qwen_solver", "qwen_optimizer", "qwen_dreamer", "qwen_judge"})
 
 
+def resolve_role_models(models: "ModelsConfig", environ: Mapping[str, str]) -> dict[str, str]:
+    """Resolve each logical role's model from its configured environment variables.
+
+    A role whose ``model_env`` is unset uses ``fallback_model_env`` (default
+    ``QWEN_MODEL``); a role with neither set is omitted and uses the shared model.
+    """
+    resolved = {}
+    for role, entry in models.roles.items():
+        if role not in QWEN_ROLES:
+            raise ValueError(f"unknown Qwen logical role in model configuration: {role}")
+        value = environ.get(entry.model_env) or environ.get(entry.fallback_model_env or "QWEN_MODEL")
+        if value is not None and value.strip():
+            resolved[role] = value
+    return resolved
+
+
 class OpenAICompatibleQwen:
     """Small synchronous adapter for local OpenAI-compatible chat endpoints.
 
-    Logical roles share the endpoint but keep separate models (``qwen_judge``
-    may use ``judge_model``), statistics and, when ``log_dir`` is set, separate
+    Logical roles share the endpoint but keep separate models (``role_models``
+    from config/models.yaml; ``qwen_judge`` falls back to ``judge_model``),
+    statistics and, when ``log_dir`` is set, separate
     JSONL logs (``<log_dir>/<role>.jsonl``). Logs record digests, token usage,
     latency and status, never prompt or response text.
     """
@@ -110,7 +155,7 @@ class OpenAICompatibleQwen:
             raise ValueError(f"unknown Qwen logical role: {role}")
         if not isinstance(system_prompt, str) or not isinstance(user_payload, str):
             raise TypeError("Qwen prompts and payloads must be strings")
-        model = self.config.judge_model if role == "qwen_judge" and self.config.judge_model else self.config.model
+        model = self.config.model_for(role)
         body = json.dumps({
             "model": model,
             "messages": [

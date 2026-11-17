@@ -91,7 +91,9 @@ diff. The agent's `candidate sync-baseline` fetches production `main` through
   violation. Entries the checking identity cannot inspect are listed as
   `unverified`; running the check as root (as `provision.sh` does) verifies
   everything.
-- `evaluate`, `candidate import`, `promote`, and `rollback` run that check for
+- `evaluate`, `candidate import`, `promote`, `rollback` and the generator command
+  `evolve` (agent role: candidate repository or `workspaces/` only, public
+  benchmarks, agent state) run that check for
   their role and refuse on violations, and refuse arguments that point outside
   the provisioned layout (holdout, public benchmarks, ledger, mirror,
   production repository, release root, deployment link, public key, handoff).

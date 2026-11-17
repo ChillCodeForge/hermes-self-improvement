@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 from collections import Counter
 from pathlib import Path
@@ -346,3 +347,98 @@ def _has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
 def _require_counter(value: Any) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < (1 << 63):
         raise ValueError("observability counters must be non-negative integers")
+
+
+def build_status(
+    home: Path, benchmark_root: Path, *, deployment_link: Path | None = None,
+) -> dict[str, Any]:
+    """Current state for ``hermes-improve status`` (read-only, never creates a database).
+
+    The active brain version comes from the deployment pointer when one is
+    known (that is what Hermes reads) and otherwise from the release ledger;
+    when both exist and disagree the mismatch is reported, not resolved.
+    """
+    home = Path(home)
+    result: dict[str, Any] = {
+        "brain_version": NO_DATA,
+        "brain_version_source": NO_DATA,
+        "active_release": NO_DATA,
+        "deployment": NO_DATA,
+        "counts": {
+            "experiments_by_decision": NO_DATA, "candidates": NO_DATA, "evaluation_runs": NO_DATA,
+            "releases_by_status": NO_DATA, "rollbacks": NO_DATA, "spent_holdouts": NO_DATA,
+            "sessions_by_status": NO_DATA, "public_benchmarks": NO_DATA,
+        },
+    }
+    counts = result["counts"]
+    ledger_release: dict[str, Any] | None = None
+    try:
+        experiments = _open(home / "experiments.sqlite3")
+    except sqlite3.Error:
+        experiments = None
+        counts["experiments_by_decision"] = UNAVAILABLE
+    if experiments is not None:
+        try:
+            if _has_table(experiments, "experiments"):
+                counts["experiments_by_decision"] = dict(sorted(experiments.execute(
+                    "SELECT decision, COUNT(*) FROM experiments GROUP BY decision"
+                ).fetchall()))
+                counts["candidates"] = experiments.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+                counts["evaluation_runs"] = experiments.execute(
+                    "SELECT COUNT(*) FROM evaluation_runs"
+                ).fetchone()[0]
+            if _has_table(experiments, "spent_holdouts"):
+                counts["spent_holdouts"] = experiments.execute("SELECT COUNT(*) FROM spent_holdouts").fetchone()[0]
+            if _has_table(experiments, "releases"):
+                releases = experiments.execute(
+                    "SELECT id, status, created_at FROM releases ORDER BY created_at DESC, id DESC"
+                ).fetchall()
+                statuses = Counter(row[1] for row in releases)
+                counts["releases_by_status"] = dict(sorted(statuses.items()))
+                counts["rollbacks"] = statuses.get("ROLLED_BACK", 0)
+                active = next((row for row in releases if row[1] in {"PROVISIONAL", "STABLE"}), None)
+                if active is not None:
+                    ledger_release = {"id": active[0], "status": active[1], "created_at": active[2]}
+                    result["active_release"] = ledger_release
+        except sqlite3.Error:
+            counts["experiments_by_decision"] = UNAVAILABLE
+        finally:
+            experiments.close()
+    try:
+        sessions = _open(home / "sessions.sqlite3")
+    except sqlite3.Error:
+        sessions = None
+    if sessions is not None:
+        try:
+            if _has_table(sessions, "sessions"):
+                counts["sessions_by_status"] = dict(sessions.execute(
+                    "SELECT status, COUNT(*) FROM sessions GROUP BY status ORDER BY status"
+                ).fetchall())
+        except sqlite3.Error:
+            counts["sessions_by_status"] = UNAVAILABLE
+        finally:
+            sessions.close()
+    if Path(benchmark_root).is_dir():
+        try:
+            counts["public_benchmarks"] = len(BenchmarkStore(Path(benchmark_root)).load_public())
+        except (OSError, ValueError) as exc:
+            counts["public_benchmarks"] = f"invalid: {str(exc)[:200]}"
+    if ledger_release is not None:
+        result["brain_version"] = ledger_release["id"]
+        result["brain_version_source"] = "release ledger"
+    if deployment_link is not None:
+        link = Path(deployment_link)
+        if link.is_symlink():
+            deployed = Path(os.readlink(link)).name
+            result["deployment"] = {"link": str(link), "release": deployed}
+            result["brain_version"] = deployed
+            result["brain_version_source"] = "deployment link"
+            if ledger_release is not None and ledger_release["id"] != deployed:
+                result["deployment"]["mismatch"] = (
+                    f"deployment points to {deployed} but the ledger's active release is {ledger_release['id']}"
+                )
+        elif os.path.lexists(link):
+            result["deployment"] = {"link": str(link), "error": "deployment pointer is not a symlink"}
+        else:
+            result["deployment"] = {"link": str(link), "release": None}
+    return result

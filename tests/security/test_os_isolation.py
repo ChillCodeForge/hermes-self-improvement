@@ -328,3 +328,36 @@ def test_promoter_rejects_paths_outside_the_layout(layout_root):
         assert result.returncode != 0 and b"production_repo must be the provisioned path" in result.stderr
     finally:
         shutil.rmtree(elsewhere)
+
+
+def _agent_evolve(root, repository):
+    return launch(root, "agent", "evolve", "cand-missing", "--repository", repository)
+
+
+def test_agent_evolve_passes_its_boundary_and_refuses_privileged_repositories(layout_root):
+    root = layout_root
+    # The generator runs as the agent through the launcher; the isolation check
+    # passes, and the command fails only later (no Qwen endpoint configured).
+    allowed = _agent_evolve(root, root / "brain" / "candidates.git")
+    output = allowed.stdout + allowed.stderr
+    assert b"may not run" not in output and b"isolation boundary violated" not in output
+    assert b"QWEN_BASE_URL" in allowed.stderr
+    for privileged in (root / "brain" / "production.git", root / "releases", root / "holdout"):
+        refused = _agent_evolve(root, privileged)
+        assert refused.returncode != 0 and b"agent repository must be" in refused.stderr
+
+
+def test_agent_evolve_refuses_when_production_is_writable_or_holdout_readable(broken_root):
+    root = broken_root
+    candidates = root / "brain" / "candidates.git"
+    run("setfacl", "-m", f"u:{AGENT}:rwx", root / "brain" / "production.git")
+    refused = _agent_evolve(root, candidates)
+    assert refused.returncode != 0 and b"isolation boundary violated" in refused.stderr
+    assert b"production_repo" in refused.stderr
+
+    provision(root)
+    assert _agent_evolve(root, candidates).stderr.find(b"isolation boundary violated") == -1
+    run("setfacl", "-m", f"u:{AGENT}:r-x", root / "holdout")
+    refused = _agent_evolve(root, candidates)
+    assert refused.returncode != 0 and b"isolation boundary violated" in refused.stderr
+    assert b"holdout" in refused.stderr
