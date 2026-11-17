@@ -103,8 +103,13 @@ diff. The agent's `candidate sync-baseline` fetches production `main` through
   misconfiguration; it is not the barrier against a hostile caller — the
   kernel permissions above are.
 - Existing application safeguards remain: the generator-facing benchmark API
-  denies regression and holdout reads; holdout generations are marked spent
-  per lineage before evaluation; evaluation reports are Ed25519-signed and the
+  denies regression and holdout reads; `evaluate` grants the sealed holdout
+  only to finalists with evaluator-signed, passing SMOKE and CORE evidence for
+  the same candidate hash, benchmark version and policy version, and marks the
+  holdout generation spent per lineage (durable, atomic registry insert)
+  immediately before the first holdout task executes, so a run that touched
+  the holdout stays spent even if it fails afterwards (see
+  `docs/benchmarking.md`, "Holdout access and spending in `evaluate`"); evaluation reports are Ed25519-signed and the
   promoter verifies signature, policy and benchmark versions, Full and
   holdout evidence, immutable candidate hash, branch tip, production baseline,
   and actual Git diff; automatic promotion is restricted to `brain/skills/`;
