@@ -115,8 +115,17 @@ class CuratorAdapter:
     def to_candidate(
         self, mutation: CuratorMutation, *, experiment_id: str, candidate_id: str,
     ) -> CuratorConversion:
-        """Convert a desired Curator mutation into an immutable candidate."""
-        from .candidate_builder import create_skill_candidate
+        """Convert a desired Curator mutation into an immutable candidate.
+
+        ``create``/``patch`` become ``SKILL_CREATE``/``SKILL_PATCH``.
+        ``consolidate`` becomes a ``SKILL_MERGE`` that writes the umbrella
+        ``SKILL.md`` and deletes every tracked file of the absorbed skill; when
+        no new umbrella content is supplied (or it equals production) only the
+        removal remains, as for ``archive``: a ``SKILL_PATCH`` that deletes the
+        whole skill directory. Every candidate that removes a skill is manually
+        gated at promotion (``PromotionPolicy.requires_manual_approval``).
+        """
+        from .candidate_builder import create_candidate, create_skill_candidate, production_skill_files
 
         if self._repository is None or self._store is None or not self._benchmark_version:
             raise RuntimeError("mutation conversion requires a candidate repository, experiment store, and benchmark version")
@@ -127,45 +136,65 @@ class CuratorAdapter:
             raise ValueError("Curator mutations require a rationale")
         if not isinstance(mutation.replace_all, bool):
             raise ValueError("replace_all must be boolean")
-        if mutation.kind == "archive":
-            raise CuratorMutationRefused(
-                f"archiving {skill} cannot be expressed as a candidate: the candidate builder only "
-                "creates or patches SKILL.md, so skill removal requires a manual operator change"
+        rationale = mutation.rationale.strip()
+        if mutation.kind in {"create", "patch"}:
+            if mutation.kind == "create":
+                candidate_type = CandidateType.SKILL_CREATE
+                content = _require_content(mutation, "create")
+            else:
+                candidate_type = CandidateType.SKILL_PATCH
+                content = self._patched_content(skill, mutation)
+            candidate = create_skill_candidate(
+                self._repository,
+                self._store,
+                experiment_id=experiment_id,
+                candidate_id=candidate_id,
+                candidate_type=candidate_type,
+                target=f"brain/skills/{skill}",
+                content=content,
+                hypothesis=f"Curator {mutation.kind} {skill}: {rationale}"[:4000],
+                benchmark_version=self._benchmark_version,
+                source_sessions=tuple(mutation.source_sessions),
             )
-        unapplied: tuple[str, ...] = ()
-        if mutation.kind == "create":
-            candidate_type, target_skill = CandidateType.SKILL_CREATE, skill
-            content = _require_content(mutation, "create")
-            hypothesis = f"Curator create {skill}: {mutation.rationale.strip()}"
-        elif mutation.kind == "patch":
-            candidate_type, target_skill = CandidateType.SKILL_PATCH, skill
-            content = self._patched_content(skill, mutation)
-            hypothesis = f"Curator patch {skill}: {mutation.rationale.strip()}"
+            return CuratorConversion(candidate=candidate, mutation_kind=mutation.kind)
+
+        files: dict[str, str] = {}
+        if mutation.kind == "archive":
+            if mutation.into is not None or mutation.content is not None:
+                raise ValueError("archive takes neither 'into' nor content; use consolidate")
+            hypothesis = f"Curator archive {skill}: {rationale}"
         else:
             if mutation.into is None:
                 raise ValueError("consolidation requires the umbrella skill in 'into'")
             umbrella = _brain_skill_name(mutation.into)
             if umbrella == skill:
                 raise ValueError("a skill cannot be consolidated into itself")
-            candidate_type, target_skill = CandidateType.SKILL_PATCH, umbrella
-            content = _require_content(mutation, "consolidate")
-            hypothesis = f"Curator consolidate {skill} into {umbrella}: {mutation.rationale.strip()}"
-            unapplied = (
-                f"{skill} stays in production; archiving the absorbed skill is not a supported candidate change",
-            )
-        candidate = create_skill_candidate(
+            current = _production_skill(self._repository, umbrella)
+            if mutation.content is not None:
+                content = _require_content(mutation, "consolidate")
+                # The builder normalizes to one trailing newline; an unchanged
+                # umbrella leaves a pure removal, which SKILL_MERGE cannot express.
+                if content.rstrip() + "\n" != current:
+                    files[f"brain/skills/{umbrella}/SKILL.md"] = content
+            hypothesis = f"Curator consolidate {skill} into {umbrella}: {rationale}"
+        try:
+            removed = production_skill_files(self._repository, f"brain/skills/{skill}")
+        except ValueError as exc:
+            raise CuratorMutationRefused(f"cannot remove {skill}: {exc}") from exc
+        candidate = create_candidate(
             self._repository,
             self._store,
             experiment_id=experiment_id,
             candidate_id=candidate_id,
-            candidate_type=candidate_type,
-            target=f"brain/skills/{target_skill}",
-            content=content,
+            candidate_type=CandidateType.SKILL_MERGE if files else CandidateType.SKILL_PATCH,
+            files=files,
+            deletions=removed,
             hypothesis=hypothesis[:4000],
             benchmark_version=self._benchmark_version,
             source_sessions=tuple(mutation.source_sessions),
+            risk="HIGH",
         )
-        return CuratorConversion(candidate=candidate, mutation_kind=mutation.kind, unapplied=unapplied)
+        return CuratorConversion(candidate=candidate, mutation_kind=mutation.kind)
 
     def convert_pending_write(
         self, pending: "PendingSkillWrite", *, experiment_id: str, candidate_id: str,
@@ -181,12 +210,14 @@ class CuratorAdapter:
             )
         if pending.action == "delete":
             absorbed_into = payload.get("absorbed_into")
-            raise CuratorMutationRefused(
-                f"staged delete of {pending.skill}"
-                + (f" (absorbed into {absorbed_into})" if absorbed_into else "")
-                + " cannot be converted: skill removal requires a manual operator change"
-            )
-        if pending.action == "create":
+            if absorbed_into in (None, ""):
+                mutation = CuratorMutation("archive", pending.skill, rationale)
+            else:
+                mutation = CuratorMutation(
+                    "consolidate", pending.skill, rationale,
+                    content=payload.get("content") or None, into=absorbed_into,
+                )
+        elif pending.action == "create":
             mutation = CuratorMutation("create", pending.skill, rationale, content=payload.get("content"))
         elif pending.action == "edit" or (pending.action == "patch" and payload.get("content")):
             mutation = CuratorMutation("patch", pending.skill, rationale, content=payload.get("content"))

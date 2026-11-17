@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from cryptography.exceptions import InvalidSignature
@@ -48,8 +49,14 @@ def approve_promotion(
     rationale: str,
     private_key_pem: bytes,
     policy: PromotionPolicy,
+    repository: Path | None = None,
 ) -> dict[str, Any]:
-    """Sign and append an operator approval for a passed, manually gated experiment."""
+    """Sign and append an operator approval for a passed, manually gated experiment.
+
+    A candidate of an auto-promotable type that removes a production skill is
+    manually gated as well; recognising it needs the candidate ``repository``
+    because the removal set is read from the candidate's Git diff.
+    """
     if not isinstance(operator, str) or not _SAFE_OPERATOR.fullmatch(operator):
         raise ValueError("operator must be a safe 1-128 character identifier")
     if (
@@ -68,9 +75,20 @@ def approve_promotion(
     if candidate["experiment_decision"] != "passed" or not evidence["evaluation"]["passed"]:
         raise PolicyRejected("only experiments with a passing completed evaluation can be approved")
     candidate_type = CandidateType(candidate["candidate_type"])
-    if not policy.requires_manual_approval(candidate_type):
+    removed_skills: tuple[str, ...] = ()
+    if not policy.requires_manual_approval(candidate_type) and repository is not None:
+        from .candidate_builder import removed_skills_in_candidate
+
+        removed_skills = removed_skills_in_candidate(
+            repository, str(candidate["base_commit"]), str(candidate["commit_id"]),
+        )
+    if not policy.requires_manual_approval(candidate_type, removed_skills=removed_skills):
+        hint = "" if repository is not None else (
+            "; pass the candidate repository to approve a candidate that removes a skill"
+        )
         raise ValueError(
-            f"{candidate_type.value} is auto-promotable under policy {policy.version}; no approval is needed"
+            f"{candidate_type.value} is auto-promotable under policy {policy.version}; "
+            f"no approval is needed{hint}"
         )
     key = serialization.load_pem_private_key(private_key_pem, password=None)
     if not isinstance(key, Ed25519PrivateKey):

@@ -64,9 +64,21 @@ class PromotionPolicy:
             required_evidence_suites=tuple(config.required_evidence_suites),
         )
 
-    def requires_manual_approval(self, candidate_type: CandidateType) -> bool:
+    def requires_manual_approval(
+        self, candidate_type: CandidateType, *, removed_skills: Iterable[str] = (),
+    ) -> bool:
+        """True when promotion needs a signed operator approval.
+
+        A candidate that removes a production skill (its diff deletes a
+        ``brain/skills/<name>/SKILL.md``, see ``target_paths.removed_skill_units``)
+        is never auto-promotable, whatever its type gate says: archive, delete,
+        merge and split removals all go through the manual gate. The removal
+        set is derived from the candidate diff, not from the declared type.
+        """
         if not isinstance(candidate_type, CandidateType):
             raise ValueError("candidate type must be a CandidateType")
+        if tuple(removed_skills):
+            return True
         return candidate_type not in self.auto_promotable_types
 
     def assess(
