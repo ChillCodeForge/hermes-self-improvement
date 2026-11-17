@@ -59,6 +59,7 @@ PROTECTED_REPOSITORY_PATHS = (
     "/src/hermes_improve/statistics.py",
     "/src/hermes_improve/cli.py",
     "/src/hermes_improve/migrations/",
+    "/src/hermes_improve/store.py",
     "/benchmarks/",
     "/config/",
     "/scripts/",
