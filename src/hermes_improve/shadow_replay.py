@@ -2,8 +2,10 @@
 
 Prior sessions that exercised a skill changed by the release are replayed
 through an injected runner against the release's immutable deployment
-checkout. Replay results become post-promotion evidence (source
-``shadow_replay``) for :class:`hermes_improve.monitoring.ReleaseMonitor`.
+checkout. Benchmarks of the SHADOW split (spec §11: post-promotion evidence)
+can be replayed through the same runner. Replay results become post-promotion
+evidence (source ``shadow_replay``) for
+:class:`hermes_improve.monitoring.ReleaseMonitor`.
 Session content stays untrusted evidence: only the task prompt is passed to
 the runner, marked untrusted, and the session queue is never modified.
 """
@@ -18,10 +20,10 @@ import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
 from .ingestion import SessionQueue
-from .models import canonical_json
+from .models import Benchmark, Split, canonical_json
 from .monitoring import ProductionObservation, ReleaseMonitor, release_affected_skills
 
 
@@ -36,6 +38,7 @@ class ReplayTask:
     prompt: str
     skills: tuple[str, ...]
     evidence_trust: str = "untrusted"
+    benchmark_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,14 +75,44 @@ class ShadowReplayer:
         self.monitor = monitor
         self.runner = runner
 
-    def select_tasks(self, release_id: str, *, limit: int = 20) -> list[ReplayTask]:
+    def _affected_patterns(self, release_id: str, limit: int) -> dict[str, re.Pattern[str]]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_REPLAYS:
             raise ValueError("replay limit must be between 1 and 500")
         release = self.monitor.store.get_release(release_id)
         affected = sorted(release_affected_skills(release["manifest"]))
-        patterns = {
+        return {
             name: re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])") for name in affected
         }
+
+    def select_benchmark_tasks(
+        self, release_id: str, benchmarks: Iterable[Benchmark], *, limit: int = 20,
+    ) -> list[ReplayTask]:
+        """SHADOW-split benchmarks touching a skill the release changed (all, if it changed none)."""
+        patterns = self._affected_patterns(release_id, limit)
+        tasks: list[ReplayTask] = []
+        for benchmark in sorted(benchmarks, key=lambda item: (item.id, item.version)):
+            if benchmark.split is not Split.SHADOW:
+                continue
+            prompt = benchmark.task.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                continue
+            if patterns:
+                text = canonical_json({"task": benchmark.task, "taxonomy": benchmark.taxonomy})
+                skills = tuple(name for name, pattern in patterns.items() if pattern.search(text))
+                if not skills:
+                    continue
+            else:
+                skills = ()
+            identifier = f"{benchmark.id}@v{benchmark.version}"
+            tasks.append(ReplayTask(
+                f"shadow-benchmark:{identifier}", prompt[:_MAX_PROMPT_CHARS], skills, benchmark_id=identifier,
+            ))
+            if len(tasks) >= limit:
+                break
+        return tasks
+
+    def select_tasks(self, release_id: str, *, limit: int = 20) -> list[ReplayTask]:
+        patterns = self._affected_patterns(release_id, limit)
         tasks: list[ReplayTask] = []
         for session_id in self.sessions.session_ids(10_000):
             session = self.sessions.get(session_id)
@@ -100,12 +133,26 @@ class ShadowReplayer:
         return tasks
 
     def replay(self, release_id: str, *, limit: int = 20) -> ReplayReport:
+        checkout = self._provisional_checkout(release_id)
+        return self._replay_tasks(release_id, checkout, self.select_tasks(release_id, limit=limit))
+
+    def replay_benchmarks(
+        self, release_id: str, benchmarks: Iterable[Benchmark], *, limit: int = 20,
+    ) -> ReplayReport:
+        """Replay SHADOW-split benchmarks against the provisional release as extra evidence."""
+        checkout = self._provisional_checkout(release_id)
+        return self._replay_tasks(
+            release_id, checkout, self.select_benchmark_tasks(release_id, benchmarks, limit=limit),
+        )
+
+    def _provisional_checkout(self, release_id: str) -> Path:
         release = self.monitor.store.get_release(release_id)
         if release["status"] != "PROVISIONAL":
             raise ValueError("shadow replay is only collected for provisional releases")
-        checkout = read_only_checkout(release["manifest"].get("deployment_path"))
+        return read_only_checkout(release["manifest"].get("deployment_path"))
+
+    def _replay_tasks(self, release_id: str, checkout: Path, tasks: list[ReplayTask]) -> ReplayReport:
         report = ReplayReport(release_id)
-        tasks = self.select_tasks(release_id, limit=limit)
         report.selected = len(tasks)
         for task in tasks:
             try:
@@ -114,9 +161,13 @@ class ShadowReplayer:
             except Exception as exc:  # runner/infrastructure failure is not release evidence
                 report.failures.append({"session_id": task.session_id, "error": f"{type(exc).__name__}: {exc}"[:500]})
                 continue
-            observation_id = "shadow_replay:" + hashlib.sha256(
-                f"{release_id}\0{task.session_id}".encode()
-            ).hexdigest()[:48]
+            # Session and benchmark replays use separate hash domains so a
+            # session ID can never collide with a benchmark replay record.
+            key = (
+                f"{release_id}\0{task.session_id}" if task.benchmark_id is None
+                else f"{release_id}\0benchmark\0{task.benchmark_id}"
+            )
+            observation_id = "shadow_replay:" + hashlib.sha256(key.encode()).hexdigest()[:48]
             decision = self.monitor.observe(ProductionObservation(
                 release_id=release_id,
                 task_id=f"replay:{task.session_id}"[:200],
@@ -145,7 +196,8 @@ class CommandReplayRunner:
     """Runs an operator-provided replay command (for example a Hermes wrapper).
 
     The command receives one JSON object on stdin (``session_id``, ``prompt``,
-    ``release_checkout``, ``evidence_trust``) and must print one JSON object
+    ``release_checkout``, ``evidence_trust``, plus ``benchmark_id`` for SHADOW
+    benchmark replays) and must print one JSON object
     with ``success``, ``tool_errors``, ``tokens``, ``tool_calls`` and
     ``latency_ms`` (optionally ``retries`` and ``critical_regression``). No
     shell is involved and the environment is reduced to PATH/HOME plus
@@ -166,12 +218,15 @@ class CommandReplayRunner:
         self.timeout = float(timeout)
 
     def run(self, task: ReplayTask, release_checkout: Path) -> ReplayOutcome:
-        request = json.dumps({
+        payload = {
             "session_id": task.session_id,
             "prompt": task.prompt,
             "release_checkout": str(release_checkout),
             "evidence_trust": task.evidence_trust,
-        }).encode("utf-8")
+        }
+        if task.benchmark_id is not None:
+            payload["benchmark_id"] = task.benchmark_id
+        request = json.dumps(payload).encode("utf-8")
         result = subprocess.run(
             self.argv, input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=self.timeout, check=False,

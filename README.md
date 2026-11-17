@@ -561,7 +561,9 @@ After Git ref update and release tagging, the promoter switches the configured
 deployment symlink atomically and marks the release `PROVISIONAL`. The
 monitoring API and `hermes-improve monitor ingest observations.jsonl` accept
 trusted collector observations; stable observation IDs make retries
-idempotent. There is not yet an automatic Hermes/production collector. Track
+idempotent. `hermes-improve monitor collect RELEASE` derives observations from
+Hermes sessions already ingested (attributed by release activation time,
+user corrections by documented heuristics; see `docs/operations.md`). Track
 success rate, tool errors, tokens and calls per success, latency, retries,
 user corrections, and regression signals. Move to `STABLE` only with adequate
 evidence; otherwise roll back atomically and record the decision. Avoid
@@ -620,7 +622,7 @@ hermes-improve approve <experiment-id> --operator NAME --rationale TEXT
 hermes-improve promote <experiment-id> [--release brain-vN] [--operator-public-key KEY]
 hermes-improve rollback <release>
 hermes-improve curator status|propose|convert-pending
-hermes-improve monitor ingest|replay|evaluate [--apply]
+hermes-improve monitor collect|ingest|replay|evaluate [--apply]
 hermes-improve report [--json]
 hermes-improve decisions export|backfill
 hermes-improve security check [--role agent|evaluator|promoter] [--production PATH]
@@ -653,7 +655,7 @@ phase begins.
 | **6 — Benchmark growth** | Exact/near deduplication, clustering, taxonomy, provenance, manifests and versioning | Exact, near-duplicate and MinHash/LSH clustering with cluster-consistent splits, manifests, versioning and operator holdout rotation are implemented; clustering is lexical, so paraphrases can escape | Related tasks cannot leak across splits |
 | **7 — Dreaming** | LIGHT/REM/DEEP cross-session analysis with injection defenses | LIGHT/REM/DEEP APIs are implemented; live model integration and end-to-end self-improvement remain unverified | Hypotheses/candidates are bounded and cannot directly change production |
 | **8 — Curator integration** | Usage, stale, overlap, and consolidation signals through proposals | Read-only live connector to Hermes Curator files, signals, and mutation-to-candidate conversion (including archive, delete and consolidation as manually gated removal candidates) are implemented and tested against fixtures in the real format | No Curator bypass around candidate evaluation and Git |
-| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; production collection and a Hermes replay runner remain absent | Regression triggers an auditable rollback decision |
+| **9 — Post-promotion monitoring** | Provisional/stable/rollback lifecycle and shadow/canary evidence | Area-matched monitoring, read-only shadow replay through an operator runner, and audited promoter rollback via `monitor evaluate --apply` are implemented; `monitor collect` feeds ingested Hermes sessions (heuristic correction signals) and `monitor replay --source shadow-benchmarks` replays SHADOW-split tasks; a Hermes replay runner remains absent | Regression triggers an auditable rollback decision |
 
 The design intentionally sequences reliable measurement before autonomous
 learning. Later candidate types, observability expansion, and Laya are gated on

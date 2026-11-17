@@ -36,7 +36,7 @@ unless noted.
 | Analysis | `hermes-improve dream --stage light [--curator-hermes-home PATH]` | LIGHT analysis; REM/DEEP need a loopback Qwen endpoint. Run summary and Qwen usage go to `observability.sqlite3`. |
 | Curator change wanted | `hermes-improve curator propose ...` / `curator convert-pending ID ...` | Turns a Curator mutation into an immutable candidate; never writes production. |
 | Candidate work | `candidate create`, `evaluate`, `promote` | Unchanged gated path (see below). |
-| Post-promotion | `monitor ingest FILE`, `monitor replay RELEASE ...`, `monitor evaluate RELEASE [--apply ...]` | Collects evidence and stabilizes or rolls back a provisional release. |
+| Post-promotion | `monitor collect RELEASE [--apply ...]`, `monitor ingest FILE`, `monitor replay RELEASE ...`, `monitor evaluate RELEASE [--apply ...]` | Collects evidence (ingested Hermes sessions, collector files, shadow replay) and stabilizes or rolls back a provisional release. |
 | Training data | `decisions export [--labeled-only] [--output FILE]`, `decisions backfill ID ...` | Laya decision dataset (see `laya-future.md`). |
 
 ## Hermes plugin (opt-in observers)
@@ -198,21 +198,96 @@ Evidence sources:
    ```
 
    Required: `observation_id, release_id, task_id, success, tool_errors,
-   tokens, tool_calls, latency_ms`. Optional: `user_corrections, retries,
-   critical_regression, skills, source` (`production`, `shadow_replay`,
-   `historical_replay`). IDs are idempotent; the whole file is validated before
-   anything is recorded (10 MiB / 10,000 rows).
-2. `monitor replay RELEASE --runner-command '["/abs/path/replay"]' [--limit N]`
-   — read-only shadow replay. Prior sessions in the queue whose content names a
-   skill changed by the release are replayed through the runner against the
+   tokens, tool_calls, latency_ms`; `tokens` may be `null` when the collector
+   has no token count (stored as unknown, never as 0). Optional:
+   `user_corrections, retries, critical_regression, skills, source`
+   (`production`, `hermes_session`, `shadow_replay`, `historical_replay`). IDs
+   are idempotent; the whole file is validated before anything is recorded
+   (10 MiB / 10,000 rows).
+2. `monitor replay RELEASE --runner-command '["/abs/path/replay"]' [--limit N]
+   [--source sessions|shadow-benchmarks]` — read-only shadow replay. With the
+   default `--source sessions`, prior sessions in the queue whose content names
+   a skill changed by the release are replayed; with `--source
+   shadow-benchmarks`, benchmarks of the `SHADOW` split (spec §11) under
+   `HERMES_IMPROVE_BENCHMARKS` whose task or taxonomy names a changed skill (all
+   of them if the release changed no skill) are replayed instead. Other splits
+   are never replayed here. Replays run through the runner against the
    release's deployment checkout, which must be a real directory without write
    bits (the promoter installs it as `0555`). The runner gets one JSON object
    on stdin (`session_id`, `prompt`, `release_checkout`,
-   `evidence_trust: "untrusted"`), a reduced environment (`PATH`, `HOME`,
+   `evidence_trust: "untrusted"`, plus `benchmark_id` as `ID@vVERSION` for
+   benchmark replays), a reduced environment (`PATH`, `HOME`,
    `HERMES_BRAIN_CHECKOUT`), and must print `success, tool_errors, tokens,
-   tool_calls, latency_ms` (optional `retries, critical_regression`). Runner
-   failures are reported, not recorded as evidence. No Hermes replay wrapper
-   ships with this package; the operator supplies one.
+   tool_calls, latency_ms` (optional `retries, critical_regression`). The
+   runner's own `success` is recorded; the benchmark's verifiers are not run by
+   this command. Runner failures are reported, not recorded as evidence. No
+   Hermes replay wrapper ships with this package; the operator supplies one.
+3. `monitor collect RELEASE [--limit N] [--switch-margin SECONDS] [--apply ...]`
+   — real Hermes sessions already in `sessions.sqlite3` (from the
+   `on_session_finalize` plugin hook or `hermes-improve ingest` of a session
+   export) become observations with source `hermes_session`
+   (`hermes_improve/session_feed.py`). The queue is only read.
+
+   *Attribution.* Release activation times come from the append-only
+   `release_events` (`PROMOTED` and `REACTIVATED`; a `STABLE` status change
+   does not switch the brain). A session's span is the minimum and maximum of
+   its message `timestamp` values (Hermes persists one per message), widened by
+   `started_at` / `ended_at` when the export carries them. The session counts
+   for the release active over the whole span. It is excluded and counted by
+   reason, never guessed, when: any message lacks a usable timestamp (epoch
+   seconds, or ISO-8601 with a timezone) (`unknown_time`), `ended_at` is
+   present but null (`session_not_ended`), the span crosses an activation
+   (`spans_release_switch`) or lies within `--switch-margin` seconds of one
+   (default 60, `within_switch_margin`), it predates every recorded activation
+   (`before_first_recorded_release`), it lies in the future
+   (`implausible_time`), it has no transcript (`no_transcript`), or it is a
+   batch-runner trajectory rather than a production session
+   (`not_production_session`). Sessions active under another release are
+   counted as `other_release`. A release without any activation event (for
+   example one written by the legacy `record_release`) cannot be collected.
+
+   *Per-session derivation* (deterministic, `heuristics_version
+   session-feed-1`):
+
+   | Field | Rule |
+   |---|---|
+   | `tool_calls` | entries in assistant `tool_calls` lists |
+   | `tool_errors` | tool results starting with `Error`, or a JSON object with non-zero `exit_code`, `success: false` or a non-empty `error` (the persisted part of Hermes' `_detect_tool_failure`); cancelled calls are not errors |
+   | `retries` | tool calls repeating the exact name and arguments of an earlier call whose result was an error |
+   | `tokens` | `input_tokens + output_tokens` of the session row (or a `usage` object) when both are integers and the sum is positive; otherwise unknown. Hermes defaults both columns to 0, and the plugin export carries no token counts, so plugin sessions are token-unknown |
+   | `latency_ms` | agent-active time: per user turn, from the user message to the last assistant/tool message before the next user message (human think time excluded) |
+   | `success` | `final_status.failed`/`interrupted` true is a failure, `completed` true a success; otherwise the session must end with an assistant answer with text, no pending tool calls, a finish reason other than `length`, `content_filter`, `error`, `tool_calls`, and no user interruption |
+   | `skills` | brain skill names from `skill_view` calls (last path segment, validated); used for affected-skill matching |
+   | `critical_regression` | never derived from sessions (always false) |
+
+   `user_corrections` is the sum of four heuristics, recorded per name in the
+   observation's `derivation` (with `heuristics_version`, the success rule,
+   whether tokens were reported, and `evidence_trust: "untrusted"`):
+   `rewind` (the session row's `rewind_count`, Hermes' explicit transcript
+   undo), `explicit_undo_retry` (a user message answering an assistant turn
+   that starts with `/undo`, `/retry`, `undo`, `revert`, `retry`, `try again`,
+   `roll back`, `rückgängig`, `nochmal` ...), `negation_after_assistant` (a
+   user message answering an assistant turn that starts with `no`, `nope`,
+   `wrong`, `that's not right/what`, `it doesn't work`, `you forgot/missed/broke`,
+   `stop`, `nein`, `falsch`, `das ist falsch/nicht richtig` ...; `no problem`
+   and similar are excluded), and `interrupted_tool_call` (tool results Hermes
+   wrote as `[Tool execution cancelled`, or an `interrupted` final status).
+   Only the first 200 characters of a message are matched and only at its
+   start; the opening task prompt never counts. These are heuristics: an
+   imperative such as "Revert the formatting change" is counted as a
+   correction, and corrections phrased differently are missed.
+
+   Session content is untrusted (spec §28): it is parsed, counted and
+   pattern-matched only. The release, observation ID
+   (`hermes_session:` + hash of release and session ID), source label and
+   status never come from session content; fields such as `release_id`,
+   `critical_regression` or `success` inside a session are ignored. Forged
+   timestamps or texts can only shift counts. Re-running `collect` is
+   idempotent (`duplicates`); a session already recorded with different
+   derived values (a future heuristics version) is reported under `conflicts`
+   and keeps its first record. The output contains the feed report and the
+   assessment; nothing changes status without `--apply`, which takes the same
+   promoter options and identity checks as `monitor evaluate --apply`.
 
 Observations are matched to the release's affected area: the skills under
 `brain/skills/` in the signed manifest's `changed_paths`. An observation that
@@ -221,9 +296,11 @@ attribution counts for the whole release.
 
 Metrics: success rate, tool error rate, tokens/success, tool calls/success,
 latency/success, retry rate, user-correction rate, and critical regression
-signals. Each metric is compared with the manifest's `baseline_metrics` only
-when that baseline exists; missing baselines are listed under
-`unavailable_baselines` instead of being assumed. Any critical signal means
+signals. Tokens/success uses only observations that reported tokens
+(`tokens_reported_samples`); if none did, the metric is `null` and listed
+under `unavailable_metrics` instead of being compared. Each metric is compared
+with the manifest's `baseline_metrics` only when that baseline exists; missing
+baselines are listed under `unavailable_baselines` instead of being assumed. Any critical signal means
 immediate rollback; a success-rate or tool-error regression is `high`
 severity, any other regression is `medium`.
 
@@ -241,8 +318,9 @@ baseline, checks that the regressing release is the active `main`, and calls
 or blocked action is audited in `monitoring_actions` (release, action, target,
 previous commit, reasons, metrics, actor UID). A regression without an
 earlier restorable release is recorded as `ROLLBACK_BLOCKED` and needs an
-operator. Ingesting observations still marks a release `STABLE` automatically
-once policy passes, but never rolls back by itself.
+operator. `monitor ingest` and `monitor replay` still mark a release `STABLE`
+automatically once policy passes, but never roll back by themselves;
+`monitor collect` changes nothing without `--apply`.
 
 ## Observability report
 

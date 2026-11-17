@@ -135,3 +135,64 @@ def test_command_runner_contract_and_cli(tmp_path, monkeypatch, capsys):
         home / "monitoring.sqlite3", ExperimentStore(home / "experiments.sqlite3")), runner).select_tasks("brain-v1")[0]
     with pytest.raises(ValueError, match="missing or unknown fields"):
         runner.run(task, tmp_path)
+
+
+def _shadow_benchmarks(root):
+    from benchmark_factory import record
+
+    documents = {
+        "shadow": [
+            record("shadow-demo", "SHADOW", prompt="Use the demo skill to tag the release"),
+            record("shadow-other", "SHADOW", prompt="Summarise the changelog"),
+        ],
+        "train": [record("train-demo", "TRAIN", prompt="Use the demo skill to lint")],
+    }
+    for split, items in documents.items():
+        (root / split).mkdir(parents=True, exist_ok=True)
+        for item in items:
+            (root / split / f"{item['id']}.json").write_text(json.dumps(item), encoding="utf-8")
+    return root
+
+
+def test_shadow_split_benchmarks_are_replayed_as_additional_evidence(tmp_path):
+    from hermes_improve.benchmarks import BenchmarkStore
+
+    store, queue = _setup(tmp_path)
+    benchmarks = BenchmarkStore(_shadow_benchmarks(tmp_path / "benchmarks")).load_public()
+    monitor = ReleaseMonitor(tmp_path / "monitor.sqlite3", store, MonitoringPolicy(min_observations=5))
+    runner = FakeRunner()
+
+    report = ShadowReplayer(queue, monitor, runner).replay_benchmarks("brain-v1", benchmarks)
+
+    # Only SHADOW-split tasks that touch a changed skill; TRAIN tasks are never replayed here.
+    assert [call[0].benchmark_id for call in runner.calls] == ["shadow-demo@v1"]
+    assert runner.calls[0][0].session_id == "shadow-benchmark:shadow-demo@v1"
+    assert report.recorded == 1
+    with sqlite3.connect(tmp_path / "monitor.sqlite3") as db:
+        assert db.execute("SELECT source, task_id FROM production_observations").fetchall() == [
+            ("shadow_replay", "replay:shadow-benchmark:shadow-demo@v1"),
+        ]
+    assert ShadowReplayer(queue, monitor, runner).replay_benchmarks("brain-v1", benchmarks).duplicates == 1
+
+
+def test_cli_monitor_replay_shadow_benchmarks_passes_benchmark_id(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    _setup(home)
+    script = tmp_path / "replay.py"
+    script.write_text(
+        "import json, sys\n"
+        "request = json.load(sys.stdin)\n"
+        "assert request['benchmark_id'] == 'shadow-demo@v1'\n"
+        "print(json.dumps({'success': True, 'tool_errors': 0, 'tokens': 70, 'tool_calls': 2, 'latency_ms': 12.5}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(_shadow_benchmarks(tmp_path / "benchmarks")))
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "monitor", "replay", "brain-v1", "--source", "shadow-benchmarks",
+        "--runner-command", json.dumps([sys.executable, str(script)]),
+    ])
+    assert main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["selected"] == 1 and report["recorded"] == 1 and report["failures"] == []
