@@ -36,6 +36,7 @@ from .isolation import (
 from .miner import corpus_similarity_index, mine_session
 from .replay import is_command_benchmark, replay_benchmark
 from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
+from .session_feed import DEFAULT_SWITCH_MARGIN_SECONDS, SessionFeed
 from .evaluation_signing import report_payload
 from .evaluator import PairedEvaluator
 from .hermes_runner import HermesBatchRunner, HermesModelConfig
@@ -153,6 +154,8 @@ def _load_observations(path: Path) -> list[ProductionObservation]:
             raise ValueError(f"monitoring observation line {line_number}: success must be boolean")
         for key in ("tool_errors", "tokens", "tool_calls", "user_corrections", "retries"):
             value = item.get(key, 0)
+            if key == "tokens" and value is None:
+                continue  # tokens not reported: recorded as unknown, never as 0
             if (
                 isinstance(value, bool) or not isinstance(value, int)
                 or value < 0 or value > _MAX_SQLITE_INTEGER
@@ -636,6 +639,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     monitor_replay.add_argument("--limit", type=int, default=20)
     monitor_replay.add_argument("--timeout", type=float, default=600.0)
+    monitor_replay.add_argument(
+        "--source", choices=["sessions", "shadow-benchmarks"], default="sessions",
+        help="replay recorded sessions (default) or SHADOW-split benchmarks",
+    )
+    monitor_collect = monitor_sub.add_parser(
+        "collect", help="derive observations for a provisional release from ingested Hermes sessions",
+    )
+    monitor_collect.add_argument("release")
+    monitor_collect.add_argument("--limit", type=int, default=10_000, help="sessions to scan (max 10000)")
+    monitor_collect.add_argument(
+        "--switch-margin", type=float, default=DEFAULT_SWITCH_MARGIN_SECONDS,
+        help="exclude sessions within this many seconds of a release switch",
+    )
+    monitor_collect.add_argument(
+        "--apply", action="store_true",
+        help="execute the outcome: mark STABLE or roll back through the promoter (promoter UID required)",
+    )
     promote = sub.add_parser("promote")
     promote.add_argument("candidate_id", metavar="experiment_id", help="experiment ID (or candidate ID)")
     promote.add_argument("--release", help="release tag brain-vN (default: next free number)")
@@ -652,6 +672,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--evaluator-public-key", type=Path, required=True)
     for option in ("--repository", "--release-root", "--deployment-link", "--evaluator-public-key"):
         monitor_evaluate.add_argument(option, type=Path)
+        monitor_collect.add_argument(option, type=Path)
     approve = sub.add_parser("approve", help="sign an operator approval for a manually gated experiment")
     approve.add_argument("experiment_id")
     approve.add_argument("--operator", required=True)
@@ -723,6 +744,32 @@ def _conversion_payload(conversion) -> dict[str, object]:
         "unapplied": list(conversion.unapplied),
         "status": "awaiting_evaluation",
     }
+
+
+def _apply_monitoring(args: argparse.Namespace, database: Path, monitor: ReleaseMonitor) -> dict[str, object]:
+    """Execute a monitoring outcome (STABLE or rollback) as the promoter."""
+    _require_role_uid("promoter")
+    manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
+    if manifest_key is None:
+        raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
+    missing = [
+        option for option, value in (
+            ("--repository", args.repository), ("--release-root", args.release_root),
+            ("--deployment-link", args.deployment_link),
+            ("--evaluator-public-key", args.evaluator_public_key),
+        ) if value is None
+    ]
+    if missing:
+        raise ValueError(f"monitor {args.monitor_command} --apply requires {', '.join(missing)}")
+    promoter = GitPromoter(
+        ExperimentStore(database), args.repository, args.release_root, args.deployment_link,
+        PromotionPolicy.from_config(config_from_environment().promotion),
+        args.evaluator_public_key.read_bytes(),
+    )
+    return monitor.apply(
+        args.release, promoter=promoter, manifest_key=manifest_key.encode(),
+        actor=f"uid:{os.geteuid()}",
+    )
 
 
 def main() -> int:
@@ -1220,29 +1267,22 @@ def main() -> int:
         if not args.apply:
             print(json.dumps(monitor.evaluate(args.release).to_dict(), indent=2))
             return 0
-        _require_role_uid("promoter")
-        manifest_key = os.environ.get("HERMES_IMPROVE_MANIFEST_KEY")
-        if manifest_key is None:
-            raise RuntimeError("HERMES_IMPROVE_MANIFEST_KEY is required")
-        missing = [
-            option for option, value in (
-                ("--repository", args.repository), ("--release-root", args.release_root),
-                ("--deployment-link", args.deployment_link),
-                ("--evaluator-public-key", args.evaluator_public_key),
-            ) if value is None
-        ]
-        if missing:
-            raise ValueError(f"monitor evaluate --apply requires {', '.join(missing)}")
-        promoter = GitPromoter(
-            ExperimentStore(database), args.repository, args.release_root, args.deployment_link,
-            PromotionPolicy.from_config(config_from_environment().promotion),
-            args.evaluator_public_key.read_bytes(),
+        print(json.dumps(_apply_monitoring(args, database, monitor), indent=2))
+    elif args.command == "monitor" and args.monitor_command == "collect":
+        monitor = ReleaseMonitor(
+            database.parent / "monitoring.sqlite3", ExperimentStore(database),
+            decisions=DecisionRecorder(database),
         )
-        result = monitor.apply(
-            args.release, promoter=promoter, manifest_key=manifest_key.encode(),
-            actor=f"uid:{os.geteuid()}",
-        )
-        print(json.dumps(result, indent=2))
+        if args.apply:
+            _require_role_uid("promoter")
+        feed = SessionFeed(
+            SessionQueue(database.parent / "sessions.sqlite3"), monitor, switch_margin_seconds=args.switch_margin,
+        ).collect(args.release, limit=args.limit)
+        if args.apply:
+            outcome = {"feed": feed.to_dict(), "result": _apply_monitoring(args, database, monitor)}
+        else:
+            outcome = {"feed": feed.to_dict(), "assessment": monitor.evaluate(args.release).to_dict()}
+        print(json.dumps(outcome, indent=2))
     elif args.command == "monitor" and args.monitor_command == "replay":
         try:
             argv = json.loads(args.runner_command)
@@ -1255,7 +1295,13 @@ def main() -> int:
             SessionQueue(database.parent / "sessions.sqlite3"), monitor,
             CommandReplayRunner(argv, timeout=args.timeout),
         )
-        print(json.dumps(replayer.replay(args.release, limit=args.limit).to_dict(), indent=2))
+        if args.source == "shadow-benchmarks":
+            report = replayer.replay_benchmarks(
+                args.release, BenchmarkStore(benchmark_root).load_public(), limit=args.limit,
+            )
+        else:
+            report = replayer.replay(args.release, limit=args.limit)
+        print(json.dumps(report.to_dict(), indent=2))
     elif args.command == "monitor":
         observations = _load_observations(args.observations)
         monitor = ReleaseMonitor(database.parent / "monitoring.sqlite3", ExperimentStore(database))
