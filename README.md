@@ -87,7 +87,7 @@ The default benchmark directory is `benchmarks/`; the database defaults to
   block, paired deltas with CI95 and effect sizes, efficiency metrics,
   Ed25519-signed reports, a Docker runner for digest-pinned command benchmarks
   (network off by default, optional internal allowlist network) and a Hermes
-  `batch_runner` adapter. See `docs/evaluation.md`.
+  evaluation driver (real `AIAgent`, skills enabled). See `docs/evaluation.md`.
 - A Git promoter for brain candidates (skills auto-gated, other types behind
   signed operator approval) with signed manifests, atomic release-pointer
   switching, rollback, post-promotion monitoring with read-only shadow replay
@@ -644,7 +644,7 @@ hermes-improve promote <candidate-id> --release brain-vN --candidate-bundle HAND
 
 Some workflows require optional Qwen (REM/DEEP) or Docker (command evaluation).
 Candidate Git creation is available for operator-supplied skill text; automatic
-skill generation, a Hermes `batch_runner` execution/evaluation adapter,
+skill generation,
 experiment evolution CLI, a bundled Hermes replay runner, production
 observation collection are not implemented.
 

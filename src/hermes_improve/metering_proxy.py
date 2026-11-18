@@ -1,12 +1,11 @@
 """Loopback proxy that meters token usage between Hermes and its model endpoint.
 
-Hermes' ``batch_runner`` discards the token counters that ``run_conversation``
-returns (see ``hermes_runner.py``), so the evaluation runner cannot read
-tokens from Hermes itself. ``MeteringProxy`` sits between batch_runner and the
-configured OpenAI-compatible model endpoint instead: batch_runner gets the
-proxy's loopback URL as ``--base_url``, the proxy forwards every request
-unchanged to the real endpoint and reads the ``usage`` object of each
-generation response on the way back.
+The evaluation runner meters tokens on the wire: ``MeteringProxy`` sits
+between the Hermes driver and the configured OpenAI-compatible model endpoint.
+The driver gets the proxy's loopback URL as ``--base-url``, the proxy forwards
+every request unchanged to the real endpoint and reads the ``usage`` object of
+each generation response on the way back. Hermes' own session counters are
+recorded by the driver as a cross-check only.
 
 Measurement is all-or-nothing per run. ``UsageReport.complete`` is true only
 when every successful (2xx) generation response carried a usage object and no

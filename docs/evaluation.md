@@ -174,49 +174,60 @@ program is the evaluator-owned harness and the candidate only supplies data.
 It has no kernel isolation beyond the evaluator's own Unix user (scrubbed
 environment, private copy, rlimits).
 
-`HermesBatchRunner` (LLM-influenced) runs Hermes' unmodified `batch_runner.py`
-(`--dataset_file --batch_size=1 --run_name --distribution --model --base_url
---max_turns --num_workers=1 [--reasoning_effort] [--api_key]`) in a private
-temp directory. `HERMES_HOME/skills` is copied from `brain/skills` of the
-evaluated commit; the benchmark's `environment.repository_fixture` (below
-`--fixtures-root`) becomes the agent's `TERMINAL_CWD`. Hermes tools run with
-`TERMINAL_ENV=docker`, the benchmark's pinned image, `TERMINAL_DOCKER_NETWORK=false`,
-no forwarded environment or volumes and non-persistent containers; the host
-environment is not inherited. The dataset row carries the task `prompt`, the
-pinned `image` and the workspace as `cwd`: batch_runner registers `image` and
-`cwd` as task overrides, and Hermes v0.22.2 bind-mounts only a task's `cwd`
-override into the Docker sandbox (`tools/terminal_tool._resolve_task_host_cwd`).
-With `TERMINAL_CWD` alone the agent edits the container's private filesystem
-and the verified workspace stays unchanged (found in the isolated lab run).
-`data/<run>/trajectories.jsonl` is parsed:
-a missing row means the prompt failed (`exit_state=agent_error`, never success),
-except when batch_runner left a discard tombstone in `batch_*.jsonl`: v0.22.2
-drops every completed prompt without reasoning (`discarded: "no_reasoning"`),
-which is reported as `exit_state=discarded_no_reasoning`. Models without native
-reasoning therefore need Hermes' `<REASONING_SCRATCHPAD>` format to produce
-evaluable runs,
-a non-zero batch_runner exit is an infrastructure error. Tool-call and turn
-limits are enforced on the parsed trajectory. The trajectory, diff and run
-record are stored as artifacts. Known gap: batch_runner has no sampling seed
-(the seed is passed only as `HERMES_EVAL_SEED`). Live execution requires a
-Hermes install (`--hermes-agent-dir`) and a reachable model endpoint; CI
-exercises the adapter with a fixture that mimics the real CLI flags and row
-schema.
+`HermesBatchRunner` (LLM-influenced) runs one conversation of the real Hermes
+agent per task through `hermes_driver.py`, a script shipped with this package
+and executed by the Hermes interpreter (`--hermes-python`) in a private temp
+directory. The driver imports `AIAgent` from the unmodified Hermes checkout
+(`--hermes-agent-dir`) and calls it the way `batch_runner.py` does
+(`skip_context_files`, `skip_memory`, one task id, `max_iterations` = max
+turns), but with explicit toolsets: `HermesModelConfig.toolsets`, default
+`terminal,file,skills`.
+
+Why not `batch_runner.py` itself (isolated lab, Hermes v0.22.2 with a local
+Qwen3-4B):
+
+- batch_runner samples toolsets only from the fixed
+  `toolset_distributions.DISTRIBUTIONS`, and none of them contains `skills`.
+  In every real trajectory the system prompt held no skill at all, so the
+  evaluated brain could not change any outcome.
+- batch_runner drops every completed prompt without reasoning, which is a
+  training-data filter. Every run of an instruct model disappeared.
+- batch_runner takes the API key on its command line.
+
+The driver reuses batch_runner's helpers for tool statistics and for
+registering the task's pinned `image` and workspace `cwd` as task overrides.
+Hermes bind-mounts only that `cwd` override into the Docker sandbox
+(`tools/terminal_tool._resolve_task_host_cwd`); with `TERMINAL_CWD` alone the
+agent edited the container's private filesystem and the verified workspace
+stayed unchanged.
+
+`HERMES_HOME/skills` is copied from `brain/skills` of the evaluated commit. The
+benchmark's `environment.repository_fixture` (below `--fixtures-root`) becomes
+the workspace. Hermes tools run with `TERMINAL_ENV=docker`, the benchmark's
+pinned image, `TERMINAL_DOCKER_NETWORK=false`, no forwarded environment or
+volumes, and non-persistent containers; the host environment is not inherited.
+The model key reaches the driver as `HERMES_EVAL_API_KEY`, never on argv.
+
+The driver writes `out/trajectories.jsonl` (one row in batch_runner's schema)
+and `out/usage.json` (Hermes' session token counters, stored in the run record
+as `hermes_reported_usage`). Exit 3 means the agent failed before a trajectory
+existed (`exit_state=agent_error`, never success); any other non-zero exit is an
+infrastructure error. Tool-call and turn limits are enforced on the parsed
+trajectory. The trajectory, diff and run record are stored as artifacts. Known
+gap: Hermes has no sampling seed (the seed is passed only as
+`HERMES_EVAL_SEED`). Live execution requires a Hermes install and a reachable
+model with at least 64K context (Hermes' floor). CI exercises the adapter with
+a fake Hermes checkout (`tests/fixtures/hermes/`) that mirrors the imported
+API.
 
 ### Token metering (`metering_proxy.py`)
 
-Hermes itself reports no tokens on this path. Verified in the Hermes v0.22.2
-source: `AIAgent.run_conversation` returns `input_tokens`, `output_tokens` and
-related counters, but `batch_runner._process_single_prompt` copies only
-`completed`, `partial`, `api_calls`, tool stats and the converted trajectory
-into its result row, and it constructs `AIAgent` without a `session_db`, so no
-SessionDB row with token columns exists for the run. `hermes -z PROMPT
---usage-file PATH` reports tokens but writes no trajectory, so it cannot
-replace batch_runner.
+Tokens are measured between Hermes and the model endpoint; Hermes' own counters
+from `out/usage.json` are only a cross-check.
 
 Tokens are therefore measured between Hermes and the model endpoint. For every
 run `HermesBatchRunner` starts a `MeteringProxy` on `127.0.0.1` (random port)
-and passes its URL to batch_runner as `--base_url`; the proxy forwards each
+and passes its URL to the driver as `--base-url`; the proxy forwards each
 request unchanged (method, path, query, headers including `Authorization`,
 body) to the configured endpoint host and relays
 the response unchanged, streaming SSE chunk by chunk. From every 2xx response

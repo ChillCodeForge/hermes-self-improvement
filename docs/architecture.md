@@ -147,7 +147,7 @@ trusted.
 ## Not yet implemented or validated
 
 - Live installation/compatibility verification of the optional Hermes
-  finalization plugin and a supported `batch_runner` adapter.
+  finalization plugin and of the Hermes evaluation driver against a live model.
 - Curated and replay-verified 20–50-task starter benchmark corpus and
   holdout-rotation/spent-generation management.
 - `hermes-agent-self-evolution` and DSPy integrations (self-evolution's
