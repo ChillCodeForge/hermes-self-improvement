@@ -636,6 +636,9 @@ def test_cli_approve_and_promote_by_experiment_id(tmp_path, monkeypatch, capsys)
     (tmp_path / "operator.pub").write_bytes(operator_public)
     (tmp_path / "evaluator.pub").write_bytes(evaluator_public)
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    # Pin the layout explicitly: on a provisioned host the default
+    # /srv/hermes-improve layout would otherwise be verified (finding F4).
+    monkeypatch.setenv("HERMES_IMPROVE_LAYOUT", str(tmp_path / "absent-layout.json"))
     monkeypatch.setenv("HERMES_IMPROVE_ISOLATION", "unprovisioned")
     monkeypatch.delenv("HERMES_IMPROVE_CONFIG", raising=False)
     monkeypatch.setenv("HERMES_OPERATOR_PRIVATE_KEY", str(tmp_path / "operator.pem"))
