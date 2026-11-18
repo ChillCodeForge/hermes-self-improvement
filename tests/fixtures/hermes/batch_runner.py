@@ -63,7 +63,8 @@ def main():
             print(f"Error: --{required} is required")
             return 1
     with open(config["log"], "a", encoding="utf-8") as log:
-        log.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "cwd": os.getcwd()}) + "\n")
+        row = json.loads(Path(flags["dataset_file"]).read_text().splitlines()[0])
+        log.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "cwd": os.getcwd(), "row": row}) + "\n")
     mode = config.get("mode", "normal")
     if mode == "crash":
         print("Fatal error: provider unreachable")
@@ -71,6 +72,13 @@ def main():
     prompt = json.loads(Path(flags["dataset_file"]).read_text().splitlines()[0])["prompt"]
     output_dir = Path("data") / flags["run_name"]
     output_dir.mkdir(parents=True, exist_ok=True)
+    if mode == "no_reasoning":
+        # Real v0.22.2 behaviour: a completed prompt without reasoning is dropped,
+        # a tombstone stays in batch_0.jsonl, trajectories.jsonl stays empty.
+        (output_dir / "batch_0.jsonl").write_text(json.dumps(
+            {"prompt_index": 0, "discarded": "no_reasoning", "prompt": prompt}) + "\n")
+        (output_dir / "trajectories.jsonl").write_text("")
+        return 0
     if mode == "agent_error":
         print("Error processing prompt 0: model returned 500")
         (output_dir / "trajectories.jsonl").write_text("")

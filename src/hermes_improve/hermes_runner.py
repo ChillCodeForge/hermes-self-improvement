@@ -7,7 +7,7 @@ Each run gets a private temporary directory containing:
   ``brain/brain/skills`` (or empty when the commit has no skills);
 * ``source/``      - the benchmark's repository fixture (pre-run state);
 * ``workspace/``   - a copy of ``source`` used as the agent's ``TERMINAL_CWD``;
-* ``dataset.jsonl`` with the single task prompt.
+* ``dataset.jsonl`` with the single task row (``prompt``, ``image``, ``cwd``).
 
 ``batch_runner.py`` is invoked unmodified (fire CLI flags) with one worker and
 batch size one, writes ``data/<run_name>/trajectories.jsonl`` below the run
@@ -202,6 +202,30 @@ def load_single_trajectory(path: Path) -> HermesTrajectory | None:
     return parse_trajectory_record(records[0])
 
 
+def discarded_reason(run_data: Path) -> str | None:
+    """Reason batch_runner discarded prompt 0, read from its ``batch_*.jsonl`` tombstones.
+
+    batch_runner (v0.22.2) drops a completed prompt whose assistant turns carry
+    no reasoning (``discarded: "no_reasoning"``); the tombstone stays in the
+    batch file and is excluded from ``trajectories.jsonl``. Without this, such
+    a run looks like an anonymous agent error.
+    """
+    for batch in sorted(run_data.glob("batch_*.jsonl")):
+        if batch.stat().st_size > _MAX_TRAJECTORY_BYTES:
+            raise IntegrityError("Hermes batch file exceeds the 10 MiB limit")
+        for line in batch.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            reason = record.get("discarded")
+            if record.get("prompt_index") == 0 and isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,40}", reason):
+                return reason
+    return None
+
+
 class HermesBatchRunner:
     """Runs one benchmark task for one brain commit through Hermes' batch_runner."""
 
@@ -298,7 +322,14 @@ class HermesBatchRunner:
             run_dir = root / "run"
             run_dir.mkdir()
             dataset = root / "dataset.jsonl"
-            dataset.write_text(json.dumps({"prompt": prompt}) + "\n", encoding="utf-8")
+            # ``image`` + ``cwd`` per row: batch_runner registers them as task overrides,
+            # and Hermes bind-mounts only a task's ``cwd`` override into the Docker
+            # sandbox (``tools/terminal_tool._resolve_task_host_cwd``). With
+            # TERMINAL_CWD alone the agent edits the container's private filesystem
+            # and the verified workspace stays untouched.
+            dataset.write_text(
+                json.dumps({"prompt": prompt, "image": image, "cwd": str(workspace)}) + "\n", encoding="utf-8",
+            )
             run_name = "eval-" + hashlib.sha256(f"{benchmark.id}:{commit}:{seed}".encode()).hexdigest()[:16]
             usage: UsageReport | None = None
             with contextlib.ExitStack() as stack:
@@ -320,6 +351,10 @@ class HermesBatchRunner:
                 run_dir / "data" / run_name / "trajectories.jsonl"
             )
             exit_state = self._exit_state(trajectory, timed_out)
+            if exit_state == "agent_error":
+                reason = discarded_reason(run_dir / "data" / run_name)
+                if reason is not None:
+                    exit_state = f"discarded_{reason}"
             tokens_measured = (
                 usage is not None
                 and usage.complete
