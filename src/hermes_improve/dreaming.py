@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
+from .clustering import cluster_texts, task_fingerprint
 from .curator import CuratorAdapter
 from .models import CandidateType, ImprovementSignal
 from .prompting import load_prompt, wrap_untrusted_evidence
@@ -23,12 +25,95 @@ class DreamingModel(Protocol):
     def complete(self, *, role: str, system_prompt: str, user_payload: str, json_object: bool = False) -> str: ...
 
 
+_MAX_ERROR_LENGTH = 180
+_MAX_ERROR_SIGNALS = 10
+# Volatile tokens masked before clustering, applied in this order. Patterns
+# run on case-folded text.
+_VOLATILE_TOKENS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "<id>"),
+    (re.compile(r"(?:\b[a-z]:)?[\w.~-]*(?:[\\/][\w.~-]+)+[\\/]?"), "<path>"),
+    (re.compile(r"\b0x[0-9a-f]+\b|\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b"), "<id>"),
+    (re.compile(r"\d+(?:\.\d+)?"), "<n>"),
+)
+
+
+def normalize_error(text: str) -> str:
+    """Case-fold an error message and mask paths, ids and numbers.
+
+    Errors that differ only in such volatile tokens normalize to the same
+    string and therefore always share a LIGHT cluster.
+    """
+    normalized = text.strip().casefold()
+    for pattern, placeholder in _VOLATILE_TOKENS:
+        normalized = pattern.sub(placeholder, normalized)
+    return " ".join(normalized.split())
+
+
+@dataclass(frozen=True)
+class ErrorCluster:
+    """One group of similar LIGHT errors.
+
+    ``cluster_id`` is ``err-`` plus 16 hex digits and depends only on the set
+    of normalized member texts; ``representative`` is the most frequent raw
+    (case-folded, truncated) variant, ties broken lexicographically.
+    """
+
+    cluster_id: str
+    representative: str
+    count: int
+    variants: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cluster_id": self.cluster_id,
+            "representative": self.representative,
+            "count": self.count,
+            "variants": self.variants,
+        }
+
+
 @dataclass(frozen=True)
 class DreamingReport:
     sessions_processed: int
     clusters: dict[str, int]
     signals: tuple[ImprovementSignal, ...]
     hypotheses: tuple[dict[str, Any], ...] = ()
+    error_clusters: tuple[ErrorCluster, ...] = ()
+
+
+def cluster_errors(
+    errors: Mapping[str, int], tool_failures: Mapping[str, int] | None = None,
+) -> tuple[ErrorCluster, ...]:
+    """Group raw error strings into deterministic clusters without a model.
+
+    Free-text errors are normalized (:func:`normalize_error`, exact match) and
+    the distinct normalized texts are clustered lexically with
+    :func:`clustering.cluster_texts` (fingerprint + MinHash/LSH shingle
+    Jaccard, no semantic layer). Tool failures are keyed by tool name only and
+    never merged with each other. The result is sorted by descending count,
+    then cluster id, and does not depend on input order.
+    """
+    by_normalized: dict[str, Counter[str]] = defaultdict(Counter)
+    for raw, count in errors.items():
+        by_normalized[normalize_error(raw)][raw] += count
+    assignment = cluster_texts({text: text for text in by_normalized})
+    members: dict[str, Counter[str]] = defaultdict(Counter)
+    for text, variants in by_normalized.items():
+        members["err-" + assignment[text].removeprefix("sem-")].update(variants)
+    for name, count in (tool_failures or {}).items():
+        raw = f"tool {name} failed"
+        members["err-" + task_fingerprint(raw)[:16]][raw] += count
+    clusters = [
+        ErrorCluster(
+            cluster_id=cluster_id,
+            representative=min(variants.items(), key=lambda item: (-item[1], item[0]))[0],
+            count=sum(variants.values()),
+            variants=len(variants),
+        )
+        for cluster_id, variants in members.items()
+    ]
+    clusters.sort(key=lambda cluster: (-cluster.count, cluster.cluster_id))
+    return tuple(clusters)
 
 
 class DreamingEngine:
@@ -42,11 +127,12 @@ class DreamingEngine:
 
     def light(self, sessions: Sequence[Mapping[str, Any]]) -> DreamingReport:
         errors: Counter[str] = Counter()
+        tool_failures: Counter[str] = Counter()
         tools: Counter[str] = Counter()
         for session in sessions:
             for error in session.get("errors", []) if isinstance(session.get("errors", []), list) else []:
-                if isinstance(error, str):
-                    errors[error.strip().casefold()[:180]] += 1
+                if isinstance(error, str) and error.strip():
+                    errors[error.strip().casefold()[:_MAX_ERROR_LENGTH]] += 1
             tool_stats = session.get("tool_stats")
             if isinstance(tool_stats, Mapping):
                 for name, stats in tool_stats.items():
@@ -57,28 +143,35 @@ class DreamingEngine:
                     if isinstance(count, int) and not isinstance(count, bool) and count > 0:
                         tools[name] += count
                     if isinstance(failures, int) and not isinstance(failures, bool) and failures > 0:
-                        errors[f"tool {name} failed"] += failures
+                        tool_failures[name] += failures
             else:
                 for tool in session.get("tool_calls", []) if isinstance(session.get("tool_calls", []), list) else []:
                     if isinstance(tool, Mapping) and isinstance(tool.get("name"), str):
                         tools[tool["name"]] += 1
+        error_clusters = cluster_errors(errors, tool_failures)
         signals = []
-        for error, count in errors.most_common(10):
-            if count > 1:
+        for cluster in error_clusters[:_MAX_ERROR_SIGNALS]:
+            if cluster.count > 1:
                 signals.append(ImprovementSignal(
-                    source="dreaming-light", summary=f"Recurring error observed {count} times",
-                    issue=error, impact_score=min(1.0, count / max(1, len(sessions))),
-                    evidence={"occurrences": count},
+                    source="dreaming-light", summary=f"Recurring error observed {cluster.count} times",
+                    issue=cluster.representative,
+                    impact_score=min(1.0, cluster.count / max(1, len(sessions))),
+                    evidence={
+                        "occurrences": cluster.count,
+                        "cluster_id": cluster.cluster_id,
+                        "variants": cluster.variants,
+                    },
                 ))
         curator_signals = self.curator.signals() if self.curator is not None else []
         signals.extend(curator_signals)
-        clusters = {"errors": len(errors), "tools": len(tools)}
+        clusters = {"errors": len(error_clusters), "tools": len(tools)}
         if self.curator is not None:
             clusters["curator"] = len(curator_signals)
         return DreamingReport(
             sessions_processed=len(sessions),
             clusters=clusters,
             signals=tuple(signals),
+            error_clusters=error_clusters,
         )
 
     def rem(self, sessions: Sequence[Mapping[str, Any]]) -> DreamingReport:
@@ -96,7 +189,9 @@ class DreamingEngine:
             json_object=True,
         )
         parsed = _parse_hypotheses(response)
-        return DreamingReport(light.sessions_processed, light.clusters, light.signals, tuple(parsed))
+        return DreamingReport(
+            light.sessions_processed, light.clusters, light.signals, tuple(parsed), light.error_clusters,
+        )
 
     def deep(self, hypotheses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if self.model is None:
