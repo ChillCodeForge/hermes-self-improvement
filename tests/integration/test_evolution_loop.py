@@ -206,6 +206,25 @@ def test_out_of_scope_variant_content_is_rejected_and_retained(tmp_path):
     assert git(fixture.repo, "show", "main:config/promotion.yaml") == "min_quality_delta: 3"
 
 
+def test_small_smoke_suite_warns_but_evolution_still_runs(tmp_path):
+    fixture = evolution_fixture(tmp_path)
+    gateway = fixture.gateway()
+    smoke_count = len(gateway._suite_ids["SMOKE"])
+    assert 0 < smoke_count < 20
+    (warning,) = gateway.screening_warnings
+    assert f"SMOKE suite has {smoke_count} task(s)" in warning and "minimum of 20" in warning
+    loop = EvolutionLoop(
+        repository=fixture.repo, store=fixture.store, gateway=gateway,
+        strategy=ModelMutationStrategy(ScriptedOptimizerModel([["variant A quality=3"]])),
+        expected_strategy_version="1", config=EvolutionConfig.from_mapping({"max_generations": 1}),
+    )
+    report = loop.run(fixture.root_id)
+    assert report.generations and report.generations[0].smoke_passed == 1
+    # At the minimum the advisory warning disappears.
+    gateway._suite_ids["SMOKE"] = [f"task-{index}" for index in range(20)]
+    assert gateway.screening_warnings == ()
+
+
 def test_gateway_and_loop_enforce_role_separation_and_pinned_strategy(tmp_path):
     fixture = evolution_fixture(tmp_path)
     with pytest.raises(AccessDenied, match="generator benchmark view"):

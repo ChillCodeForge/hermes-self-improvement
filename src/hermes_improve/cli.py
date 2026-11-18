@@ -58,7 +58,7 @@ from .target_paths import assert_evaluable_candidate_paths
 from .store import ExperimentStore
 from .suites import (
     ImpactScope, Suite, corpus_manifest, impact_scope_for_candidate, select_evaluation_suite, select_suite,
-    suite_manifest,
+    smoke_size_warning, suite_manifest,
 )
 # Observability and decision-history helpers (spec §35/§36).
 from contextlib import nullcontext
@@ -1146,6 +1146,8 @@ def main() -> int:
         )
         if gateway.holdout_available:
             raise AccessDenied("evolve runs as the generator and must never see sealed holdout tasks")
+        for warning in gateway.screening_warnings:
+            print(f"warning: {warning}", file=sys.stderr)
         loop = EvolutionLoop(
             repository=args.repository, store=store, gateway=gateway, strategy=strategy,
             expected_strategy_version=expected_version, config=config,
@@ -1473,6 +1475,11 @@ def main() -> int:
         selected, holdout, applied_impact = select_evaluation_suite(benchmarks, suite, impact=impact)
         suite_ids = [item.id for item in selected]
         holdout_ids = [item.id for item in holdout]
+        selection_warnings = [
+            warning for warning in (smoke_size_warning(suite, len(selected)),) if warning is not None
+        ]
+        for warning in selection_warnings:
+            print(f"warning: {warning}", file=sys.stderr)
         selection_manifest = suite_manifest(
             selected, suite=suite, benchmark_version=access_store.version, impact=applied_impact,
         )
@@ -1551,6 +1558,7 @@ def main() -> int:
                     "holdout_manifest_digest": holdout_manifest["digest"] if holdout_manifest else None,
                     "impact": applied_impact.to_dict(),
                     "task_ids": suite_ids,
+                    "warnings": selection_warnings,
                 },
             )
         print(json.dumps(report_payload(report), indent=2))

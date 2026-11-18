@@ -56,6 +56,7 @@ from .self_evolution import verify_strategy_version
 from .skill_paths import validate_skill_target
 from .run_policy import RunPolicy
 from .store import ExperimentStore
+from .suites import smoke_size_warning
 
 if TYPE_CHECKING:
     from .config import EvolutionConfig as ScoringEvolutionConfig
@@ -237,6 +238,16 @@ class EvaluationGateway:
     @property
     def holdout_available(self) -> bool:
         return bool(self._holdout_ids)
+
+    @property
+    def screening_warnings(self) -> tuple[str, ...]:
+        """Advisory warnings about the screening suites (never blocking).
+
+        Currently only the SMOKE minimum (`suites.SMOKE_MIN`): SMOKE screening
+        is non-deciding, so a small SMOKE suite is reported, not rejected.
+        """
+        warning = smoke_size_warning("SMOKE", len(self._suite_ids["SMOKE"]))
+        return (warning,) if warning is not None else ()
 
     def require_screening_suites(self) -> None:
         missing = [stage for stage in SCREENING_STAGES if not self._suite_ids[stage]]

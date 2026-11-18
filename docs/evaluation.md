@@ -53,6 +53,14 @@ categories named by the skill); other candidate types are not narrowed. If
 narrowing leaves SMOKE/CORE empty the full suite is used. FULL ignores impact
 and adds every sealed holdout task.
 
+A SMOKE selection (after narrowing) with fewer than `suites.SMOKE_MIN` (20)
+tasks prints `warning: SMOKE suite has N task(s), below the advisory minimum
+of 20; ...` to stderr and is recorded in the signed metrics as
+`suite_selection.warnings`; the run continues. The minimum is advisory on
+purpose: SMOKE does not decide promotion, impact narrowing legitimately
+produces small SMOKE sets, and small corpora must still run (see
+`docs/benchmarking.md`, Suites).
+
 Programmatic use: `PairedEvaluator(benchmark_store, runner, policy,
 experiment_store=None, evaluator_signing_key=None, artifact_store=None, *,
 run_policy=RunPolicy(), judge=None).evaluate(candidate, baseline_commit=...,

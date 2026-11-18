@@ -161,10 +161,29 @@ deterministic function:
 - `SMOKE`/`CORE`: public, non-shadow records declaring the suite, narrowed by
   an `ImpactScope` (categories, required capabilities, or candidate target
   paths matched against `benchmark.impact_areas` globs). Critical REGRESSION
-  records in the suite are always kept. SMOKE is capped at 50.
+  records in the suite are always kept. SMOKE is capped at 50
+  (`SMOKE_LIMIT`).
 - `FULL`: all public, non-shadow records declaring FULL; impact is ignored.
 - `SEALED_HOLDOUT`: every sealed record supplied by the evaluator; impact is
   ignored so holdouts cannot be cherry-picked.
+
+**SMOKE minimum (advisory).** The spec targets 20–50 SMOKE tasks.
+`suites.SMOKE_MIN = 20` is the lower bound, but it is deliberately *not
+enforced* (a documented spec deviation): a selection below it still runs, and
+`suites.smoke_size_warning(suite, task_count)` produces a warning instead.
+`evaluate --suite SMOKE` prints it to stderr and records it in the signed
+evaluation metrics under `suite_selection.warnings` (an empty list when there
+is no shortfall); `evolve` prints it to stderr once per run
+(`EvaluationGateway.screening_warnings`). Reasons for not blocking:
+
+- SMOKE is non-deciding staged evidence. Promotion is decided by FULL plus
+  the sealed holdout, so a small SMOKE suite cannot let a bad candidate
+  through; it only gives a weaker early signal.
+- Impact-aware narrowing legitimately shrinks SMOKE to a skill candidate's
+  brain area, which is often far below 20 tasks. Blocking would force
+  irrelevant tasks back in or make narrowing unusable.
+- The bundled corpus (SMOKE 14, below) and small lab corpora would otherwise
+  be unable to run the staged pipeline at all.
 
 Only the latest version of an id is selected; only `HARD_BENCHMARK` records
 by default. `suite_manifest(...)` returns `{schema_version, suite,
@@ -222,7 +241,8 @@ splits only, no holdout data is in the repository). The tables describe the
 | data-transform | 4 | mcp | 3 |
 
 Difficulties: 11 easy, 13 medium, 2 hard. Suites: SMOKE 14, CORE 23,
-FULL 26 (the SMOKE target of 20–50 tasks needs a larger corpus).
+FULL 26 (the SMOKE target of 20–50 tasks needs a larger corpus; until then
+SMOKE runs emit the advisory `SMOKE_MIN` warning described under Suites).
 
 Each task lives in `benchmarks/fixtures/<id>/`:
 

@@ -244,6 +244,21 @@ def test_evaluate_selects_impact_scoped_suite_and_records_manifest_digests(setup
     assert smoke["suite_manifest_digest"] == expected["digest"]
 
 
+def test_small_smoke_suite_warns_on_stderr_and_in_signed_metrics_without_failing(setup, capsys):
+    capsys.readouterr()
+    setup["evaluate"]("SMOKE")  # asserts exit code 0: the shortfall never fails the run
+    stderr = capsys.readouterr().err
+    assert "warning: SMOKE suite has 1 task(s), below the advisory minimum of 20" in stderr
+    setup["evaluate"]("CORE")
+    assert "advisory minimum" not in capsys.readouterr().err
+    smoke, core = (
+        json.loads(run["evaluation"]["metrics_json"])["suite_selection"]
+        for run in setup["store"].candidate_evaluations("cand-e2e")
+    )
+    assert len(smoke["warnings"]) == 1 and "below the advisory minimum of 20" in smoke["warnings"][0]
+    assert core["warnings"] == []
+
+
 def test_experiment_ledger_fields_follow_creation_evaluation_and_promotion(setup):
     store, candidate = setup["store"], setup["candidate"]
     created = store.show_experiment("exp-e2e")

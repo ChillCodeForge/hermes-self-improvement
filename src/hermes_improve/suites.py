@@ -6,7 +6,8 @@ Suite membership is declared per record in `benchmark.suites`. Selection rules:
   optional `ImpactScope` narrows them to records whose categories,
   required capabilities or `benchmark.impact_areas` globs touch the
   candidate. Critical REGRESSION records declared in the suite are always
-  kept as a safety net. SMOKE is capped at `SMOKE_LIMIT` records.
+  kept as a safety net. SMOKE is capped at `SMOKE_LIMIT` records; fewer than
+  `SMOKE_MIN` records only produce an advisory warning (`smoke_size_warning`).
 * FULL: every public, non-shadow record that declares FULL. Impact is
   ignored: FULL is the complete regression pool.
 * SEALED_HOLDOUT: every SEALED_HOLDOUT record supplied by the caller (only the
@@ -29,6 +30,11 @@ from typing import Any, Iterable, Sequence
 from .models import Benchmark, Eligibility, Split, canonical_json
 
 SMOKE_LIMIT = 50
+# Advisory lower bound of the spec's 20-50 task SMOKE target. Deliberately not
+# enforced: SMOKE is non-deciding staged evidence (FULL + SEALED_HOLDOUT
+# decide), impact narrowing legitimately shrinks it to a candidate's brain
+# area, and small corpora would otherwise be unusable. A shortfall only warns.
+SMOKE_MIN = 20
 _CRITICALITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
 
@@ -153,6 +159,23 @@ def select_suite(
     if suite is Suite.SMOKE:
         selected = selected[:smoke_limit]
     return tuple(selected)
+
+
+def smoke_size_warning(suite: Suite | str, task_count: int, *, minimum: int = SMOKE_MIN) -> str | None:
+    """Advisory warning when a SMOKE selection is below the spec's minimum.
+
+    Returns None for other suites and for SMOKE selections of at least
+    `minimum` tasks. Never raises for a small suite: SMOKE does not decide
+    promotion, so a shortfall is made visible instead of blocking the run.
+    """
+    if minimum < 1:
+        raise ValueError("smoke minimum must be positive")
+    if Suite(str(suite).upper()) is not Suite.SMOKE or task_count >= minimum:
+        return None
+    return (
+        f"SMOKE suite has {task_count} task(s), below the advisory minimum of {minimum}; "
+        "SMOKE is non-deciding staged evidence, so the run continues"
+    )
 
 
 def _latest_versions(rows: Sequence[Benchmark]) -> list[Benchmark]:
