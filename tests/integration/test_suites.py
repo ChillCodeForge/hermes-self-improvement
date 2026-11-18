@@ -9,10 +9,12 @@ from benchmark_factory import record
 from hermes_improve.benchmarks import BenchmarkStore
 from hermes_improve.models import Benchmark
 from hermes_improve.suites import (
+    SMOKE_MIN,
     ImpactScope,
     Suite,
     corpus_manifest,
     select_suite,
+    smoke_size_warning,
     suite_manifest,
     verify_manifest,
 )
@@ -70,6 +72,22 @@ def test_smoke_is_capped_and_selection_is_deterministic():
     first = select_suite(rows, Suite.SMOKE)
     assert len(first) == 50
     assert ids(first) == ids(select_suite(list(reversed(rows)), Suite.SMOKE))
+
+
+def test_smoke_minimum_is_advisory_and_warns_only_below_twenty():
+    assert SMOKE_MIN == 20
+    small = select_suite([Benchmark.from_dict(record(f"task-{index:02d}")) for index in range(19)], Suite.SMOKE)
+    assert len(small) == 19  # selection never fails or pads below the minimum
+    warning = smoke_size_warning(Suite.SMOKE, len(small))
+    assert warning is not None and "19 task(s)" in warning and "minimum of 20" in warning
+    enough = select_suite([Benchmark.from_dict(record(f"task-{index:02d}")) for index in range(20)], "smoke")
+    assert smoke_size_warning("smoke", len(enough)) is None
+    assert smoke_size_warning(Suite.SMOKE, 50) is None
+    # Only SMOKE has the minimum; CORE/FULL selections of any size never warn.
+    assert smoke_size_warning(Suite.CORE, 1) is None and smoke_size_warning("FULL", 1) is None
+    assert smoke_size_warning(Suite.SMOKE, 4, minimum=3) is None
+    with pytest.raises(ValueError, match="positive"):
+        smoke_size_warning(Suite.SMOKE, 4, minimum=0)
 
 
 def test_only_latest_version_is_selected_and_duplicates_rejected():
