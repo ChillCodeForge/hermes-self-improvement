@@ -178,6 +178,20 @@ def test_hermes_runner_invokes_the_driver_with_isolated_brain_and_parses_result(
     assert Path(call["cwd"]).name == "run"
 
 
+def test_hermes_runner_forwards_the_same_docker_daemon_selection_as_the_sandbox(tmp_path, monkeypatch):
+    selection = {
+        "DOCKER_HOST": "tcp://remote-daemon.invalid:2376", "DOCKER_CONTEXT": "lab",
+        "DOCKER_TLS_VERIFY": "1", "DOCKER_CERT_PATH": "/etc/hermes/docker-certs",
+        "DOCKER_CONFIG": "/etc/hermes/docker",
+    }
+    for key, value in selection.items():
+        monkeypatch.setenv(key, value)
+    runner, _baseline, candidate, log = make_runner(tmp_path)
+    runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    env = json.loads(log.read_text().splitlines()[0])["env"]
+    assert {key: env.get(key) for key in selection} == selection
+
+
 def test_hermes_runner_reports_agent_error_and_tool_limit_as_failures(tmp_path):
     task = Benchmark.from_dict(benchmark_record(checks=[{"type": "exit_code"}]))
     runner, _baseline, candidate, _log = make_runner(tmp_path / "a", mode="agent_error")

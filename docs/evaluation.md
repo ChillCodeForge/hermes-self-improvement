@@ -125,8 +125,14 @@ of the sandbox image.
 digest-pinned image, `--pull=never`, `--network=none` by default, read-only
 root, user 65534, `--cap-drop=ALL`, `no-new-privileges`, PID/memory/CPU
 limits, `--ipc=none`, size-bounded tmpfs for `/tmp` and `/workspace`, read-only
-input bind mount, and only `PATH`/`HOME`/`DOCKER_CONFIG` passed to the Docker
-client. Only `HERMES_EVAL_*` variables can be passed into containers. The
+input bind mount, and only `PATH`/`HOME` plus the daemon-selection variables
+`DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH` and
+`DOCKER_CONFIG` (when set) passed to the Docker client, so remote, rootless and
+DinD daemons work. These reach the client only, never a container. If Docker
+fails before creating the container (no cidfile), typically because the daemon
+is unreachable, the executor raises an error naming the daemon and the CLI
+output instead of a missing-snapshot error. Only `HERMES_EVAL_*` variables can
+be passed into containers. The
 post-run workspace is returned as a tar snapshot; the host extracts regular
 files and directories only (symlinks and special files are reported, never
 materialized) within size and entry limits.
@@ -205,8 +211,10 @@ stayed unchanged.
 benchmark's `environment.repository_fixture` (below `--fixtures-root`) becomes
 the workspace. Hermes tools run with `TERMINAL_ENV=docker`, the benchmark's
 pinned image, `TERMINAL_DOCKER_NETWORK=false`, no forwarded environment or
-volumes, and non-persistent containers; the host environment is not inherited.
-The model key reaches the driver as `HERMES_EVAL_API_KEY`, never on argv.
+volumes, and non-persistent containers; the host environment is not inherited
+except the same Docker daemon-selection variables the sandbox forwards to its
+Docker client (`DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY`,
+`DOCKER_CERT_PATH`, `DOCKER_CONFIG`, when set). The model key reaches the driver as `HERMES_EVAL_API_KEY`, never on argv.
 
 The driver writes `out/trajectories.jsonl` (one row in batch_runner's schema)
 and `out/usage.json` (Hermes' session token counters, stored in the run record

@@ -5,8 +5,8 @@ mounts and tmpfs targets to host directories, records the argv, and runs the
 entrypoint with container paths rewritten. Kernel isolation is obviously not
 reproduced; tests use it to exercise the real container script, snapshot
 transport and verifier wiring. Configuration lives in a JSON file next to the
-script (``<script>.json``) because the sandbox passes no custom environment to
-the Docker client.
+script (``<script>.json``) because the sandbox passes only an allowlisted
+environment (PATH, HOME and the daemon-selection variables) to the Docker client.
 """
 
 from __future__ import annotations
@@ -23,12 +23,19 @@ from pathlib import Path
 VALUE_FLAGS = {"--memory", "--cpus", "--tmpfs", "--mount", "--cidfile", "--env", "--workdir", "--entrypoint"}
 
 
-def install(directory: Path, *, network: dict | None = None) -> Path:
-    """Write an executable fake ``docker`` into *directory* and return its path."""
+def install(directory: Path, *, network: dict | None = None, daemon_unreachable: bool = False) -> Path:
+    """Write an executable fake ``docker`` into *directory* and return its path.
+
+    With ``daemon_unreachable`` every command fails like the real CLI does when
+    it cannot reach the daemon selected by ``DOCKER_HOST`` (exit 1, no container).
+    """
     script = directory / "docker"
     script.write_text(f"#!{sys.executable}\n" + Path(__file__).read_text(encoding="utf-8"), encoding="utf-8")
     script.chmod(0o755)
-    config = {"log": str(directory / "docker-calls.jsonl"), "network": network}
+    config = {
+        "log": str(directory / "docker-calls.jsonl"), "network": network,
+        "daemon_unreachable": daemon_unreachable,
+    }
     script.with_suffix(".json").write_text(json.dumps(config), encoding="utf-8")
     return script
 
@@ -89,6 +96,10 @@ def main() -> int:
     args = sys.argv[1:]
     with open(config["log"], "a", encoding="utf-8") as log:
         log.write(json.dumps(args) + "\n")
+    if config.get("daemon_unreachable"):
+        host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+        sys.stderr.write(f"Cannot connect to the Docker daemon at {host}. Is the docker daemon running?\n")
+        return 1
     if args[:1] == ["run"]:
         return _run(args[1:], config)
     if args[:2] == ["network", "inspect"]:
