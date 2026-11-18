@@ -103,7 +103,10 @@ def load_batch_runner_export(path: Path) -> list[dict[str, Any]]:
                 normalized[key] = value
             if normalized["success"] + normalized["failure"] > normalized["count"]:
                 raise ValueError(f"batch trajectory line {line_number} has inconsistent tool counters")
-            tool_stats[name] = normalized
+            # Hermes lists every registered tool; an all-zero row only says the tool
+            # was available, carries no evidence and would bloat the REM payload.
+            if normalized["count"] or normalized["success"] or normalized["failure"]:
+                tool_stats[name] = normalized
         identity = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
         session_id = f"hermes-batch-{identity}"
         if session_id in seen_ids:

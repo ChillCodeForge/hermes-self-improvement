@@ -133,3 +133,94 @@ def test_batch_import_rejects_unhashable_turn_role(tmp_path):
 
     with pytest.raises(ValueError, match="invalid turn"):
         load_batch_runner_export(source)
+
+
+_ZERO = {"count": 0, "success": 0, "failure": 0}
+_USED_TOOLS = {
+    "terminal": {"count": 4, "success": 3, "failure": 1},
+    "read_file": {"count": 2, "success": 2, "failure": 0},
+    "web_search": {"count": 1, "success": 0, "failure": 0},
+}
+
+
+def hermes_v022_tool_stats():
+    """Hermes v0.22 lists every registered tool; only three were actually used."""
+    stats = {}
+    for prefix in ("kanban", "feishu", "browser", "github", "calendar", "memory"):
+        for index in range(15):
+            stats[f"{prefix}_action_{index}"] = dict(_ZERO)
+    stats.update({name: dict(counts) for name, counts in _USED_TOOLS.items()})
+    return stats
+
+
+def test_batch_import_drops_unused_zero_tool_stats_and_shrinks_rem_payload(tmp_path):
+    from hermes_improve.dreaming import _untrusted_projection
+
+    record = trajectory_record()
+    record["tool_stats"] = hermes_v022_tool_stats()
+    assert len(record["tool_stats"]) == 93
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    export = load_batch_runner_export(source)[0]
+
+    assert export["tool_stats"] == _USED_TOOLS
+    unfiltered = dict(export, tool_stats=record["tool_stats"])
+    projected = len(json.dumps(_untrusted_projection(export)))
+    assert projected < len(json.dumps(_untrusted_projection(unfiltered))) / 5
+    report = DreamingEngine().light([export])
+    assert report.clusters["tools"] == 3
+
+
+def test_batch_import_keeps_empty_tool_stats_when_no_tool_was_used(tmp_path):
+    record = trajectory_record()
+    record["tool_stats"] = {"kanban_create": dict(_ZERO), "feishu_send": dict(_ZERO)}
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert load_batch_runner_export(source)[0]["tool_stats"] == {}
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        {"count": 0, "success": 0},
+        {"count": 0, "success": 0, "failure": -1},
+        {"count": False, "success": 0, "failure": 0},
+    ],
+)
+def test_batch_import_validates_zero_like_rows_before_dropping(tmp_path, bad_row):
+    record = trajectory_record()
+    record["tool_stats"] = {**hermes_v022_tool_stats(), "kanban_broken": bad_row}
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="tool counters"):
+        load_batch_runner_export(source)
+
+
+def test_tool_stats_limit_applies_to_raw_rows_including_zero_rows(tmp_path):
+    record = trajectory_record()
+    record["tool_stats"] = {f"tool_{index}": dict(_ZERO) for index in range(513)}
+    source = tmp_path / "trajectories.jsonl"
+    source.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid tool statistics"):
+        load_batch_runner_export(source)
+
+
+def test_zero_tool_rows_do_not_change_evaluation_tool_metrics():
+    from hermes_improve.hermes_runner import parse_trajectory_record
+
+    base = {
+        "prompt_index": 0,
+        "conversations": trajectory_record()["conversations"],
+        "completed": True,
+        "partial": False,
+        "api_calls": 2,
+    }
+    used_only = parse_trajectory_record(dict(base, tool_stats=dict(_USED_TOOLS)))
+    with_zero_rows = parse_trajectory_record(dict(base, tool_stats=hermes_v022_tool_stats()))
+
+    assert (used_only.tool_calls, used_only.failed_tool_calls) == (7, 1)
+    assert (with_zero_rows.tool_calls, with_zero_rows.failed_tool_calls) == (7, 1)
