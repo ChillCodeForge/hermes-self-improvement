@@ -323,3 +323,22 @@ def test_measured_hermes_runs_reach_the_efficiency_report(tmp_path):
     assert efficiency["candidate"]["token_usage_reported"] is True
     assert efficiency["candidate"]["tokens_per_success"] == 180
     assert report.outcomes[0].token_usage_reported is True
+
+
+def test_dataset_row_carries_image_and_workspace_cwd_for_the_docker_mount(tmp_path):
+    # Hermes v0.22.2 bind-mounts only a task's ``cwd`` override (registered by
+    # batch_runner from the row's ``image``/``cwd``); without it the agent edits
+    # the container's private filesystem (found in the isolated lab).
+    runner, _baseline, candidate, log = make_runner(tmp_path)
+    runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    call = json.loads(log.read_text().splitlines()[0])
+    assert call["row"]["image"] == IMAGE
+    assert call["row"]["cwd"] == call["env"]["TERMINAL_CWD"]
+    assert call["row"]["cwd"].endswith("workspace")
+
+
+def test_prompt_discarded_for_missing_reasoning_is_reported_as_such(tmp_path):
+    runner, _baseline, candidate, _log = make_runner(tmp_path, mode="no_reasoning")
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record(checks=[{"type": "exit_code"}])), 1)
+    assert observation.exit_state == "discarded_no_reasoning"
+    assert not observation.success and observation.trajectory_digest == ""

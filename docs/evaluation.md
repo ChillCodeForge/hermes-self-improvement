@@ -182,8 +182,19 @@ evaluated commit; the benchmark's `environment.repository_fixture` (below
 `--fixtures-root`) becomes the agent's `TERMINAL_CWD`. Hermes tools run with
 `TERMINAL_ENV=docker`, the benchmark's pinned image, `TERMINAL_DOCKER_NETWORK=false`,
 no forwarded environment or volumes and non-persistent containers; the host
-environment is not inherited. `data/<run>/trajectories.jsonl` is parsed:
+environment is not inherited. The dataset row carries the task `prompt`, the
+pinned `image` and the workspace as `cwd`: batch_runner registers `image` and
+`cwd` as task overrides, and Hermes v0.22.2 bind-mounts only a task's `cwd`
+override into the Docker sandbox (`tools/terminal_tool._resolve_task_host_cwd`).
+With `TERMINAL_CWD` alone the agent edits the container's private filesystem
+and the verified workspace stays unchanged (found in the isolated lab run).
+`data/<run>/trajectories.jsonl` is parsed:
 a missing row means the prompt failed (`exit_state=agent_error`, never success),
+except when batch_runner left a discard tombstone in `batch_*.jsonl`: v0.22.2
+drops every completed prompt without reasoning (`discarded: "no_reasoning"`),
+which is reported as `exit_state=discarded_no_reasoning`. Models without native
+reasoning therefore need Hermes' `<REASONING_SCRATCHPAD>` format to produce
+evaluable runs,
 a non-zero batch_runner exit is an infrastructure error. Tool-call and turn
 limits are enforced on the parsed trajectory. The trajectory, diff and run
 record are stored as artifacts. Known gap: batch_runner has no sampling seed
