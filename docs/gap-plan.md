@@ -91,6 +91,8 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Test layout `tests/{unit,integration,security,e2e}` (§37) | #25 | **done** |
 | Token metering proxy for `HermesBatchRunner` (§24) | #26 | **done** |
 | Isolated lab findings: prompts as package data, JSON mode for Qwen roles, per-stage Dreaming queue, proxy forwards backend probes | #27 | **done** |
+| Hermes runner: workspace mounted via task `cwd`, reasoning discards reported | #28 | **done** |
+| Hermes runner: `AIAgent` evaluation driver with the `skills` toolset (batch_runner never enabled skills) | #29 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -110,17 +112,28 @@ Open items:
   Hermes' context-window check. Two smaller items remain open: the Docker
   sandbox drops `DOCKER_HOST` (local daemon socket only), and
   `test_cli_approve_and_promote_by_experiment_id` picks up a provisioned
-  `/srv/hermes-improve` layout. A positive live promotion needs a model with
-  at least 64K context (the Hermes floor).
+  `/srv/hermes-improve` layout.
+- Live runs (2026-11-18) with Hermes v0.22.2 and Qwen3-4B-Instruct-2507 found
+  two runner defects in the Hermes path; #28 and #29 fix them. The workspace
+  was not mounted into the Docker sandbox. More seriously, `batch_runner`
+  never enables the `skills` toolset, so evaluated skills were invisible to
+  the agent. With the `AIAgent` driver from #29 the first complete live
+  promotion passed. The setup was isolated: no internet, a DinD daemon and a
+  local Qwen on Ollama at 64K context. SMOKE, CORE and FULL plus the sealed
+  holdout (5 runs per task) passed: quality +33.3, holdout +33.3, tokens +8.7%
+  measured by the proxy. `promote` then deployed `brain-v1` (PROVISIONAL) with
+  a signed manifest. In every candidate run the agent called
+  `skill_view("lab-facts")`.
 - Low-priority audit items: LIGHT dreaming counts distinct strings instead of
   reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
 
 Outside what this repository can prove on its own:
 
-- Live Hermes runtime, live Qwen endpoint and live GEPA optimization runs are
-  not exercised (see "Real external blockers"). The metering proxy is tested
-  against real loopback HTTP with JSON and chunked SSE responses, not against
-  a live Hermes/Qwen pair.
+- CI does not exercise the live Hermes runtime, a live Qwen endpoint or live
+  GEPA runs (see "Real external blockers"). The Hermes path, the metering
+  proxy, Dreaming REM/DEEP and promotion were verified manually in an
+  isolated live setup (Hermes v0.22.2, local Qwen3). That setup is not
+  reproducible in CI. Live GEPA optimization was not run.
 - Semantic clustering (layer 5) needs a configured embedding endpoint
   (`QWEN_EMBEDDING_*`); it is covered by a fake embedder and a local HTTP stub
   but not exercised against a live Qwen3-Embedding server, and the default
