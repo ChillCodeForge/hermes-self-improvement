@@ -896,6 +896,7 @@ def main() -> int:
         print(json.dumps({
             "sessions_processed": report.sessions_processed,
             "clusters": report.clusters,
+            "error_clusters": [cluster.to_dict() for cluster in report.error_clusters],
             "signals": [signal.__dict__ for signal in report.signals],
             "hypotheses": report.hypotheses,
         }, indent=2))

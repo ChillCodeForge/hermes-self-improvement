@@ -8,10 +8,31 @@ itself into a decision, or promotes.
 
 | Stage | Code | Model | What it does | What it cannot do |
 |---|---|---|---|---|
-| LIGHT | `DreamingEngine.light` | none | Counts recurring error strings and tool use from queued, redacted session exports; merges optional read-only Curator usage signals. | No semantic clustering, no full metric set. |
+| LIGHT | `DreamingEngine.light` | none | Groups error messages from queued, redacted session exports into deterministic lexical clusters (see below), counts tool use and merges optional read-only Curator usage signals. | No semantic (embedding) clustering: paraphrased errors that share little wording stay separate. No full metric set. |
 | REM | `DreamingEngine.rem` | `qwen_dreamer` | Sends a bounded projection of each session (`session_id`, `task`, `errors`, `tool_calls`, `tool_stats`, `final_status`, …) and returns validated hypotheses (`summary`, `issue`, `evidence_session_ids`, at most 20). Raw `messages` are never forwarded. | No writes; invalid JSON raises. |
 | DEEP | `DreamingEngine.deep` | `qwen_optimizer` | Turns at most five hypotheses into at most five proposals (`summary`, `candidate_type`, `target`, `hypothesis`). Only `SKILL_*` types and unprotected `brain/skills/` targets survive. | No content, no commits. |
 | Candidate generation | `proposal_generator.generate_candidates_from_proposals`, `hermes-improve candidate generate` | `qwen_optimizer` | For up to five operator-selected DEEP proposals, the model writes the full SKILL.md text; the result is committed through `candidate_builder.create_skill_candidate` on `candidate/<experiment-id>`. | Target, type and hypothesis come only from the validated proposal, never from the model reply. No evaluation, no promotion. |
+
+LIGHT error clustering (`dreaming.cluster_errors`) needs no model and no
+embeddings. Each error string is case-folded and its volatile tokens are
+masked (`normalize_error`: UUIDs and long hex ids become `<id>`, file paths
+`<path>`, numbers `<n>`), so errors that differ only in such tokens always
+share a cluster. The distinct normalized texts are then grouped by
+`clustering.cluster_texts`, i.e. the task-fingerprint and MinHash/LSH
+character-shingle layers (Jaccard >= 0.5) used for benchmark deduplication;
+the optional semantic layer is not used. Tool failures from `tool_stats` are
+keyed by tool name only and never merged across tools. Every cluster carries
+an id `err-<16 hex digits>` derived from its members' fingerprints, a
+representative (the most frequent raw variant, ties broken
+lexicographically), its total `count` and number of distinct `variants`.
+Clusters are ordered by descending count, then id, so the output does not
+depend on session or error order. `clusters["errors"]` is the number of error
+clusters; the clusters themselves are in `DreamingReport.error_clusters` and in
+the `error_clusters` field of the `dream` JSON output. The ten largest
+clusters seen more than once become `dreaming-light` signals whose `issue` is
+the representative and whose evidence holds `occurrences`, `cluster_id` and
+`variants`. Lexical clustering can still merge two short, differently caused
+errors that share most of their wording.
 
 `hermes-improve dream --stage light|rem|deep` runs the first three stages.
 Each queued session is processed once per stage. LIGHT reads sessions that
