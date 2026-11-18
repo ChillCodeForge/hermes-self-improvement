@@ -483,6 +483,15 @@ class DockerSandboxExecutor:
             duration_ms = (time.monotonic() - started) * 1000
             if exit_code in {125, 126, 127}:
                 raise RuntimeError(f"sandbox failed to execute command (exit {exit_code}): {output[-2000:]}")
+            if exit_code != 0 and not timed_out and not cidfile.exists():
+                # Docker writes the cidfile when it creates the container, so a
+                # failure without one never reached a container: usually the
+                # daemon selected by DOCKER_HOST/DOCKER_CONTEXT is unreachable.
+                raise RuntimeError(
+                    f"Docker could not create the sandbox container (exit {exit_code}); "
+                    "check that the Docker daemon is running and reachable via "
+                    f"DOCKER_HOST/DOCKER_CONTEXT: {output[-2000:]}"
+                )
             snapshot = None
             if snapshot_dir is not None and not timed_out:
                 snapshot = Path(snapshot_dir).resolve() / "workspace.tar"
@@ -503,11 +512,23 @@ class DockerSandboxExecutor:
         )
 
 
+# Variables that select and authenticate the Docker daemon the CLI talks to
+# (remote, rootless or DinD daemons). They come from the operator's trusted
+# runner environment and are forwarded only to the Docker client, never into
+# containers. Everything else in the host environment is dropped.
+DOCKER_CLIENT_ENV = ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONFIG")
+
+
+def docker_client_selection() -> dict[str, str]:
+    """Return the set (non-empty) Docker daemon-selection variables of this process."""
+    return {name: os.environ[name] for name in DOCKER_CLIENT_ENV if os.environ.get(name)}
+
+
 def _docker_env() -> dict[str, str]:
     return {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
-        "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", ""),
+        **docker_client_selection(),
     }
 
 

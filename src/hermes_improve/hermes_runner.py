@@ -68,6 +68,7 @@ from .sandbox import (
     SandboxLimits,
     SandboxPolicyError,
     compute_changes,
+    docker_client_selection,
     export_git_commit,
     extract_workspace_snapshot,
     git_tree_digest,
@@ -518,9 +519,7 @@ class HermesBatchRunner:
             "TERMINAL_CONTAINER_MEMORY": str(memory_mb),
             "TERMINAL_LOCAL_PERSISTENT": "false",
         }
-        for name in ("DOCKER_HOST", "DOCKER_CONFIG"):
-            if os.environ.get(name):
-                env[name] = os.environ[name]
+        env.update(docker_client_selection())
         return argv, env
 
     def _invoke(self, argv: list[str], env: dict[str, str], cwd: Path) -> tuple[int, str, bool]:

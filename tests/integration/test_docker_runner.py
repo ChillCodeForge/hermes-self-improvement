@@ -9,7 +9,13 @@ from fake_docker import calls, install
 from hermes_improve.artifacts import ArtifactStore
 from hermes_improve.docker_runner import DockerCommandRunner
 from hermes_improve.models import Benchmark
-from hermes_improve.sandbox import DockerSandboxExecutor, NetworkPolicy, SandboxLimits, SandboxPolicyError
+from hermes_improve.sandbox import (
+    DockerSandboxExecutor,
+    NetworkPolicy,
+    SandboxLimits,
+    SandboxPolicyError,
+    _docker_env,
+)
 
 
 IMAGE = "example/python@sha256:" + "a" * 64
@@ -220,6 +226,43 @@ def test_docker_executor_requires_pinned_image_and_valid_limits(tmp_path):
         SandboxLimits(max_tool_calls=0)
     with pytest.raises(ValueError):
         SandboxLimits(timeout_seconds=float("inf"))
+
+
+DAEMON_SELECTION = {
+    "DOCKER_HOST": "tcp://remote-daemon.invalid:2376",
+    "DOCKER_CONTEXT": "lab",
+    "DOCKER_TLS_VERIFY": "1",
+    "DOCKER_CERT_PATH": "/etc/hermes/docker-certs",
+    "DOCKER_CONFIG": "/etc/hermes/docker",
+}
+
+
+def test_docker_client_env_forwards_daemon_selection_and_nothing_else(monkeypatch):
+    for key, value in DAEMON_SELECTION.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "never-forward")
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", "never-forward")
+    env = _docker_env()
+    assert {key: env[key] for key in DAEMON_SELECTION} == DAEMON_SELECTION
+    assert set(env) == {"PATH", "HOME", *DAEMON_SELECTION}
+
+
+def test_docker_client_env_omits_unset_daemon_selection(monkeypatch):
+    for key in DAEMON_SELECTION:
+        monkeypatch.delenv(key, raising=False)
+    assert set(_docker_env()) == {"PATH", "HOME"}
+
+
+def test_docker_executor_reports_unreachable_daemon_instead_of_missing_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", DAEMON_SELECTION["DOCKER_HOST"])
+    docker = install(tmp_path, daemon_unreachable=True)
+    executor = DockerSandboxExecutor(IMAGE, docker_binary=str(docker))
+    with pytest.raises(RuntimeError, match="daemon") as caught:
+        executor.execute(["true"], input_root=tmp_path, snapshot_dir=tmp_path / "out")
+    message = str(caught.value)
+    assert "snapshot" not in message
+    # The CLI saw the forwarded DOCKER_HOST, and its diagnosis reaches the operator.
+    assert DAEMON_SELECTION["DOCKER_HOST"] in message
 
 
 def test_docker_executor_rejects_non_evaluator_environment_variables(tmp_path):
