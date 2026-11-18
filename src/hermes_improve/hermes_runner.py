@@ -1,4 +1,4 @@
-"""BenchmarkRunner adapter that executes tasks through Hermes' ``batch_runner.py``.
+"""BenchmarkRunner adapter that executes tasks through the real Hermes agent.
 
 Each run gets a private temporary directory containing:
 
@@ -7,31 +7,36 @@ Each run gets a private temporary directory containing:
   ``brain/brain/skills`` (or empty when the commit has no skills);
 * ``source/``      - the benchmark's repository fixture (pre-run state);
 * ``workspace/``   - a copy of ``source`` used as the agent's ``TERMINAL_CWD``;
-* ``dataset.jsonl`` with the single task row (``prompt``, ``image``, ``cwd``).
+* ``task.json``    - the task (``prompt``, pinned ``image``, workspace ``cwd``).
 
-``batch_runner.py`` is invoked unmodified (fire CLI flags) with one worker and
-batch size one, writes ``data/<run_name>/trajectories.jsonl`` below the run
-directory, and is parsed into a ``RunObservation``. Hermes tool execution is
-configured through Hermes' own ``TERMINAL_*`` variables: Docker backend,
-pinned image, networking disabled, no forwarded environment or volumes,
-non-persistent containers. Live execution needs a Hermes installation and a
-reachable model endpoint; neither is exercised in CI.
+``hermes_driver.py`` (shipped with this package) runs under the Hermes
+interpreter, imports ``AIAgent`` from the unmodified Hermes checkout and runs
+one conversation with the toolsets of ``HermesModelConfig.toolsets`` (default
+``terminal,file,skills``). Hermes' ``batch_runner.py`` is not used as the entry
+point any more: in v0.22.2 it selects toolsets only from fixed distributions,
+none of which contains ``skills``, so the evaluated skills never reached the
+agent (isolated lab finding F10). It also dropped every completed prompt without
+reasoning. The driver reuses batch_runner's helpers for tool statistics and for
+registering ``image``/``cwd`` as task overrides; Hermes bind-mounts only that
+``cwd`` override into the Docker sandbox. The driver writes
+``out/trajectories.jsonl`` in batch_runner's row schema, which is parsed into a
+``RunObservation``. Hermes tool execution is configured through Hermes' own
+``TERMINAL_*`` variables: Docker backend, pinned image, networking disabled, no
+forwarded environment or volumes, non-persistent containers. The model API key
+reaches the driver through ``HERMES_EVAL_API_KEY``, never through argv.
 
-Hermes provides no token usage on this path. Verified in Hermes v0.22.2:
-``run_conversation`` returns token counters, but ``batch_runner`` keeps only
-completion flags, ``api_calls``, tool stats and the trajectory, and builds
-``AIAgent`` without a ``session_db``, so no SessionDB session row (with its
-token columns) is written either. Tokens are therefore measured outside
-Hermes: by default every run starts a ``MeteringProxy`` on 127.0.0.1, passes
-its URL to batch_runner as ``--base_url`` and reads the ``usage`` object of
-each model response (``metering_proxy.py``). A run reports
+Tokens: every run starts a ``MeteringProxy`` on 127.0.0.1 between Hermes and
+the model endpoint (``metering_proxy.py``). A run reports
 ``token_usage_reported=True`` only when every successful generation response
 carried usage, no request was cut off, and the proxy saw at least as many
-generation calls as the trajectory's ``api_calls`` (fewer would mean model
-traffic bypassed the proxy). Otherwise, or with ``token_metering=False``, the
-observation carries ``token_usage_reported=False`` and the promotion policy
+generation calls as the trajectory's ``api_calls``. The driver also writes
+Hermes' own session counters to ``out/usage.json``; they are stored in the run
+record (``hermes_reported_usage``) as a cross-check. With
+``token_metering=False`` the observation is unmeasured and the promotion policy
 blocks with "token efficiency not measured" unless
-``require_token_measurement`` is false (see ``docs/evaluation.md``).
+``require_token_measurement`` is false (see ``docs/evaluation.md``). Live
+execution needs a Hermes installation and a reachable model endpoint; CI uses
+a fake Hermes checkout.
 """
 
 from __future__ import annotations
@@ -83,11 +88,11 @@ _REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"
 
 @dataclass(frozen=True)
 class HermesModelConfig:
-    """Model settings passed to batch_runner; identical for baseline and candidate."""
+    """Model and toolset settings passed to the driver; identical for baseline and candidate."""
 
     model: str
     base_url: str
-    distribution: str = "default"
+    toolsets: str = "terminal,file,skills"
     reasoning_effort: str | None = None
     api_key_env: str | None = None
 
@@ -96,8 +101,8 @@ class HermesModelConfig:
             raise ValueError("Hermes model name must be a non-empty string")
         if not isinstance(self.base_url, str) or not re.fullmatch(r"https?://[^\s]+", self.base_url):
             raise ValueError("Hermes model base_url must be an http(s) URL")
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.distribution):
-            raise ValueError("Hermes toolset distribution must be a simple name")
+        if not re.fullmatch(r"[a-z_]{1,32}(?:,[a-z_]{1,32}){0,15}", self.toolsets):
+            raise ValueError("Hermes toolsets must be a comma-separated list of toolset names")
         if self.reasoning_effort is not None and self.reasoning_effort not in _REASONING_EFFORTS:
             raise ValueError("unsupported Hermes reasoning effort")
         if self.api_key_env is not None and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", self.api_key_env):
@@ -123,7 +128,7 @@ class HermesTrajectory:
 
 
 def parse_trajectory_record(record: Mapping[str, Any]) -> HermesTrajectory:
-    """Validate one ``trajectories.jsonl`` entry written by Hermes batch_runner."""
+    """Validate one ``trajectories.jsonl`` entry (batch_runner row schema, written by the driver)."""
     if not isinstance(record, Mapping):
         raise IntegrityError("Hermes trajectory record must be an object")
     completed, partial = record.get("completed"), record.get("partial", False)
@@ -202,32 +207,25 @@ def load_single_trajectory(path: Path) -> HermesTrajectory | None:
     return parse_trajectory_record(records[0])
 
 
-def discarded_reason(run_data: Path) -> str | None:
-    """Reason batch_runner discarded prompt 0, read from its ``batch_*.jsonl`` tombstones.
-
-    batch_runner (v0.22.2) drops a completed prompt whose assistant turns carry
-    no reasoning (``discarded: "no_reasoning"``); the tombstone stays in the
-    batch file and is excluded from ``trajectories.jsonl``. Without this, such
-    a run looks like an anonymous agent error.
-    """
-    for batch in sorted(run_data.glob("batch_*.jsonl")):
-        if batch.stat().st_size > _MAX_TRAJECTORY_BYTES:
-            raise IntegrityError("Hermes batch file exceeds the 10 MiB limit")
-        for line in batch.read_text(encoding="utf-8").splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            reason = record.get("discarded")
-            if record.get("prompt_index") == 0 and isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,40}", reason):
-                return reason
-    return None
+def _load_hermes_usage(path: Path) -> dict[str, int] | None:
+    """Hermes' own token counters written by the driver (cross-check for the proxy)."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for key in ("input_tokens", "output_tokens", "api_calls"):
+        number = value.get(key)
+        if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+            return None
+        result[key] = number
+    return result
 
 
 class HermesBatchRunner:
-    """Runs one benchmark task for one brain commit through Hermes' batch_runner."""
+    """Runs one benchmark task for one brain commit through the Hermes agent (``hermes_driver.py``)."""
 
     llm_influenced = True
 
@@ -252,10 +250,16 @@ class HermesBatchRunner:
         self.repository = Path(repository).resolve()
         self.artifacts = artifacts
         self.hermes_agent_dir = Path(hermes_agent_dir).resolve()
+        # The driver imports AIAgent from run_agent.py and the tool-stat/container
+        # helpers from batch_runner.py of this checkout; both are digested.
+        for required in ("run_agent.py", "batch_runner.py"):
+            if not (self.hermes_agent_dir / required).is_file():
+                raise FileNotFoundError(f"Hermes {required} not found in {self.hermes_agent_dir}")
         self.batch_runner = self.hermes_agent_dir / "batch_runner.py"
-        if not self.batch_runner.is_file():
-            raise FileNotFoundError(f"Hermes batch_runner.py not found in {self.hermes_agent_dir}")
         self.batch_runner_sha256 = hashlib.sha256(self.batch_runner.read_bytes()).hexdigest()
+        self.run_agent_sha256 = hashlib.sha256((self.hermes_agent_dir / "run_agent.py").read_bytes()).hexdigest()
+        self.driver = Path(__file__).resolve().with_name("hermes_driver.py")
+        self.driver_sha256 = hashlib.sha256(self.driver.read_bytes()).hexdigest()
         resolved_python = shutil.which(python_executable)
         if resolved_python is None:
             raise FileNotFoundError(f"Python interpreter for Hermes not found: {python_executable}")
@@ -291,8 +295,11 @@ class HermesBatchRunner:
         fixture = self._fixture_path(environment.get("repository_fixture"))
         workspace_digest = git_tree_digest(self.repository, commit, self.limits.max_workspace_bytes)
         environment_digest = hashlib.sha256(canonical_json({
-            "runner": "hermes_batch_runner",
+            "runner": "hermes_driver",
+            "driver_sha256": self.driver_sha256,
             "batch_runner_sha256": self.batch_runner_sha256,
+            "run_agent_sha256": self.run_agent_sha256,
+            "toolsets": self.model.toolsets,
             "image": image,
             "dependency_digest": environment.get("dependency_digest"),
             "fixture": environment.get("repository_fixture"),
@@ -321,8 +328,9 @@ class HermesBatchRunner:
             shutil.copytree(source, workspace)
             run_dir = root / "run"
             run_dir.mkdir()
-            dataset = root / "dataset.jsonl"
-            # ``image`` + ``cwd`` per row: batch_runner registers them as task overrides,
+            dataset = root / "task.json"
+            # ``image`` + ``cwd``: the driver registers them as task overrides (Hermes'
+            # batch_runner helper),
             # and Hermes bind-mounts only a task's ``cwd`` override into the Docker
             # sandbox (``tools/terminal_tool._resolve_task_host_cwd``). With
             # TERMINAL_CWD alone the agent edits the container's private filesystem
@@ -330,7 +338,7 @@ class HermesBatchRunner:
             dataset.write_text(
                 json.dumps({"prompt": prompt, "image": image, "cwd": str(workspace)}) + "\n", encoding="utf-8",
             )
-            run_name = "eval-" + hashlib.sha256(f"{benchmark.id}:{commit}:{seed}".encode()).hexdigest()[:16]
+            out_dir = run_dir / "out"
             usage: UsageReport | None = None
             with contextlib.ExitStack() as stack:
                 base_url = self.model.base_url
@@ -339,22 +347,21 @@ class HermesBatchRunner:
                         MeteringProxy(self.model.base_url, timeout=self.limits.timeout_seconds)
                     )
                     base_url = proxy.base_url
-                argv, env = self._command(dataset, run_name, workspace, hermes_home, root, image, seed, base_url)
+                argv, env = self._command(dataset, out_dir, workspace, hermes_home, root, image, seed, base_url)
                 started = time.monotonic()
                 exit_code, output, timed_out = self._invoke(argv, env, run_dir)
                 latency_ms = (time.monotonic() - started) * 1000
                 if self.token_metering:
                     usage = proxy.report()
-            if exit_code != 0 and not timed_out:
-                raise RuntimeError(f"Hermes batch_runner failed (exit {exit_code}): {redact_text(output[-2000:])}")
-            trajectory = None if timed_out else load_single_trajectory(
-                run_dir / "data" / run_name / "trajectories.jsonl"
+            # Exit 3: the agent failed before a trajectory existed (agent_error, not
+            # infrastructure). Any other non-zero exit is an infrastructure error.
+            if exit_code not in (0, 3) and not timed_out:
+                raise RuntimeError(f"Hermes driver failed (exit {exit_code}): {redact_text(output[-2000:])}")
+            trajectory = None if timed_out or exit_code == 3 else load_single_trajectory(
+                out_dir / "trajectories.jsonl"
             )
+            hermes_usage = None if trajectory is None else _load_hermes_usage(out_dir / "usage.json")
             exit_state = self._exit_state(trajectory, timed_out)
-            if exit_state == "agent_error":
-                reason = discarded_reason(run_dir / "data" / run_name)
-                if reason is not None:
-                    exit_state = f"discarded_{reason}"
             tokens_measured = (
                 usage is not None
                 and usage.complete
@@ -399,7 +406,8 @@ class HermesBatchRunner:
                 "environment_digest": environment_digest,
                 "model_config_digest": self.model.digest,
                 "limits": asdict(self.limits),
-                "seed_note": "batch_runner exposes no sampling seed; seed is passed as HERMES_EVAL_SEED only",
+                "seed_note": "Hermes exposes no sampling seed; seed is passed as HERMES_EVAL_SEED only",
+                "hermes_reported_usage": hermes_usage,
                 "token_usage": (
                     {**usage.as_record(), "measured": tokens_measured} if usage is not None
                     else {"measured": False, "reason": "token metering disabled"}
@@ -465,24 +473,21 @@ class HermesBatchRunner:
         return path
 
     def _command(
-        self, dataset: Path, run_name: str, workspace: Path, hermes_home: Path, root: Path, image: str, seed: int,
+        self, task_file: Path, out_dir: Path, workspace: Path, hermes_home: Path, root: Path, image: str, seed: int,
         base_url: str,
     ) -> tuple[list[str], dict[str, str]]:
         argv = [
-            self.python, str(self.batch_runner),
-            f"--dataset_file={dataset}",
-            "--batch_size=1",
-            f"--run_name={run_name}",
-            f"--distribution={self.model.distribution}",
+            self.python, str(self.driver),
+            f"--hermes-agent-dir={self.hermes_agent_dir}",
+            f"--task-file={task_file}",
+            f"--out-dir={out_dir}",
             f"--model={self.model.model}",
-            f"--base_url={base_url}",
-            f"--max_turns={self.limits.max_turns}",
-            "--num_workers=1",
+            f"--base-url={base_url}",
+            f"--max-turns={self.limits.max_turns}",
+            f"--toolsets={self.model.toolsets}",
         ]
         if self.model.reasoning_effort is not None:
-            argv.append(f"--reasoning_effort={self.model.reasoning_effort}")
-        if self.model.api_key_env is not None:
-            argv.append(f"--api_key={os.environ[self.model.api_key_env]}")
+            argv.append(f"--reasoning-effort={self.model.reasoning_effort}")
         home = root / "home"
         home.mkdir(exist_ok=True)
         memory_mb = max(1, parse_size(self.limits.memory) // (1024 * 1024))
@@ -493,6 +498,8 @@ class HermesBatchRunner:
             "PYTHONDONTWRITEBYTECODE": "1",
             "HERMES_HOME": str(hermes_home),
             "HERMES_EVAL_SEED": str(seed),
+            # Key via environment, never argv (process listings show argv).
+            "HERMES_EVAL_API_KEY": os.environ[self.model.api_key_env] if self.model.api_key_env else "",
             "TERMINAL_ENV": self.terminal_env,
             "TERMINAL_CWD": str(workspace),
             "TERMINAL_TIMEOUT": str(max(1, math.floor(self.limits.timeout_seconds))),
@@ -517,7 +524,7 @@ class HermesBatchRunner:
         return argv, env
 
     def _invoke(self, argv: list[str], env: dict[str, str], cwd: Path) -> tuple[int, str, bool]:
-        log_path = cwd / "batch_runner.log"
+        log_path = cwd / "hermes_driver.log"
         with log_path.open("wb") as log:
             process = subprocess.Popen(
                 argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,

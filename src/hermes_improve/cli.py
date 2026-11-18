@@ -538,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--network", help="dedicated internal Docker network for allowlisted benchmarks")
     evaluate.add_argument("--network-allow", action="append", default=[], metavar="HOST:PORT")
     evaluate.add_argument("--verifier-http-allow", action="append", default=[], metavar="HOST:PORT")
-    evaluate.add_argument("--hermes-agent-dir", type=Path, help="Hermes source checkout containing batch_runner.py")
+    evaluate.add_argument("--hermes-agent-dir", type=Path, help="Hermes source checkout (run_agent.py, batch_runner.py) used by the evaluation driver")
     evaluate.add_argument("--hermes-python", default=sys.executable)
     evaluate.add_argument("--model")
     evaluate.add_argument("--model-base-url")

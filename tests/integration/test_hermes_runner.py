@@ -55,6 +55,7 @@ def hermes_install(tmp_path, mode="normal", **fake):
     agent = tmp_path / "hermes-agent"
     agent.mkdir(parents=True)
     shutil.copy(FIXTURES / "batch_runner.py", agent / "batch_runner.py")
+    shutil.copy(FIXTURES / "run_agent.py", agent / "run_agent.py")
     log = tmp_path / "batch-calls.jsonl"
     (agent / "fake_config.json").write_text(json.dumps({"log": str(log), "mode": mode, **fake}))
     return agent, log
@@ -137,7 +138,7 @@ def test_missing_or_ambiguous_trajectory_is_never_success(tmp_path):
         load_single_trajectory(duplicated)
 
 
-def test_hermes_runner_invokes_batch_runner_with_isolated_brain_and_parses_result(tmp_path, monkeypatch):
+def test_hermes_runner_invokes_the_driver_with_isolated_brain_and_parses_result(tmp_path, monkeypatch):
     monkeypatch.setenv("PRODUCTION_DB_PASSWORD", "never-forward")
     runner, baseline, candidate, log = make_runner(tmp_path)
     task = Benchmark.from_dict(benchmark_record())
@@ -161,8 +162,13 @@ def test_hermes_runner_invokes_batch_runner_with_isolated_brain_and_parses_resul
 
     call = json.loads(log.read_text().splitlines()[0])
     flags = dict(arg[2:].split("=", 1) for arg in call["argv"])
-    assert flags["batch_size"] == "1" and flags["num_workers"] == "1"
-    assert flags["model"] == "qwen3-coder" and flags["max_turns"] == "30"
+    assert flags["model"] == "qwen3-coder" and flags["max-turns"] == "30"
+    assert flags["toolsets"] == "terminal,file,skills"
+    assert call["agent"]["enabled_toolsets"] == ["terminal", "file", "skills"]
+    assert call["agent"]["skip_context_files"] is True and call["agent"]["skip_memory"] is True
+    assert call["agent"]["max_iterations"] == 30 and call["task_id"] == "task_0"
+    record = json.loads(runner.artifacts.get(good.artifact_digests[0]))
+    assert record["hermes_reported_usage"] == {"input_tokens": 0, "output_tokens": 0, "api_calls": 3}
     env = call["env"]
     assert "PRODUCTION_DB_PASSWORD" not in env
     assert env["TERMINAL_DOCKER_NETWORK"] == "false"
@@ -186,7 +192,7 @@ def test_hermes_runner_reports_agent_error_and_tool_limit_as_failures(tmp_path):
 
 def test_hermes_runner_crash_is_infrastructure_error(tmp_path):
     runner, _baseline, candidate, _log = make_runner(tmp_path, mode="crash")
-    with pytest.raises(RuntimeError, match="batch_runner failed"):
+    with pytest.raises(RuntimeError, match="Hermes driver failed"):
         runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
 
 
@@ -271,7 +277,8 @@ def test_metering_proxy_measures_tokens_of_every_model_call(tmp_path, monkeypatc
     assert (observation.input_tokens, observation.output_tokens, observation.tokens) == (420, 60, 480)
     assert observation.context_tokens == 180
     flags = flags_of(log)
-    assert flags["base_url"].startswith("http://127.0.0.1:") and flags["base_url"] != upstream.base_url
+    assert flags["base-url"].startswith("http://127.0.0.1:") and flags["base-url"] != upstream.base_url
+    assert all("sk-test-only" not in arg for arg in json.loads(log.read_text().splitlines()[0])["argv"])
     assert [request[1] for request in upstream.requests] == ["/v1/chat/completions"] * 3
     assert all(request[2]["Authorization"] == "Bearer sk-test-only" for request in upstream.requests)
     record = json.loads(runner.artifacts.get(observation.artifact_digests[0]))
@@ -301,7 +308,7 @@ def test_metering_detects_model_traffic_that_bypassed_the_proxy(tmp_path):
 def test_token_metering_can_be_disabled_and_then_reports_unmeasured(tmp_path):
     runner, _baseline, candidate, log = make_runner(tmp_path, token_metering=False)
     observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
-    assert flags_of(log)["base_url"] == MODEL.base_url
+    assert flags_of(log)["base-url"] == MODEL.base_url
     assert observation.token_usage_reported is False and observation.tokens == 0
 
 
@@ -325,20 +332,40 @@ def test_measured_hermes_runs_reach_the_efficiency_report(tmp_path):
     assert report.outcomes[0].token_usage_reported is True
 
 
-def test_dataset_row_carries_image_and_workspace_cwd_for_the_docker_mount(tmp_path):
-    # Hermes v0.22.2 bind-mounts only a task's ``cwd`` override (registered by
-    # batch_runner from the row's ``image``/``cwd``); without it the agent edits
+def test_task_image_and_workspace_cwd_are_registered_for_the_docker_mount(tmp_path):
+    # Hermes v0.22.2 bind-mounts only a task's ``cwd`` override (registered from the
+    # task's ``image``/``cwd`` by batch_runner's helper); without it the agent edits
     # the container's private filesystem (found in the isolated lab).
     runner, _baseline, candidate, log = make_runner(tmp_path)
-    runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
     call = json.loads(log.read_text().splitlines()[0])
-    assert call["row"]["image"] == IMAGE
-    assert call["row"]["cwd"] == call["env"]["TERMINAL_CWD"]
-    assert call["row"]["cwd"].endswith("workspace")
+    assert call["overrides"]["docker_image"] == IMAGE
+    assert call["overrides"]["cwd"] == call["env"]["TERMINAL_CWD"]
+    assert call["overrides"]["cwd"].endswith("workspace") and observation.success
 
 
-def test_prompt_discarded_for_missing_reasoning_is_reported_as_such(tmp_path):
-    runner, _baseline, candidate, _log = make_runner(tmp_path, mode="no_reasoning")
+def test_skills_reach_the_agent_only_through_the_skills_toolset(tmp_path):
+    # Lab finding F10: batch_runner's distributions never enable ``skills``, so
+    # brain skills could not influence any run. The driver enables it explicitly.
+    task = Benchmark.from_dict(benchmark_record())
+    with_skills, _baseline, candidate, _log = make_runner(tmp_path / "a")
+    without, _b, commit, _l = make_runner(
+        tmp_path / "b", model=HermesModelConfig(model="qwen3-coder", base_url=MODEL.base_url, toolsets="terminal,file"),
+    )
+    assert with_skills.run(candidate, task, 1).success
+    blind = without.run(commit, task, 1)
+    assert not blind.success and blind.final_output == "The answer is unknown."
+
+
+def test_agent_failure_before_a_trajectory_is_agent_error_not_infrastructure(tmp_path):
+    runner, _baseline, candidate, _log = make_runner(tmp_path, mode="agent_error")
     observation = runner.run(candidate, Benchmark.from_dict(benchmark_record(checks=[{"type": "exit_code"}])), 1)
-    assert observation.exit_state == "discarded_no_reasoning"
-    assert not observation.success and observation.trajectory_digest == ""
+    assert observation.exit_state == "agent_error" and not observation.success
+
+
+def test_toolsets_are_validated_and_part_of_the_model_digest():
+    assert HermesModelConfig(model="m", base_url="http://x").digest != HermesModelConfig(
+        model="m", base_url="http://x", toolsets="terminal,file").digest
+    for bad in ("", "terminal;rm", "Terminal", "a," * 20):
+        with pytest.raises(ValueError, match="toolsets"):
+            HermesModelConfig(model="m", base_url="http://x", toolsets=bad)
