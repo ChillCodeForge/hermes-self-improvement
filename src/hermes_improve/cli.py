@@ -390,6 +390,34 @@ def build_runner(args: argparse.Namespace, artifact_store: ArtifactStore):
     )
 
 
+def add_runner_arguments(parser: argparse.ArgumentParser) -> None:
+    """Runner selection and sandbox options shared by ``evaluate`` and ``evolve`` (read by build_runner)."""
+    parser.add_argument(
+        "--runner", choices=["docker", "hermes", "local"], default="docker",
+        help="docker: command benchmarks; hermes: hermes_agent benchmarks with the real Hermes agent; "
+             "local: skill_procedure benchmarks only, in a process sandbox without container isolation",
+    )
+    parser.add_argument(
+        "--acknowledge-no-container-isolation", action="store_true",
+        help="required with --runner local (development hosts and tests without Docker)",
+    )
+    parser.add_argument("--timeout", type=float, default=120, help="per-run sandbox timeout in seconds")
+    parser.add_argument("--max-turns", type=int, default=30)
+    parser.add_argument("--max-tool-calls", type=int, default=200)
+    parser.add_argument("--network", help="dedicated internal Docker network for allowlisted benchmarks")
+    parser.add_argument("--network-allow", action="append", default=[], metavar="HOST:PORT")
+    parser.add_argument("--verifier-http-allow", action="append", default=[], metavar="HOST:PORT")
+    parser.add_argument(
+        "--hermes-agent-dir", type=Path,
+        help="Hermes source checkout (run_agent.py, batch_runner.py) used by the evaluation driver",
+    )
+    parser.add_argument("--hermes-python", default=sys.executable)
+    parser.add_argument("--model")
+    parser.add_argument("--model-base-url")
+    parser.add_argument("--model-api-key-env")
+    parser.add_argument("--fixtures-root", type=Path)
+
+
 def _replay_benchmarks(args: argparse.Namespace, store: BenchmarkStore, database: Path) -> int:
     benchmarks = [item for item in store.validate() if is_command_benchmark(item)]
     if args.benchmark_id is not None:
@@ -524,26 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="FULL also evaluates the sealed holdout; SMOKE/CORE are staged, non-deciding runs",
     )
     evaluate.add_argument("--seeds", help="explicit comma-separated seeds; default derives them from the run policy")
-    evaluate.add_argument(
-        "--runner", choices=["docker", "hermes", "local"], default="docker",
-        help="local: skill_procedure benchmarks only, in a process sandbox without container isolation",
-    )
-    evaluate.add_argument(
-        "--acknowledge-no-container-isolation", action="store_true",
-        help="required with --runner local (development hosts and tests without Docker)",
-    )
-    evaluate.add_argument("--timeout", type=float, default=120, help="per-run sandbox timeout in seconds")
-    evaluate.add_argument("--max-turns", type=int, default=30)
-    evaluate.add_argument("--max-tool-calls", type=int, default=200)
-    evaluate.add_argument("--network", help="dedicated internal Docker network for allowlisted benchmarks")
-    evaluate.add_argument("--network-allow", action="append", default=[], metavar="HOST:PORT")
-    evaluate.add_argument("--verifier-http-allow", action="append", default=[], metavar="HOST:PORT")
-    evaluate.add_argument("--hermes-agent-dir", type=Path, help="Hermes source checkout (run_agent.py, batch_runner.py) used by the evaluation driver")
-    evaluate.add_argument("--hermes-python", default=sys.executable)
-    evaluate.add_argument("--model")
-    evaluate.add_argument("--model-base-url")
-    evaluate.add_argument("--model-api-key-env")
-    evaluate.add_argument("--fixtures-root", type=Path)
+    add_runner_arguments(evaluate)
     evaluate.add_argument("--judge", action="store_true", help="enable the qwen_judge role (QWEN_* environment)")
     experiments = sub.add_parser("experiments")
     experiment_sub = experiments.add_subparsers(dest="experiment_command", required=True)
@@ -624,6 +633,9 @@ def build_parser() -> argparse.ArgumentParser:
     evolve.add_argument("--max-generations", type=int)
     evolve.add_argument("--candidates-per-generation", type=int)
     evolve.add_argument("--max-candidates-total", type=int)
+    # Same runner selection as `evaluate`, so agent benchmarks can be screened
+    # with the real Hermes agent. There is deliberately no --holdout-root.
+    add_runner_arguments(evolve)
     releases = sub.add_parser("releases")
     releases.add_argument("release_command", choices=["list", "events"])
     releases.add_argument("--release", dest="release_filter", help="limit events to one release")
@@ -1114,11 +1126,19 @@ def main() -> int:
         else:
             strategy = ModelMutationStrategy(model)
             expected_version = ModelMutationStrategy.version
-        store = ExperimentStore(database)
+        # The screening runner is selected like `evaluate` (--runner docker|local|hermes),
+        # but as the generator it must never be pointed at the sealed holdout.
+        if getattr(args, "holdout_root", None) is not None:
+            raise AccessDenied("evolve runs as the generator and must never receive a sealed holdout root")
+        args.benchmark_root = benchmark_root
         artifact_store = ArtifactStore(database.parent / "artifacts")
+        runner = build_runner(args, artifact_store)
+        store = ExperimentStore(database)
+        # PairedEvaluator reads runner.llm_influenced: Hermes screens with the LLM
+        # run counts (SMOKE/CORE/FULL), docker and local with one deterministic run.
         gateway = EvaluationGateway(
             BenchmarkStore(benchmark_root),
-            DockerCommandRunner(args.repository, artifact_store, benchmark_root=benchmark_root),
+            runner,
             PromotionPolicy.from_config(hermes_config.promotion),
             generator_store=BenchmarkStore(benchmark_root),
             run_policy=RunPolicy.from_config(hermes_config.scoring),
