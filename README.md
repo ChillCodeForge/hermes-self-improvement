@@ -617,7 +617,7 @@ hermes-improve dream
 hermes-improve candidate create --help
 hermes-improve candidate generate --repository REPO --proposal-file DEEP.json --proposal-index N
 hermes-improve candidates list
-hermes-improve evolve <candidate-id> --repository REPO [--strategy qwen|gepa|gepa-proposer] [--max-generations N]
+hermes-improve evolve <candidate-id> --repository REPO [--strategy qwen|gepa|gepa-proposer] [--max-generations N] [--runner docker|local|hermes]
 hermes-improve evaluate <candidate-id>
 hermes-improve experiments list
 hermes-improve experiments show <id>

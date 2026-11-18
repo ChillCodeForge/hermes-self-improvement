@@ -101,6 +101,29 @@ the CLI accepts `--settings FILE.json` and three common flags. `evolve` uses
 `PromotionPolicy.from_config` so screening and finalist evaluations carry the
 promoter's `policy_version`.
 
+**Screening runner.** `evolve` takes the same runner options as `evaluate`
+(both register them through `cli.add_runner_arguments`, and both construct the
+runner with `cli.build_runner`): `--runner docker|local|hermes` (default
+`docker`, the previous behaviour), `--timeout`, `--max-turns`,
+`--max-tool-calls`, `--network`, `--network-allow`, `--verifier-http-allow`,
+`--hermes-agent-dir`, `--hermes-python`, `--model`, `--model-base-url`,
+`--model-api-key-env` and `--fixtures-root`. The validation rules are the same:
+`--runner local` requires `--acknowledge-no-container-isolation` and disabled
+networking, and `--runner hermes` requires `--hermes-agent-dir` plus a solver
+model (falling back to the `qwen_solver` role environment) and runs agent tools
+with networking disabled. With `--runner hermes` the loop screens
+`environment.type: hermes_agent` benchmarks with the real Hermes agent, so
+qwen, GEPA and the GEPA proposer can optimise skills against agent benchmarks.
+The run policy follows the runner's `llm_influenced` flag exactly as in
+`evaluate`: the Hermes runner screens SMOKE 2, CORE 3 and FULL 5 times per task,
+docker and local runners once. Hermes token metering (metering proxy,
+`token_usage_reported`) is recorded in every screening run observation and
+paired row the same way as in `evaluate`; the generator-facing screening
+feedback itself carries only quality, success and gate results. `evolve` has
+no `--holdout-root`: the runner is built without a holdout root, a holdout root
+present on the parsed arguments is refused, and a gateway that could reach the
+sealed holdout is still refused.
+
 Screening score = mean paired quality delta (candidate − baseline) over the
 stage's tasks. Gates: security and deterministic verifiers, no critical/high
 regressions, and no fewer solved tasks than the baseline. This score is only
