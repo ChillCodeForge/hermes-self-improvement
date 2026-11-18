@@ -63,7 +63,7 @@ pass. Every merge must keep the full suite green in the Linux test container.
   local OpenAI-compatible stub server, live use is opt-in.
 - Real sealed-holdout data and real production identities are operator-provisioned.
 
-## Outcome (2026-11-17)
+## Outcome (2026-11-18)
 
 All work packages are merged into `main`, and every package passed GitHub
 Actions. Skipped tests are limited to the optional `gepa` extra and
@@ -93,6 +93,11 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Isolated lab findings: prompts as package data, JSON mode for Qwen roles, per-stage Dreaming queue, proxy forwards backend probes | #27 | **done** |
 | Hermes runner: workspace mounted via task `cwd`, reasoning discards reported | #28 | **done** |
 | Hermes runner: `AIAgent` evaluation driver with the `skills` toolset (batch_runner never enabled skills) | #29 | **done** |
+| Sandbox and Hermes runner forward the Docker daemon selection (`DOCKER_HOST`, `DOCKER_CONTEXT`, TLS vars); unreachable daemon reported as such (lab F2) | #31 | **done** |
+| Test suite hermetic against a provisioned `/srv/hermes-improve` layout and operator `HERMES_*`/`QWEN_*` variables (lab F4) | #32 | **done** |
+| LIGHT Dreaming clusters errors deterministically with the lexical layers of `clustering.py` | #33 | **done** |
+| `evolve` selects the screening runner like `evaluate` (docker, local, hermes) | #34 | **done** |
+| SMOKE 20-task minimum as an advisory warning (deliberate deviation, see below) | #35 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -109,10 +114,10 @@ Open items:
   local Qwen3 1.7B) found four defects, which #27 fixes. Prompts were
   missing from non-editable installs. Qwen roles sent no JSON mode. LIGHT
   Dreaming consumed the REM queue. The metering proxy hid Ollama from
-  Hermes' context-window check. Two smaller items remain open: the Docker
-  sandbox drops `DOCKER_HOST` (local daemon socket only), and
-  `test_cli_approve_and_promote_by_experiment_id` picks up a provisioned
-  `/srv/hermes-improve` layout.
+  Hermes' context-window check. The two smaller items are closed as well:
+  #31 forwards the Docker daemon selection to the sandbox client (F2), and
+  #32 keeps the test suite from reading a provisioned
+  `/srv/hermes-improve` layout (F4).
 - Live runs (2026-11-18) with Hermes v0.22.2 and Qwen3-4B-Instruct-2507 found
   two runner defects in the Hermes path; #28 and #29 fix them. The workspace
   was not mounted into the Docker sandbox. More seriously, `batch_runner`
@@ -124,8 +129,16 @@ Open items:
   measured by the proxy. `promote` then deployed `brain-v1` (PROVISIONAL) with
   a signed manifest. In every candidate run the agent called
   `skill_view("lab-facts")`.
-- Low-priority audit items: LIGHT dreaming counts distinct strings instead of
-  reusing `clustering.py`; SMOKE has a 50-task cap but no 20-task minimum.
+- Low-priority audit items, both closed. LIGHT Dreaming now masks volatile
+  tokens (paths, ids, numbers) and clusters errors with the exact,
+  fingerprint and MinHash layers of `clustering.py`, without a model (#33).
+  The SMOKE 20-task minimum is a deliberate deviation: it warns on stderr
+  and in the signed evaluation metrics but never blocks (#35). SMOKE is
+  non-deciding staged evidence (FULL and the sealed holdout decide), impact
+  narrowing legitimately shrinks it below 20, and the bundled corpus has
+  only 14 SMOKE tasks.
+
+No open items remain that can be fixed without a live lab.
 
 Outside what this repository can prove on its own:
 
