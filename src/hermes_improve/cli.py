@@ -63,7 +63,7 @@ from .suites import (
 # Observability and decision-history helpers (spec §35/§36).
 from contextlib import nullcontext
 from .eligibility import assess_benchmark, eligibility_decision_fields
-from .evaluator import needs_qwen_decision_fields
+from .evaluator import judge_route, needs_qwen_decision_fields
 from .observability import record_qwen_usage
 from .suites import suite_selection_decision_fields
 
@@ -1490,6 +1490,18 @@ def main() -> int:
             )
             if holdout else None
         )
+        if not args.judge:
+            # Refuse before recording anything: an evaluation that never runs must not
+            # leave suite_selection/needs_qwen decision rows behind.
+            judged = [item.id for item in selected if judge_route(item) == "qwen_judge"]
+            if judged:
+                raise ValueError(
+                    f"benchmark {judged[0]!r} relies on subjective verification and requires a configured "
+                    "judge (--judge)"
+                )
+            if any(judge_route(item) == "qwen_judge" for item in holdout):
+                raise ValueError("a sealed holdout task relies on subjective verification and requires a "
+                                 "configured judge (--judge)")
         decision_recorder = DecisionRecorder(database)
         decision_recorder.record(**suite_selection_decision_fields(
             suite=suite, candidate_type=candidate.candidate_type, requested_impact=impact,

@@ -5,7 +5,10 @@ import json
 import pytest
 
 from openai_stub import OpenAIStub
-from hermes_improve.judge import JudgeConfig, PairwiseJudge, aggregate_verdicts, parse_judgment
+from hermes_improve.judge import (
+    MAX_AGGREGATED_PRESENTATIONS, MAX_PRESENTATION_RATIONALE_CHARS, JudgeConfig, PairwiseJudge, aggregate_verdicts,
+    parse_judgment,
+)
 from hermes_improve.qwen import OpenAICompatibleQwen, QwenConfig
 
 
@@ -144,3 +147,35 @@ def test_aggregate_verdicts_requires_agreement_across_runs():
     assert aggregate_verdicts([good, good]).result == "candidate"
     mixed = aggregate_verdicts([good, tie])
     assert mixed.result == "unreliable" and "disagree" in mixed.reasons[-1]
+
+
+def test_aggregate_keeps_bounded_per_seed_presentations_for_position_bias_audit():
+    with OpenAIStub(prefers("candidate answer")) as stub:
+        good = compare(PairwiseJudge(client(stub)))
+    with OpenAIStub(lambda body: verdict("B")) as stub:
+        contradiction = compare(PairwiseJudge(client(stub)))
+    combined = aggregate_verdicts([good, contradiction], seeds=[7, 8])
+    assert combined.result == "unreliable"
+    assert [(item["seed"], item["order"]) for item in combined.presentations] == [
+        (7, "A=baseline,B=candidate"), (7, "A=candidate,B=baseline"),
+        (8, "A=baseline,B=candidate"), (8, "A=candidate,B=baseline"),
+    ]
+    assert [item["judgment"]["winner"] for item in combined.presentations] == ["B", "A", "B", "B"]
+    assert combined.presentations_omitted == 0
+    assert json.loads(json.dumps(combined.to_dict()))["presentations"] == list(combined.presentations)
+    assert aggregate_verdicts([good, good]).presentations[2]["run"] == 1, "run index without explicit seeds"
+
+
+def test_aggregate_presentations_are_capped_in_count_and_rationale_length():
+    long = json.dumps({"winner": "TIE", "confidence": 0.9, "uncertainty": 0.1, "rationale": "x" * 2000})
+    with OpenAIStub(lambda body: long) as stub:
+        tie = compare(PairwiseJudge(client(stub)))
+    combined = aggregate_verdicts([tie] * 30)
+    assert combined.result == "tie"
+    assert len(combined.presentations) == MAX_AGGREGATED_PRESENTATIONS
+    assert combined.presentations_omitted == 60 - MAX_AGGREGATED_PRESENTATIONS
+    rationale = combined.presentations[0]["judgment"]["rationale"]
+    assert len(rationale) <= MAX_PRESENTATION_RATIONALE_CHARS and rationale.startswith("xxx")
+    assert len(tie.presentations[0]["judgment"]["rationale"]) == 2000, "per-seed verdict is not mutated"
+    with pytest.raises(ValueError, match="seeds"):
+        aggregate_verdicts([tie, tie], seeds=[1])
