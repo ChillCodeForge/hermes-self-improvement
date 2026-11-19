@@ -326,8 +326,13 @@ automatically once policy passes, but never roll back by themselves;
 
 `hermes-improve report [--json]` reads, never writes:
 
-- **Hermes**: production observations (success rate, tokens/success, tool
-  calls/success, failed tool calls, retry rate) and queued-session counts.
+- **Hermes**: headline metrics from `source=production` observations only
+  (success rate, tokens/success, tool calls/success, failed tool calls, retry
+  rate; `no data` without real production traffic), queued-session counts, and
+  `observations_by_source`: the same metrics plus `critical_observations` for
+  every recorded source (`production`, `hermes_session`, `shadow_replay`,
+  `historical_replay`), so lab runs fed only by shadow replay still show their
+  evidence.
 - **Improvement**: candidates generated/rejected/promoted, experiments by
   decision, generations (longest parent chain), mean `quality_delta_mean`,
   failed evaluations with regression reasons.
@@ -343,8 +348,9 @@ automatically once policy passes, but never roll back by themselves;
   `unreliable` verdicts); `no data` until a judged evaluation exists.
   `gpu_runtime` is described below.
 - **Production**: active brain version and status, releases by status,
-  critical post-promotion observations, releases with rollback decisions,
-  rollback count.
+  critical post-promotion observations (all sources, with
+  `critical_observations_by_source` matching `hermes.observations_by_source`),
+  releases with rollback decisions, rollback count.
 
 Missing sources print `no data`.
 

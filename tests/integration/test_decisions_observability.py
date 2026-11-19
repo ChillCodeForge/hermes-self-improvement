@@ -168,3 +168,45 @@ def test_report_reads_public_benchmarks_only(tmp_path):
     assert report["benchmarks"]["ground_truth_types"] == {"deterministic_tests": 32}
     assert report["benchmarks"]["reproducibility"] == {"mean": 1.0, "min": 1.0, "max": 1.0}
     assert report["benchmarks"]["spent_holdouts"] == "no data"
+
+
+def test_report_breaks_observations_down_by_source_consistently(tmp_path):
+    home = tmp_path / "home"
+    store = ExperimentStore(home / "experiments.sqlite3")
+    store.create_experiment(
+        "exp-1", lineage_id="l", hypothesis="h", candidate_type="SKILL_PATCH", target="brain/skills/demo",
+        risk="LOW", baseline_commit="base", benchmark_version="v1", policy_version="1",
+    )
+    store.record_release("brain-v1", "exp-1", "hash", "PROVISIONAL", {"baseline_metrics": {"success_rate": 0.5}})
+    monitor = ReleaseMonitor(home / "monitoring.sqlite3", store, MonitoringPolicy(min_observations=50))
+    # Lab shape: only shadow-replay evidence, some of it critical, no real production traffic yet.
+    for index in range(5):
+        monitor.observe(ProductionObservation(
+            "brain-v1", f"t{index}", index % 2 == 0, 1, 100, 4, 10.0,
+            critical_regression=index < 2, source="shadow_replay",
+        ))
+
+    report = build_report(home, tmp_path / "absent-benchmarks")
+
+    hermes = report["hermes"]
+    assert hermes["observed_tasks"] == "no data"  # headline metrics stay production-only
+    assert hermes["observations_by_source"] == {
+        "shadow_replay": {
+            "observed_tasks": 5, "success_rate": 0.6, "tokens_per_success": 500 / 3,
+            "tool_calls_per_success": 20 / 3, "failed_tool_calls": 5, "retry_rate": 0.0,
+            "critical_observations": 2,
+        },
+    }
+    regressions = report["production"]["post_promotion_regressions"]
+    assert regressions["critical_observations"] == 2
+    assert regressions["critical_observations_by_source"] == {"shadow_replay": 2}
+
+    monitor.observe(ProductionObservation("brain-v1", "p1", True, 0, 40, 2, 5.0))
+    report = build_report(home, tmp_path / "absent-benchmarks")
+    assert report["hermes"]["observed_tasks"] == 1 and report["hermes"]["success_rate"] == 1.0
+    assert set(report["hermes"]["observations_by_source"]) == {"production", "shadow_replay"}
+    assert report["hermes"]["observations_by_source"]["production"]["critical_observations"] == 0
+    by_source = report["production"]["post_promotion_regressions"]["critical_observations_by_source"]
+    assert by_source == {"production": 0, "shadow_replay": 2}
+    assert sum(by_source.values()) == report["production"]["post_promotion_regressions"]["critical_observations"]
+    assert "observations_by_source" in render_text(report)

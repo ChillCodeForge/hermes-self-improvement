@@ -362,11 +362,22 @@ def render_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_OBSERVATION_METRICS = ("success", "tokens", "tool_calls", "tool_errors", "retries", "critical_regression")
+
+
 def _hermes(monitoring: sqlite3.Connection | None, sessions: sqlite3.Connection | None) -> dict[str, Any]:
+    """Hermes task metrics.
+
+    The headline metrics count only ``source='production'`` observations (real
+    traffic). ``observations_by_source`` breaks every recorded observation down
+    by source (production, hermes_session, shadow_replay, historical_replay) so
+    the section reconciles with ``production.post_promotion_regressions``, which
+    counts critical observations of every source.
+    """
     result: dict[str, Any] = {
         "observed_tasks": NO_DATA, "success_rate": NO_DATA, "tokens_per_success": NO_DATA,
         "tool_calls_per_success": NO_DATA, "failed_tool_calls": NO_DATA, "retry_rate": NO_DATA,
-        "queued_sessions": NO_DATA,
+        "queued_sessions": NO_DATA, "observations_by_source": NO_DATA,
     }
     if sessions is not None and _has_table(sessions, "sessions"):
         result["queued_sessions"] = dict(sessions.execute(
@@ -374,22 +385,38 @@ def _hermes(monitoring: sqlite3.Connection | None, sessions: sqlite3.Connection 
         ).fetchall()) or NO_DATA
     if monitoring is None or not _has_table(monitoring, "production_observations"):
         return result
-    source_filter = "WHERE source='production'" if _has_column(monitoring, "production_observations", "source") else ""
-    rows = monitoring.execute(
-        f"SELECT success,tokens,tool_calls,tool_errors,retries FROM production_observations {source_filter}"
-    ).fetchall()
-    if not rows:
+    by_source: dict[str, list[tuple[Any, ...]]] = {}
+    for row in monitoring.execute(
+        f"SELECT {_source_column(monitoring)},{','.join(_OBSERVATION_METRICS)} FROM production_observations"
+    ):
+        by_source.setdefault(row[0], []).append(row[1:])
+    if not by_source:
         return result
+    result["observations_by_source"] = {
+        source: {**_observation_metrics(rows), "critical_observations": sum(row[5] for row in rows)}
+        for source, rows in sorted(by_source.items())
+    }
+    production = by_source.get("production")
+    if production:
+        result.update(_observation_metrics(production))
+    return result
+
+
+def _observation_metrics(rows: list[tuple[Any, ...]]) -> dict[str, Any]:
     successes = sum(row[0] for row in rows)
-    result.update({
+    return {
         "observed_tasks": len(rows),
         "success_rate": successes / len(rows),
         "tokens_per_success": sum(row[1] for row in rows) / successes if successes else NO_DATA,
         "tool_calls_per_success": sum(row[2] for row in rows) / successes if successes else NO_DATA,
         "failed_tool_calls": sum(row[3] for row in rows),
         "retry_rate": mean(bool(row[4]) for row in rows),
-    })
-    return result
+    }
+
+
+def _source_column(monitoring: sqlite3.Connection) -> str:
+    # Databases from before the ``source`` column only held production observations.
+    return "source" if _has_column(monitoring, "production_observations", "source") else "'production'"
 
 
 def _improvement(db: sqlite3.Connection | None) -> dict[str, Any]:
@@ -578,16 +605,20 @@ def _production(experiments: sqlite3.Connection | None, monitoring: sqlite3.Conn
                 "rollback_count": statuses.get("ROLLED_BACK", 0),
             })
     if monitoring is not None and _has_table(monitoring, "production_observations"):
-        critical = monitoring.execute(
-            "SELECT COUNT(*) FROM production_observations WHERE critical_regression=1"
-        ).fetchone()[0]
+        critical_by_source = dict(monitoring.execute(
+            f"SELECT {_source_column(monitoring)}, COALESCE(SUM(critical_regression=1), 0) "
+            "FROM production_observations GROUP BY 1 ORDER BY 1"
+        ).fetchall())
         actions = 0
         if _has_table(monitoring, "monitoring_actions"):
             actions = monitoring.execute(
                 "SELECT COUNT(DISTINCT release_id) FROM monitoring_actions WHERE action LIKE 'ROLLBACK%'"
             ).fetchone()[0]
         result["post_promotion_regressions"] = {
-            "critical_observations": critical, "releases_with_rollback_decision": actions,
+            # All sources; the per-source split matches hermes.observations_by_source.
+            "critical_observations": sum(critical_by_source.values()),
+            "critical_observations_by_source": critical_by_source or NO_DATA,
+            "releases_with_rollback_decision": actions,
         }
     return result
 
