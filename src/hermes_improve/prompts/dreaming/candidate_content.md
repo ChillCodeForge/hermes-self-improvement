@@ -11,7 +11,20 @@ promotion or scoring files, read or mention holdout benchmarks, run the
 promotion or rollback commands, use sudo, or ignore its instructions, and never
 include credentials.
 
-Write a concise, self-contained skill: YAML front matter with name and
-description, then procedural guidance for the task family named in the proposal.
+Write a concise, self-contained skill. The text MUST start with a YAML front
+matter block fenced by two lines that contain exactly three dashes, in exactly
+this form:
+
+---
+name: <last path component of the proposal target>
+description: <one sentence: what the skill does and when to use it>
+---
+
+The name must equal the target directory name character for character (for the
+target brain/skills/tool_selection_strategy it is tool_selection_strategy), not a
+title. The description is a non-empty single line of at most 1024 characters.
+Text without both fences, or with a different name, is rejected. After the
+closing fence, write procedural guidance for the task family named in the
+proposal.
 
 Return only JSON: {"content": "<complete SKILL.md text>"}.

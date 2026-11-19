@@ -13,6 +13,7 @@ from evolution_doubles import (
     ScriptedOptimizerModel,
     evolution_fixture,
     git,
+    skill_text,
 )
 from hermes_improve.benchmarks import BenchmarkStore
 from hermes_improve.errors import AccessDenied
@@ -206,6 +207,24 @@ def test_out_of_scope_variant_content_is_rejected_and_retained(tmp_path):
     assert git(fixture.repo, "show", "main:config/promotion.yaml") == "min_quality_delta: 3"
 
 
+def test_variants_without_valid_front_matter_are_rejected_before_commit(tmp_path):
+    from hermes_improve.prompting import skill_content_digest
+
+    fixture = evolution_fixture(tmp_path)
+    unfenced = "name: Dynamic Sample Strategy\ndescription: Pick tools.\n\nquality=9\n"
+    renamed = skill_text("quality=9 renamed", name="Dynamic Sample Strategy")
+    branches_before = git(fixture.repo, "branch", "--list", "candidate/*")
+    report = _loop(
+        fixture, ScriptedOptimizerModel([[unfenced, renamed]], front_matter=False), max_generations=1,
+    ).run(fixture.root_id)
+    assert report.generations[0].rejected == 2 and report.candidates_created == 0
+    assert git(fixture.repo, "branch", "--list", "candidate/*") == branches_before
+    first = fixture.store.find_generated_variant(TARGET, skill_content_digest(unfenced))
+    second = fixture.store.find_generated_variant(TARGET, skill_content_digest(renamed))
+    assert first["status"] == "rejected" and "front matter" in first["reason"]
+    assert second["status"] == "rejected" and "'sample'" in second["reason"]
+
+
 def test_small_smoke_suite_warns_but_evolution_still_runs(tmp_path):
     fixture = evolution_fixture(tmp_path)
     gateway = fixture.gateway()
@@ -289,7 +308,7 @@ def test_evolution_config_overrides_are_strict():
 def _digest(content):
     from hermes_improve.prompting import skill_content_digest
 
-    return skill_content_digest(content)
+    return skill_content_digest(skill_text(content))
 
 
 def test_store_lineage_link_is_one_time_and_variants_are_append_only(tmp_path):

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evolution_doubles import HOLDOUT_PROMPT, VALIDATION_PROMPT, evolution_fixture
+from evolution_doubles import HOLDOUT_PROMPT, VALIDATION_PROMPT, evolution_fixture, skill_text
 from hermes_improve.evolution_loop import EvolutionConfig, EvolutionLoop
 from hermes_improve.gepa_adapter import (
     SUPPORTED_GEPA_VERSION,
@@ -60,10 +60,10 @@ class GepaInstructionProposalContract:
 
 
 class FencedReflectionModel:
-    """TEST DOUBLE reflection LM: answers with a fenced skill rewrite."""
+    """TEST DOUBLE reflection LM: answers with a fenced skill rewrite (fixture front matter + body)."""
 
     def __init__(self, bodies):
-        self.bodies = list(bodies)
+        self.bodies = [skill_text(body) for body in bodies]
         self.calls = []
 
     def complete(self, *, role, system_prompt, user_payload, json_object=False):
@@ -98,7 +98,9 @@ def test_gepa_strategy_uses_pinned_contract_and_keeps_evidence_enveloped():
     )
     assert strategy.version == f"gepa-{SUPPORTED_GEPA_VERSION}"
     proposals = strategy.propose(_request())
-    assert [item.content for item in proposals] == ["new skill one quality=3", "new skill two quality=4"]
+    assert [item.content for item in proposals] == [
+        skill_text("new skill one quality=3").strip(), skill_text("new skill two quality=4").strip(),
+    ]
     assert {call["role"] for call in model.calls} == {"qwen_optimizer"}
     assert all("UNTRUSTED EVIDENCE" in call["system_prompt"] for call in model.calls)
     for prompt in GepaInstructionProposalContract.prompts:

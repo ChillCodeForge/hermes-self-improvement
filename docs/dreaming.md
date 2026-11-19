@@ -60,6 +60,19 @@ Generation checks, per proposal:
    verifier / policy / promotion / security modules, `.git/`, `/etc/`, `~/.ssh`,
    `hermes-improve promote|rollback`, `sudo`) and override phrases such as
    "ignore previous instructions";
+   it then requires the YAML front matter Hermes needs to list the skill.
+   Hermes `agent/skill_utils.parse_frontmatter` only reads a block that starts
+   the file with `---` and is closed by a `---` line; otherwise the skill shows
+   up without a description and the agent cannot tell when to load it. The text
+   must start with a `---` line, the block must be closed by a `---` line and
+   parse (`yaml.safe_load`) to a mapping with a non-empty string `name` (at most
+   64 characters) equal to the target directory name (last component of
+   `brain/skills/.../<name>`, e.g. `tool_selection_strategy`, not a title such
+   as `Dynamic Tool Selection Strategy`) and a non-empty string `description`
+   (at most 1024 characters). The same check runs for every evolution variant
+   (`qwen-optimizer`, `gepa` and `gepa-optimize` text screened through the
+   oracle) before it is committed; failures are recorded as `rejected` with
+   the reason;
 5. identical content for the same target (SHA-256 of the committed text) is
    reported as `duplicate` instead of creating another branch.
 

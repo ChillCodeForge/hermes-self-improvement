@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import pytest
 
-from evolution_doubles import TARGET, ScriptedOptimizerModel, SkillMarkerRunner, evolution_fixture, git
+from evolution_doubles import TARGET, ScriptedOptimizerModel, SkillMarkerRunner, evolution_fixture, git, skill_text
 from hermes_improve import cli
 from hermes_improve.decisions import DecisionRecorder
 from hermes_improve.errors import AccessDenied
@@ -110,7 +111,8 @@ def test_candidate_generate_cli_creates_candidates_from_selected_proposals(tmp_p
         def complete(self, *, role, system_prompt, user_payload, json_object=False):
             assert role == "qwen_optimizer" and "UNTRUSTED EVIDENCE" in system_prompt
             self.requests += 1
-            return json.dumps({"content": "---\nname: generated\n---\nPrefer pinned images."})
+            name = re.search(r'"target": "brain/skills/([^"]+)"', user_payload).group(1)
+            return json.dumps({"content": skill_text("Prefer pinned images.", name=name)})
 
         @property
         def stats(self):

@@ -35,6 +35,11 @@ TRAIN_INJECTION = (
 )
 
 
+def skill_text(body: str, *, name: str = "sample") -> str:
+    """SKILL.md text with the fenced front matter Hermes (and the content check) require."""
+    return f"---\nname: {name}\ndescription: Fixture skill for evolution tests.\n---\n\n{body}\n"
+
+
 def git(repository: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repository), *args], check=True, capture_output=True, text=True,
@@ -131,10 +136,14 @@ class SkillMarkerRunner:
 
 
 class ScriptedOptimizerModel:
-    """TEST DOUBLE for the qwen_optimizer role: returns scripted variant batches in order."""
+    """TEST DOUBLE for the qwen_optimizer role: returns scripted variant batches in order.
 
-    def __init__(self, batches: list[list[str]]) -> None:
-        self.batches = list(batches)
+    Scripted bodies get the fixture front matter (as a well-behaved model would
+    write) unless ``front_matter=False``, which returns them verbatim.
+    """
+
+    def __init__(self, batches: list[list[str]], *, front_matter: bool = True) -> None:
+        self.batches = [[skill_text(body) if front_matter else body for body in batch] for batch in batches]
         self.calls: list[dict[str, str]] = []
         self.stats_by_role: dict[str, dict[str, float | int]] = {}
 
@@ -179,7 +188,9 @@ class EvolutionFixture:
         )
 
 
-def evolution_fixture(tmp_path: Path, *, root_content: str = "root skill quality=1", with_holdout: bool = True):
+def evolution_fixture(
+    tmp_path: Path, *, root_content: str = skill_text("root skill quality=1"), with_holdout: bool = True,
+):
     repo = make_repository(tmp_path)
     store = ExperimentStore(tmp_path / "state" / "experiments.sqlite3")
     public, holdout = write_benchmarks(tmp_path, with_holdout=with_holdout)

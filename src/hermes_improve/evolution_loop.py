@@ -786,7 +786,7 @@ class EvolutionLoop:
         experiment_id = f"{state.run_id}-g{state.generation:02d}-{label}"
         origin = f"evolution:{state.run_id}"
         try:
-            check_generated_skill_content(content)
+            check_generated_skill_content(content, target=target)
             candidate = create_skill_candidate(
                 self.repository,
                 self.store,

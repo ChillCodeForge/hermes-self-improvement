@@ -71,10 +71,51 @@ def test_envelope_enforces_request_size_limit():
 ])
 def test_generated_skill_content_rejects_out_of_scope_or_secret_text(content):
     with pytest.raises(ValueError):
-        check_generated_skill_content(content)
+        check_generated_skill_content(content, target="brain/skills/docker")
 
 
 def test_generated_skill_content_accepts_normal_skill_and_hash_matches_committed_text():
     text = "---\nname: docker\ndescription: build images\n---\n\nRun `docker build` with a pinned base image."
-    assert check_generated_skill_content(text) == text
+    assert check_generated_skill_content(text, target="brain/skills/docker") == text
     assert skill_content_digest(text) == skill_content_digest(text + "\n\n  ")
+
+
+TARGET = "brain/skills/tool_selection_strategy"
+VALID = (
+    "---\nname: tool_selection_strategy\n"
+    "description: Pick the narrowest tool for the task. Use before calling any tool.\n---\n\n"
+    "# Tool selection\n\nPrefer read-only tools first.\n"
+)
+
+
+def test_generated_skill_content_accepts_fenced_front_matter_matching_the_target():
+    assert check_generated_skill_content(VALID, target=TARGET) == VALID
+    nested = VALID.replace("tool_selection_strategy", "git-commit-hygiene", 1)
+    assert check_generated_skill_content(nested, target="brain/skills/devops/git-commit-hygiene") == nested
+
+
+@pytest.mark.parametrize("content, reason", [
+    # Live qwen3:4b output: YAML keys without the --- fences.
+    ("name: Dynamic Tool Selection Strategy\ndescription: Pick tools.\n\n# Body\n", "front matter"),
+    ("# Tool selection\n\n---\nname: tool_selection_strategy\ndescription: x\n---\n", "front matter"),
+    ("---\nname: tool_selection_strategy\ndescription: never closed\n\n# Body\n", "front matter"),
+    ("---\n- just\n- a list\n---\n\nBody\n", "mapping"),
+    ("---\nname: [unclosed\n---\n\nBody\n", "YAML"),
+    ("---\ndescription: Pick tools.\n---\n\nBody\n", "name"),
+    ("---\nname: tool_selection_strategy\n---\n\nBody\n", "description"),
+    ("---\nname: tool_selection_strategy\ndescription: ''\n---\n\nBody\n", "description"),
+    ("---\nname: tool_selection_strategy\ndescription: 42\n---\n\nBody\n", "description"),
+    ("---\nname: tool_selection_strategy\ndescription: " + "d" * 1025 + "\n---\n\nBody\n", "description"),
+    ("---\nname: Dynamic Tool Selection Strategy\ndescription: Pick tools.\n---\n\nBody\n",
+     "tool_selection_strategy"),
+])
+def test_generated_skill_content_requires_valid_front_matter(content, reason):
+    with pytest.raises(ValueError, match=reason):
+        check_generated_skill_content(content, target=TARGET)
+
+
+@pytest.mark.parametrize("name", ["dreaming/candidate_content.md", "optimizer/mutate_skill.md"])
+def test_generation_prompts_show_the_exact_fenced_front_matter(name):
+    text = load_prompt(name)
+    assert "\n---\nname: <last path component of" in text
+    assert "\ndescription: <" in text and ">\n---\n" in text
