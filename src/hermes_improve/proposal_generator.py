@@ -104,7 +104,7 @@ def _generate_one(
     )
     try:
         content = _parse_content(response)
-        check_generated_skill_content(content)
+        check_generated_skill_content(content, target=target)
     except ValueError as exc:
         return GeneratedCandidateOutcome(index, target, "rejected", str(exc))
     digest = skill_content_digest(content)

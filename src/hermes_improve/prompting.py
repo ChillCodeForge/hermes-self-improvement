@@ -12,8 +12,10 @@ import hashlib
 import json
 import re
 import secrets
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+import yaml
 
 from .ingestion import contains_secret_material
 
@@ -102,8 +104,13 @@ def skill_content_digest(content: str) -> str:
     return hashlib.sha256(normalized_skill_content(content).encode("utf-8")).hexdigest()
 
 
-def check_generated_skill_content(content: Any) -> str:
-    """Reject model-written skill text that is empty, oversized, secret-bearing or out of scope."""
+def check_generated_skill_content(content: Any, *, target: str) -> str:
+    """Reject model-written skill text that is empty, oversized, secret-bearing, out of scope
+    or lacks the YAML front matter Hermes needs to list the skill.
+
+    ``target`` is the skill directory (``brain/skills/[...]/<name>``); the front matter
+    ``name`` must equal its last component.
+    """
     if not isinstance(content, str) or not content.strip():
         raise ValueError("generated skill content must be non-empty text")
     if "\x00" in content:
@@ -119,4 +126,53 @@ def check_generated_skill_content(content: Any) -> str:
                 f"generated skill content references a protected path or override instruction: "
                 f"{match.group(0).strip()!r}"
             )
+    check_skill_front_matter(content, target=target)
     return content
+
+
+# Hermes (agent/skill_utils.parse_frontmatter) only reads front matter when the text
+# starts with ``---`` and has a closing ``\n---\n``; anything else yields ``{}`` and the
+# skill is listed without a description, so the agent never knows when to load it.
+_FRONT_MATTER_CLOSE = re.compile(r"\n---[ \t]*\n")
+MAX_SKILL_NAME_CHARS = 64
+MAX_SKILL_DESCRIPTION_CHARS = 1024
+
+
+def check_skill_front_matter(content: str, *, target: str) -> dict[str, Any]:
+    """Require a ``---`` fenced YAML mapping with ``name`` (= target directory) and ``description``."""
+    expected_name = PurePosixPath(target).name
+    example = f"'---\\nname: {expected_name}\\ndescription: <when to use this skill>\\n---'"
+    text = normalized_skill_content(content)
+    if not text.startswith("---\n"):
+        raise ValueError(
+            f"generated skill content must start with a YAML front matter block fenced by '---' lines, "
+            f"e.g. {example}"
+        )
+    closing = _FRONT_MATTER_CLOSE.search(text, 3)
+    if closing is None:
+        raise ValueError("generated skill front matter is not closed by a '---' line")
+    try:
+        meta = yaml.safe_load(text[4:closing.start() + 1])
+    except yaml.YAMLError as exc:
+        raise ValueError(f"generated skill front matter is not valid YAML: {exc.__class__.__name__}") from exc
+    if not isinstance(meta, dict):
+        raise ValueError("generated skill front matter must be a YAML mapping with name and description")
+    name = meta.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name) > MAX_SKILL_NAME_CHARS:
+        raise ValueError(
+            f"generated skill front matter needs a non-empty string name of at most {MAX_SKILL_NAME_CHARS} characters"
+        )
+    description = meta.get("description")
+    if (
+        not isinstance(description, str) or not description.strip()
+        or len(description) > MAX_SKILL_DESCRIPTION_CHARS
+    ):
+        raise ValueError(
+            "generated skill front matter needs a non-empty string description of at most "
+            f"{MAX_SKILL_DESCRIPTION_CHARS} characters"
+        )
+    if name != expected_name:
+        raise ValueError(
+            f"generated skill front matter name {name!r} must equal the target directory name {expected_name!r}"
+        )
+    return meta

@@ -15,6 +15,7 @@ from evolution_doubles import (
     evolution_fixture,
     git,
     make_repository,
+    skill_text,
     write_benchmarks,
 )
 from hermes_improve.dreaming import DreamingEngine
@@ -180,7 +181,7 @@ def test_candidate_generation_limits_validation_and_deduplication(tmp_path):
     with pytest.raises(ValueError, match="at least one"):
         generate_candidates_from_proposals([], model=ContentModel([]), repository=repo, store=store, benchmark_version="v")
 
-    good = json.dumps({"content": "---\nname: sample\n---\nImproved steps.", "target": "config/promotion.yaml"})
+    good = json.dumps({"content": skill_text("Improved steps."), "target": "config/promotion.yaml"})
     model = ContentModel([good, "not json"])
     outcomes = generate_candidates_from_proposals(
         [
@@ -204,3 +205,23 @@ def test_candidate_generation_limits_validation_and_deduplication(tmp_path):
         [_proposal()], model=ContentModel([good]), repository=repo, store=store, benchmark_version="v",
     )
     assert again[0].status == "duplicate" and again[0].candidate_id == outcomes[0].candidate_id
+
+
+def test_candidate_generation_rejects_skill_text_without_hermes_front_matter(tmp_path):
+    repo = make_repository(tmp_path)
+    store = ExperimentStore(tmp_path / "experiments.sqlite3")
+    main_before = git(repo, "rev-parse", "main")
+    # Live qwen3:4b shape: YAML keys without --- fences and a title instead of the directory name.
+    unfenced = "name: Dynamic Tool Selection Strategy\ndescription: Pick tools.\n\n# Steps\n1. Read first.\n"
+    titled = skill_text("1. Read first.", name="Dynamic Tool Selection Strategy")
+    target = "brain/skills/tool_selection_strategy"
+    outcomes = generate_candidates_from_proposals(
+        [_proposal(target=target, candidate_type="SKILL_CREATE")] * 2,
+        model=ContentModel([json.dumps({"content": unfenced}), json.dumps({"content": titled})]),
+        repository=repo, store=store, benchmark_version="v",
+    )
+    assert [item.status for item in outcomes] == ["rejected", "rejected"]
+    assert "front matter" in outcomes[0].reason
+    assert "'tool_selection_strategy'" in outcomes[1].reason
+    assert git(repo, "rev-parse", "main") == main_before
+    assert git(repo, "branch", "--list", "candidate/*") == ""
