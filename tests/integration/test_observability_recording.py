@@ -28,6 +28,7 @@ from hermes_improve.observability import (
     record_qwen_usage,
     sum_prometheus_counters,
 )
+from hermes_improve.promotion import verify_evaluation_run_signature
 from hermes_improve.store import ExperimentStore
 
 
@@ -363,6 +364,17 @@ def test_cli_evaluate_records_suite_selection_needs_qwen_and_judge_metrics(tmp_p
     evaluate("SMOKE")
     evaluate("CORE")  # the sealed holdout in FULL is reserved for finalists
 
+    # A subjective-only task without --judge is refused before anything is recorded:
+    # an evaluation that never ran must not leave suite_selection/needs_qwen rows.
+    rows_before = len(list(DecisionRecorder(home / "experiments.sqlite3").iter_records()))
+    monkeypatch.setattr(sys, "argv", [
+        "hermes-improve", "evaluate", "cand-obs", "--repository", str(repository),
+        "--holdout-root", str(holdout_root), "--suite", "FULL",
+    ])
+    with pytest.raises(ValueError, match="requires a configured judge"):
+        cli.main()
+    assert len(list(DecisionRecorder(home / "experiments.sqlite3").iter_records())) == rows_before
+
     def verdict(body):
         payload = json.loads(body["messages"][1]["content"])
         winner = "A" if payload["response_A"] == "candidate answer" else "B"
@@ -394,6 +406,18 @@ def test_cli_evaluate_records_suite_selection_needs_qwen_and_judge_metrics(tmp_p
     stored_digests = {json.loads(run["evaluation"]["metrics_json"])["suite_selection"]["suite_manifest_digest"]
                       for run in runs}
     assert {item.input_features["suite_manifest_digest"] for item in selections.values()} == stored_digests
+    # Per-order judge rationales land in the signed metrics and survive the store round-trip.
+    public_key = cli.evaluator_public_key(key_file.read_bytes())
+    for run in runs:
+        verify_evaluation_run_signature("cand-obs", run, public_key)
+    judged = [
+        json.loads(run["evaluation"]["metrics_json"])["judge"]["verdicts"]["essay-task"]
+        for run in runs if "essay-task" in json.loads(run["evaluation"]["metrics_json"])["judge"]["verdicts"]
+    ]
+    assert len(judged) == 1
+    presentations = judged[0]["presentations"]
+    assert {item["order"] for item in presentations} == {"A=baseline,B=candidate", "A=candidate,B=baseline"}
+    assert all(item["judgment"]["rationale"] == "r" and "seed" in item for item in presentations)
 
     routes = list(recorder.iter_records(decision_type="needs_qwen"))
     by_task = {item.input_features.get("task_id", "<holdout>"): item for item in routes}

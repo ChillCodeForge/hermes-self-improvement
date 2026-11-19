@@ -21,6 +21,9 @@ JUDGE_ROLE = "qwen_judge"
 DEFAULT_PROMPT_DIR = Path(__file__).resolve().parent / "prompts" / "judge"
 _SYSTEM_PROMPT_FILE = "pairwise_system.md"
 _RESULTS = ("candidate", "baseline", "tie", "unreliable")
+# Bounds for the per-order judgments kept in an aggregated (signed) verdict.
+MAX_AGGREGATED_PRESENTATIONS = 20
+MAX_PRESENTATION_RATIONALE_CHARS = 500
 
 
 class ChatModel(Protocol):
@@ -64,6 +67,7 @@ class JudgeVerdict:
     attempts: int = 0
     prompt_sha256: str = ""
     presentations: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    presentations_omitted: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -191,10 +195,45 @@ class PairwiseJudge:
         return None, self.config.max_attempts, error
 
 
-def aggregate_verdicts(verdicts: Sequence[JudgeVerdict]) -> JudgeVerdict:
-    """Combine per-seed verdicts; any unreliable or disagreeing run is unreliable."""
+def _aggregate_presentations(
+    verdicts: Sequence[JudgeVerdict], seeds: Sequence[int] | None,
+) -> tuple[tuple[dict[str, Any], ...], int]:
+    """Per-run, per-order judgments for auditing position bias, bounded in count and size."""
+    entries = []
+    for index, verdict in enumerate(verdicts):
+        for presentation in verdict.presentations:
+            entry: dict[str, Any] = {"run": index}
+            if seeds is not None:
+                entry["seed"] = seeds[index]
+            entry["order"] = presentation.get("order")
+            judgment = presentation.get("judgment")
+            if isinstance(judgment, dict):
+                judgment = dict(judgment)
+                rationale = judgment.get("rationale")
+                if isinstance(rationale, str):
+                    judgment["rationale"] = rationale[:MAX_PRESENTATION_RATIONALE_CHARS]
+            entry["judgment"] = judgment
+            error = presentation.get("error")
+            entry["error"] = error[:MAX_PRESENTATION_RATIONALE_CHARS] if isinstance(error, str) else error
+            entries.append(entry)
+    kept = tuple(entries[:MAX_AGGREGATED_PRESENTATIONS])
+    return kept, len(entries) - len(kept)
+
+
+def aggregate_verdicts(verdicts: Sequence[JudgeVerdict], seeds: Sequence[int] | None = None) -> JudgeVerdict:
+    """Combine per-seed verdicts; any unreliable or disagreeing run is unreliable.
+
+    The per-seed, per-order presentations are kept (at most
+    ``MAX_AGGREGATED_PRESENTATIONS`` entries, rationales and errors cut to
+    ``MAX_PRESENTATION_RATIONALE_CHARS``) so position bias stays auditable in
+    the signed evaluation; ``presentations_omitted`` counts what the cap dropped.
+    """
     if not verdicts:
         raise ValueError("at least one judge verdict is required")
+    if seeds is not None and len(seeds) != len(verdicts):
+        raise ValueError("judge seeds must match the verdicts one to one")
+    presentations, omitted = _aggregate_presentations(verdicts, seeds)
+    audit = {"presentations": presentations, "presentations_omitted": omitted}
     results = {verdict.result for verdict in verdicts}
     confidences = [verdict.confidence for verdict in verdicts if verdict.confidence is not None]
     uncertainties = [verdict.uncertainty for verdict in verdicts if verdict.uncertainty is not None]
@@ -203,14 +242,16 @@ def aggregate_verdicts(verdicts: Sequence[JudgeVerdict]) -> JudgeVerdict:
     attempts = sum(verdict.attempts for verdict in verdicts)
     reasons = tuple(reason for verdict in verdicts for reason in verdict.reasons)
     if "unreliable" in results:
-        return JudgeVerdict("unreliable", confidence, uncertainty, reasons, attempts, verdicts[0].prompt_sha256)
+        return JudgeVerdict(
+            "unreliable", confidence, uncertainty, reasons, attempts, verdicts[0].prompt_sha256, **audit,
+        )
     if len(results) > 1:
         return JudgeVerdict(
             "unreliable", confidence, uncertainty,
             reasons + (f"judge verdicts disagree across runs: {sorted(results)}",),
-            attempts, verdicts[0].prompt_sha256,
+            attempts, verdicts[0].prompt_sha256, **audit,
         )
     result = results.pop()
     if result not in _RESULTS:
         raise ValueError(f"unknown judge result: {result!r}")
-    return JudgeVerdict(result, confidence, uncertainty, reasons, attempts, verdicts[0].prompt_sha256)
+    return JudgeVerdict(result, confidence, uncertainty, reasons, attempts, verdicts[0].prompt_sha256, **audit)

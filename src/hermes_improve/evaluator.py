@@ -319,7 +319,7 @@ class PairedEvaluator:
             )
             for baseline, candidate_run in zip(baseline_runs, candidate_runs)
         ]
-        return aggregate_verdicts(verdicts)
+        return aggregate_verdicts(verdicts, seeds=[baseline.seed for baseline in baseline_runs])
 
     @staticmethod
     def _outcome(

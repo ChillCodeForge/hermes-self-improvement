@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import ipaddress
 import math
@@ -247,6 +248,10 @@ class OpenAICompatibleQwen:
                 raise RuntimeError(f"local model request failed: {exc}") from exc
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 raise RuntimeError(f"local model request failed: {exc}") from exc
+            except (OSError, http.client.HTTPException) as exc:
+                # A dropped or reset connection (e.g. the model server restarting) is a
+                # transport failure like a timeout: callers fail closed on RuntimeError.
+                raise RuntimeError(f"local model request failed: {type(exc).__name__}: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError("local model response must be a JSON object")
         try:

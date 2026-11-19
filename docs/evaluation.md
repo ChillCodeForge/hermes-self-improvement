@@ -290,11 +290,14 @@ efficiency not measured" (see `promotion.md`).
 
 The `qwen_judge` role is used only for benchmarks with no deterministic checks
 and non-empty `verification.subjective`; if such a benchmark is selected
-without `--judge`, evaluation fails before running anything. Each paired run is
+without `--judge`, evaluation fails before running anything (the CLI refuses
+before it records any `suite_selection`/`needs_qwen` decision). Each paired run is
 presented twice (A=baseline/B=candidate, then swapped) with only the task,
 criteria and the two outputs. The answer must be strict JSON
 `{"winner": "A|B|TIE", "confidence": 0..1, "uncertainty": 0..1, "rationale"}`.
-Invalid answers or transport errors are retried up to `max_attempts` per
+Invalid answers or transport errors (timeouts, refused, dropped or reset
+connections, malformed HTTP responses, e.g. when Ollama restarts mid-run) are
+retried up to `max_attempts` per
 presentation and then yield `unreliable`; contradictory positions, confidence
 below 0.5 or uncertainty above 0.5 also yield `unreliable`. Verdicts across
 seeds must agree. A `baseline` or `unreliable` verdict adds a blocking reason;
@@ -332,7 +335,11 @@ the impact-aware selection as a `suite_selection` decision (see
   latency per success, filesystem changes and exit states, plus
   `cheaper_failures` and efficiency deltas that are only computed when the
   candidate's success rate is not lower;
-- `judge` configuration and per-task verdicts.
+- `judge` configuration and per-task verdicts. Each verdict keeps its
+  per-seed, per-order `presentations` (`run`, `seed`, `order`, the parsed
+  `judgment` or the `error`) so position bias can be audited; at most 20
+  entries per task are kept, rationales and errors are cut to 500 characters,
+  and `presentations_omitted` counts entries dropped by the cap.
 
 `RunObservation` v2 fields (all optional with defaults): `input_tokens`,
 `output_tokens`, `token_usage_reported`, `context_chars`, `turns`,
