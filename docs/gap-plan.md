@@ -63,7 +63,7 @@ pass. Every merge must keep the full suite green in the Linux test container.
   local OpenAI-compatible stub server, live use is opt-in.
 - Real sealed-holdout data and real production identities are operator-provisioned.
 
-## Outcome (2026-11-18)
+## Outcome (2026-11-20)
 
 All work packages are merged into `main`, and every package passed GitHub
 Actions. Skipped tests are limited to the optional `gepa` extra and
@@ -98,6 +98,10 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | LIGHT Dreaming clusters errors deterministically with the lexical layers of `clustering.py` | #33 | **done** |
 | `evolve` selects the screening runner like `evaluate` (docker, local, hermes) | #34 | **done** |
 | SMOKE 20-task minimum as an advisory warning (deliberate deviation, see below) | #35 | **done** |
+| Batch ingestion drops all-zero `tool_stats` rows (REM payload 66,866 to 5,296 characters; lab F12) | #37 | **done** |
+| Judge: transport errors fail closed, per-order rationales kept in the signed report, no decision rows from an aborted `evaluate` (lab F25, F26, F29) | #38 | **done** |
+| Generated skills need fenced Hermes front matter with `name` = target directory; report breaks observations down by source (lab F15, F22) | #39 | **done** |
+| Monitoring evidence scoped to the current activation; SHADOW excluded from the experiment benchmark version and `evaluate` fails fast on a version mismatch (lab F17, F18) | #40 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -138,7 +142,44 @@ Open items:
   narrowing legitimately shrinks it below 20, and the bundled corpus has
   only 14 SMOKE tasks.
 
-No open items remain that can be fixed without a live lab.
+- Live self-improvement, monitoring and judge runs (2026-11-18 to
+  2026-11-20, same isolated lab; details and findings F11 to F29 in the lab's
+  `results/FINDINGS.md`):
+  - Closed loop without a hand-written candidate: 12 real production
+    sessions (2/12 correct: the agent read files and counted in its head),
+    ingest, Dreaming LIGHT/REM/DEEP and `candidate generate`, all live. The
+    four generated candidates had no effect on SMOKE, and two `evolve` rounds
+    with the Hermes runner (qwen strategy) produced 4 valid variants without
+    a single improved run. Nothing was promoted, which is correct, but the
+    system did not improve itself. Main cause: Dreaming has no outcome
+    signal. Sessions carry only the prompt, tool counters and
+    `final_status`, so REM read wrong answers as efficient successes and
+    proposed generic tool-minimisation skills.
+  - Monitoring and rollback: a degraded `brain-v2` was detected by real
+    Hermes replays and rolled back to `brain-v1` with
+    `monitor evaluate --apply`; `deploy/current`, `main`, tags, release events
+    and `status` were consistent afterwards. The reactivated release was still
+    flagged by old evidence; #40 fixes that.
+  - Judge: a subjective benchmark was graded live (candidate preferred,
+    confidence 0.98) and stored in the signed evaluation; the policy does not
+    use positive verdicts.
+
+Open items found live (not yet fixed):
+
+- F11, high: Dreaming needs an outcome signal: bounded, redacted tool error
+  text in session exports and operator-attached outcome labels (verifier
+  results, user corrections, monitoring observations).
+- F24, medium: the judge sees only the final chat text, never the workspace,
+  so file deliverables cannot be judged.
+- F27, medium (design): the policy ignores judge verdicts, and judged tasks
+  count as quality delta 0 in the pooled mean.
+- F19, F20, medium: monitor baselines are totals when the baseline never
+  succeeded, and production latency is compared with evaluation-time latency.
+- F14, low: `hermes_agent` benchmarks can never pass `benchmarks validate`,
+  because replay evidence exists only for command benchmarks.
+- F16, F21, F23, F28, low: no partial trajectory for timed-out runs, blocked
+  rollbacks visible only in `monitoring.sqlite3`, tracebacks for expected
+  refusals, and judge benchmarks need an unchecked `structured_result`.
 
 Outside what this repository can prove on its own:
 
@@ -146,7 +187,9 @@ Outside what this repository can prove on its own:
   GEPA runs (see "Real external blockers"). The Hermes path, the metering
   proxy, Dreaming REM/DEEP and promotion were verified manually in an
   isolated live setup (Hermes v0.22.2, local Qwen3). That setup is not
-  reproducible in CI. Live GEPA optimization was not run.
+  reproducible in CI. Live GEPA optimization was not run: one qwen `evolve`
+  round with 4 variants took about 1.8 h on the lab GPU, and GEPA's default
+  budget would need more than a day.
 - Semantic clustering (layer 5) needs a configured embedding endpoint
   (`QWEN_EMBEDDING_*`); it is covered by a fake embedder and a local HTTP stub
   but not exercised against a live Qwen3-Embedding server, and the default
