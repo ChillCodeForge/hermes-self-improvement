@@ -208,6 +208,18 @@ def load_single_trajectory(path: Path) -> HermesTrajectory | None:
     return parse_trajectory_record(records[0])
 
 
+def load_partial_trajectory(path: Path) -> HermesTrajectory | None:
+    """Best-effort read of the row a timed-out driver flushed on SIGTERM (lab finding F16).
+
+    A missing or unreadable row is dropped (``None``) instead of failing the run:
+    the run is a timeout either way, and the row only adds tool counts.
+    """
+    try:
+        return load_single_trajectory(path)
+    except (IntegrityError, UnicodeDecodeError, OSError):
+        return None
+
+
 def _load_hermes_usage(path: Path) -> dict[str, int] | None:
     """Hermes' own token counters written by the driver (cross-check for the proxy)."""
     try:
@@ -229,6 +241,8 @@ class HermesBatchRunner:
     """Runs one benchmark task for one brain commit through the Hermes agent (``hermes_driver.py``)."""
 
     llm_influenced = True
+    #: Seconds between SIGTERM and SIGKILL on timeout, for the driver's partial row (F16).
+    termination_grace_seconds: float = 5.0
 
     def __init__(
         self,
@@ -358,10 +372,15 @@ class HermesBatchRunner:
             # infrastructure). Any other non-zero exit is an infrastructure error.
             if exit_code not in (0, 3) and not timed_out:
                 raise RuntimeError(f"Hermes driver failed (exit {exit_code}): {redact_text(output[-2000:])}")
-            trajectory = None if timed_out or exit_code == 3 else load_single_trajectory(
-                out_dir / "trajectories.jsonl"
+            # On timeout the driver flushed a partial row on SIGTERM (F16); it keeps the
+            # tool counts and Hermes' counters, and _exit_state still says "timeout".
+            if timed_out:
+                trajectory = load_partial_trajectory(out_dir / "trajectories.jsonl")
+            else:
+                trajectory = None if exit_code == 3 else load_single_trajectory(out_dir / "trajectories.jsonl")
+            hermes_usage = (
+                _load_hermes_usage(out_dir / "usage.json") if trajectory is not None or timed_out else None
             )
-            hermes_usage = None if trajectory is None else _load_hermes_usage(out_dir / "usage.json")
             exit_state = self._exit_state(trajectory, timed_out)
             tokens_measured = (
                 usage is not None
@@ -534,6 +553,12 @@ class HermesBatchRunner:
                 process.wait(timeout=self.limits.timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
+                # SIGTERM first so the driver can flush a partial trajectory (F16),
+                # then SIGKILL whatever is left of the process group.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=self.termination_grace_seconds)
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait()

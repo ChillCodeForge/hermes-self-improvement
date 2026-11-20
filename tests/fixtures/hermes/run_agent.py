@@ -8,12 +8,19 @@ skill from ``$HERMES_HOME/skills`` (only when the ``skills`` toolset is
 enabled, like the real agent) and writes the answer into the task's ``cwd``
 override, so brain commits change its behaviour. Behaviour switches come from
 ``fake_config.json`` next to this file; every construction is logged.
+
+Modes ``slow`` and ``stuck`` emulate a run that outlives the evaluation
+timeout: the agent keeps calling tools until ``interrupt()`` (Hermes' API to
+stop a running conversation) is requested, then returns its messages with
+``completed: False`` like the real loop. ``stuck`` ignores the interrupt, so
+only the driver's SIGTERM fallback record survives.
 """
 
 import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -43,6 +50,7 @@ class AIAgent:
         self.session_input_tokens = 0
         self.session_output_tokens = 0
         self.session_api_calls = 0
+        self._interrupt_requested = False
         mode = _CONFIG.get("mode", "normal")
         if mode == "crash":
             print("Fatal error: interpreter crashed")
@@ -65,6 +73,8 @@ class AIAgent:
         workspace = Path(overrides.get("cwd") or "/nonexistent-container-only")
         if workspace.is_dir():
             (workspace / "answer.txt").write_text(answer + "\n")
+        if _CONFIG.get("mode") in ("slow", "stuck"):
+            return self._outlive_the_timeout(prompt, honor_interrupt=_CONFIG["mode"] == "slow")
         _call_model(self.kwargs["base_url"], self.kwargs["model"], int(_CONFIG.get("model_calls", 0)),
                     bool(_CONFIG.get("stream", False)))
         calls = 500 if _CONFIG.get("mode") == "tool_storm" else 1
@@ -77,6 +87,24 @@ class AIAgent:
             {"role": "assistant", "content": f"The answer is {answer}."},
         ]
         return {"messages": messages, "completed": True, "partial": False, "api_calls": 3, "answer": answer}
+
+    def _outlive_the_timeout(self, prompt, honor_interrupt):
+        self.session_input_tokens, self.session_output_tokens = _CONFIG.get("hermes_tokens", [0, 0])
+        messages = [{"role": "user", "content": prompt}]
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            messages.append({"role": "assistant", "content": "", "tool_calls": [{"name": "terminal"}]})
+            messages.append({"role": "tool", "content": json.dumps({"success": True})})
+            self.session_api_calls += 1
+            if honor_interrupt and self._interrupt_requested:
+                messages.append({"role": "assistant", "content": "Interrupted before finishing."})
+                return {"messages": messages, "completed": False, "interrupted": True,
+                        "api_calls": self.session_api_calls}
+            time.sleep(0.05)
+        raise RuntimeError("the fake agent was never stopped")
+
+    def interrupt(self, message=None):
+        self._interrupt_requested = True
 
     def _convert_to_trajectory_format(self, messages, prompt, completed):
         answer = messages[-1]["content"]

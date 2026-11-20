@@ -246,7 +246,23 @@ and `out/usage.json` (Hermes' session token counters, stored in the run record
 as `hermes_reported_usage`). Exit 3 means the agent failed before a trajectory
 existed (`exit_state=agent_error`, never success); any other non-zero exit is an
 infrastructure error. Tool-call and turn limits are enforced on the parsed
-trajectory. The trajectory, diff and run record are stored as artifacts. Known
+trajectory.
+
+Timeouts keep a partial trajectory (lab finding F16). When the run exceeds
+`--timeout`, the runner sends SIGTERM to the driver's process group and
+SIGKILL after `HermesBatchRunner.termination_grace_seconds` (default 5 s). On
+SIGTERM the driver at once writes a fallback row (`completed: false`,
+`partial: true`, `terminated: "SIGTERM"`, the prompt as the only turn) and
+`usage.json` with Hermes' token counters so far, then calls
+`AIAgent.interrupt()` when the checkout has it. If the conversation returns
+within the grace period, the row is replaced by the interrupted trajectory
+with its tool statistics, still partial and not completed (driver exit 4).
+Both files are replaced atomically. The runner parses that row on timeout,
+so the observation keeps tool calls, API calls and `hermes_reported_usage`;
+an unreadable row is dropped. The run is still classified
+`exit_state=timeout` and never succeeds. An agent that ignores the interrupt
+keeps only the fallback row: Hermes' token counters and API calls, but no
+tool statistics. The trajectory, diff and run record are stored as artifacts. Known
 gap: Hermes has no sampling seed (the seed is passed only as
 `HERMES_EVAL_SEED`). Live execution requires a Hermes install and a reachable
 model with at least 64K context (Hermes' floor). CI exercises the adapter with
