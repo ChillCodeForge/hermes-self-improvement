@@ -25,10 +25,15 @@ from .benchmark_schema import (
 from .clustering import LeakageReport, similarity_leakage_report
 from .eligibility import ELIGIBILITY_RANK, assess_benchmark
 from .embeddings import SemanticLayer
-from .errors import AccessDenied
+from .errors import AccessDenied, IntegrityError
 from .models import Benchmark, Eligibility, Role, Split
 from .security import AccessController, HoldoutGrant
 from .task_similarity import are_near_duplicate_tasks
+
+# Splits outside the evaluation binding ``BenchmarkStore.version``: the sealed
+# holdout (own ``holdout_version``) and SHADOW monitoring traffic (own
+# ``shadow_version``), which no SMOKE/CORE/FULL suite selects.
+_UNVERSIONED_SPLITS = frozenset({Split.SEALED_HOLDOUT, Split.SHADOW})
 
 # Top-level directories of the public benchmark root that hold task fixtures and
 # manifests rather than benchmark records; the record loader skips them.
@@ -132,16 +137,60 @@ class BenchmarkStore:
 
     @property
     def version(self) -> str:
-        """Version of the *public* benchmark manifest (the experiment/evaluation binding).
+        """Version of the *evaluation* benchmark manifest (the experiment/evaluation binding).
 
         Experiments are created by the generator, which can never read the
         sealed holdout, so the shared identity covers public records only. The
         whole set (including the holdout) is still validated for leakage; the
         holdout's own identity is ``holdout_version`` and is signed into FULL
         evaluation reports separately.
+
+        SHADOW records are excluded as well: they are post-promotion monitoring
+        traffic that no SMOKE/CORE/FULL suite selects, so adding one must not
+        invalidate open experiments. Their identity is ``shadow_version``.
         """
-        public = [benchmark for benchmark in self.validate() if benchmark.split is not Split.SEALED_HOLDOUT]
-        return _manifest_version(public)
+        return _manifest_version(
+            benchmark for benchmark in self.validate() if benchmark.split not in _UNVERSIONED_SPLITS
+        )
+
+    @property
+    def shadow_version(self) -> str | None:
+        """Version of the SHADOW records, or ``None`` without any."""
+        shadow = [benchmark for benchmark in self.validate() if benchmark.split is Split.SHADOW]
+        return _manifest_version(shadow) if shadow else None
+
+    @property
+    def legacy_version(self) -> str:
+        """The pre-SHADOW-exclusion formula (all public records including SHADOW).
+
+        Only used to explain a mismatch for experiments created before SHADOW
+        was excluded from ``version``; it is never a valid binding.
+        """
+        return _manifest_version(
+            benchmark for benchmark in self.validate() if benchmark.split is not Split.SEALED_HOLDOUT
+        )
+
+    def require_bound_version(self, experiment_id: str, bound_version: str) -> str:
+        """Return the current ``version`` or refuse when it differs from the experiment's binding.
+
+        Evaluations of an experiment must run against the benchmark manifest the
+        experiment was created with; promotion rejects any other version, so a
+        mismatching run would only spend time and the lineage's sealed holdout.
+        """
+        current = self.version
+        if bound_version == current:
+            return current
+        detail = (
+            " The experiment was created before SHADOW benchmarks were excluded from the benchmark version"
+            "; the evaluated benchmarks are unchanged, but the experiment must be recreated."
+            if bound_version == self.legacy_version else
+            " Benchmarks were added, changed or removed since then; create a new experiment for the"
+            " current benchmark manifest."
+        )
+        raise IntegrityError(
+            f"benchmark version changed since experiment {experiment_id} was created: experiment is bound to "
+            f"{bound_version}, current manifest is {current}.{detail}"
+        )
 
     @property
     def holdout_version(self) -> str | None:

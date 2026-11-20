@@ -166,6 +166,15 @@ class PairedEvaluator:
             raise ValueError("suite name cannot be empty")
         if benchmark_version != self.benchmarks.version:
             raise IntegrityError("requested benchmark version does not match the current validated benchmark manifest")
+        if self.experiment_store is not None:
+            # Refuse before any run: promotion only accepts evaluations under the
+            # benchmark version the experiment was bound to at creation.
+            try:
+                experiment = self.experiment_store.show_experiment(candidate.experiment_id)
+            except KeyError:
+                experiment = None
+            if experiment is not None:
+                self.benchmarks.require_bound_version(candidate.experiment_id, experiment["benchmark_version"])
         requested_ids = tuple(benchmark_ids)
         if len(requested_ids) != len(set(requested_ids)):
             raise ValueError("benchmark IDs must be unique within an evaluation")

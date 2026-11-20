@@ -1467,6 +1467,13 @@ def main() -> int:
             holdout_root=holdout_root,
         )
         benchmarks = access_store.validate()
+        # Fail fast, before suite selection is recorded, any task runs or the
+        # lineage's sealed holdout is consumed: promotion rejects evaluations
+        # under any benchmark version other than the experiment's binding.
+        access_store.require_bound_version(
+            stored_candidate["experiment_id"],
+            store.show_experiment(stored_candidate["experiment_id"])["benchmark_version"],
+        )
         suite = args.suite.upper()
         config = config_from_environment()
         impact = impact_scope_for_candidate(

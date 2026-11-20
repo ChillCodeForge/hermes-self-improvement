@@ -200,3 +200,144 @@ def test_local_sandbox_executor_creates_the_snapshot_directory(tmp_path):
 
 def test_benchmark_from_skill_record_is_valid():
     assert Benchmark.from_dict(public_record()).environment["type"] == "skill_procedure"
+
+
+def shadow_record(identifier="shadow-task", prompt=None):
+    return skill_record(
+        identifier, split="SHADOW", suites=[], title="Tag a release",
+        prompt=prompt or "Tag the current release commit with the version from CHANGELOG.md and push the tag.",
+        input_data=DIGEST, harness_digest=DIGEST,
+    )
+
+
+def test_shadow_benchmarks_do_not_change_the_evaluation_benchmark_version(tmp_path):
+    """SHADOW is post-promotion monitoring traffic, never selected for SMOKE/CORE/FULL."""
+    public = tmp_path / "public"
+    public.mkdir()
+    (public / "task.json").write_text(json.dumps(public_record()))
+    before = BenchmarkStore(public)
+    assert before.shadow_version is None
+    unchanged = before.version
+    (public / "shadow.json").write_text(json.dumps(shadow_record()))
+    after = BenchmarkStore(public)
+    first_shadow = after.shadow_version
+    assert after.version == unchanged
+    assert first_shadow and first_shadow.startswith("sha256:")
+    (public / "shadow2.json").write_text(json.dumps(shadow_record(
+        "shadow-task-two", prompt="Rotate the staging database credentials and update the vault entry.",
+    )))
+    assert BenchmarkStore(public).version == unchanged
+    assert BenchmarkStore(public).shadow_version != first_shadow
+
+
+@pytest.fixture
+def skill_candidate(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    git(repository, "init", "-q", "-b", "main")
+    (repository / "brain/skills/demo").mkdir(parents=True)
+    (repository / "brain/skills/demo/SKILL.md").write_text("original\n")
+    git(repository, "add", "-A")
+    git(repository, "commit", "-q", "-m", "base")
+    base = git(repository, "rev-parse", "HEAD").decode().strip()
+    git(repository, "checkout", "-q", "-b", "candidate/exp-v")
+    (repository / "brain/skills/demo/SKILL.md").write_text("improved\n")
+    git(repository, "commit", "-q", "-am", "candidate")
+    commit = git(repository, "rev-parse", "HEAD").decode().strip()
+    git(repository, "checkout", "-q", "main")
+    diff = git(repository, "diff", "--no-ext-diff", "--no-textconv", "--binary", base, commit)
+    candidate = Candidate("cand-v", "exp-v", CandidateType.SKILL_PATCH, "brain/skills/demo", base, commit,
+                          diff.decode())
+    return repository, candidate
+
+
+def test_cli_evaluate_refuses_a_changed_benchmark_version_before_any_run(tmp_path, monkeypatch, skill_candidate):
+    repository, candidate = skill_candidate
+    home = tmp_path / "home"
+    home.mkdir()
+    public, holdout = tmp_path / "public", tmp_path / "holdout"
+    public.mkdir()
+    holdout.mkdir()
+    (public / "task.json").write_text(json.dumps(public_record()))
+    (holdout / "a.json").write_text(json.dumps(holdout_record()))
+    bound = BenchmarkStore(public).version
+    ExperimentStore(home / "experiments.sqlite3").create_experiment_with_candidate(
+        candidate, lineage_id="exp-v", hypothesis="h", risk="LOW", benchmark_version=bound, policy_version="1",
+    )
+    (public / "second.json").write_text(json.dumps(skill_record(
+        "second-task", split="VALIDATION", suites=["SMOKE", "FULL"], title="Commit a migration",
+        prompt="Write one commit for the new database migration file under migrations/ only.",
+        input_data=DIGEST, harness_digest=DIGEST,
+    )))
+    current = BenchmarkStore(public).version
+    assert current != bound
+    key = tmp_path / "evaluator.pem"
+    key.write_bytes(Ed25519PrivateKey.generate().private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+    ))
+    ran = []
+    monkeypatch.setattr(cli, "build_runner", lambda args, artifacts: ran.append(args))
+    monkeypatch.setenv("HERMES_IMPROVE_LAYOUT", str(tmp_path / "no-layout.json"))
+    monkeypatch.setenv("HERMES_IMPROVE_ISOLATION", "unprovisioned")
+    monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
+    monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(public))
+    monkeypatch.setenv("HERMES_EVALUATOR_PRIVATE_KEY", str(key))
+    monkeypatch.setenv("HERMES_EVALUATOR_UID", str(os.geteuid()))
+    monkeypatch.delenv("HERMES_PROMOTER_UID", raising=False)
+    for suite in ("SMOKE", "FULL"):
+        monkeypatch.setattr(sys, "argv", [
+            "hermes-improve", "evaluate", "cand-v", "--repository", str(repository),
+            "--holdout-root", str(holdout), "--suite", suite,
+        ])
+        with pytest.raises(IntegrityError, match="benchmark version changed since experiment exp-v was created") as error:
+            cli.main()
+        assert bound in str(error.value) and current in str(error.value)
+    assert ran == []
+    ledger = ExperimentStore(home / "experiments.sqlite3")
+    assert ledger.candidate_evaluations("cand-v") == []
+    import sqlite3
+    with sqlite3.connect(home / "experiments.sqlite3") as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "decision_history" in tables:
+            assert db.execute("SELECT COUNT(*) FROM decision_history").fetchone()[0] == 0
+
+
+def test_evaluator_refuses_a_benchmark_version_other_than_the_experiment_binding(tmp_path):
+    public = tmp_path / "public"
+    public.mkdir()
+    (public / "task.json").write_text(json.dumps(public_record()))
+    benchmarks = BenchmarkStore(public)
+    store = ExperimentStore(tmp_path / "state.sqlite3")
+    candidate = Candidate("cand-1", "exp-1", CandidateType.SKILL_PATCH, "brain/skills/x", "a" * 40, "b" * 40, "diff")
+    store.create_experiment_with_candidate(
+        candidate, lineage_id="exp-1", hypothesis="h", risk="LOW",
+        benchmark_version="sha256:" + "1" * 64, policy_version="1",
+    )
+    key = Ed25519PrivateKey.generate().private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+    )
+    runner = SplitRunner("a" * 40, True)
+    runner.calls = 0
+    with pytest.raises(IntegrityError, match="benchmark version changed since experiment exp-1 was created"):
+        PairedEvaluator(benchmarks, runner, PromotionPolicy(), store, key).evaluate(
+            candidate, baseline_commit="a" * 40, benchmark_ids=["public-task"], suite="SMOKE",
+            benchmark_version=benchmarks.version, evaluation_id="eval-smoke",
+        )
+    assert store.candidate_evaluations("cand-1") == []
+
+
+def test_experiment_bound_before_the_shadow_exclusion_gets_an_explicit_refusal(tmp_path):
+    public = tmp_path / "public"
+    public.mkdir()
+    (public / "task.json").write_text(json.dumps(public_record()))
+    plain = BenchmarkStore(public)
+    assert plain.legacy_version == plain.version  # no SHADOW records: both formulas agree
+    (public / "shadow.json").write_text(json.dumps(shadow_record()))
+    store = BenchmarkStore(public)
+    legacy = store.legacy_version
+    assert legacy != store.version
+    assert store.require_bound_version("exp-new", store.version) == store.version
+    with pytest.raises(IntegrityError, match="created before SHADOW benchmarks were excluded"):
+        store.require_bound_version("exp-old", legacy)
+    with pytest.raises(IntegrityError, match="Benchmarks were added, changed or removed"):
+        store.require_bound_version("exp-other", "sha256:" + "2" * 64)

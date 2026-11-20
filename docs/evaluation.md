@@ -41,10 +41,22 @@ protected paths (`benchmarks/`, `config/`, `src/`, ...), anything outside
 (`target_paths.assert_evaluable_candidate_paths`). Otherwise a candidate could
 edit the fixtures or checks it is graded with.
 
-The report's `benchmark_version` is the public manifest version, which the
-generator also records when it creates the experiment. FULL reports
-additionally sign `metrics.sealed_holdout_version` and the holdout manifest
-digest (`suite_selection.holdout_manifest_digest`).
+The report's `benchmark_version` is the evaluation manifest version
+(`BenchmarkStore.version`: public records without SHADOW), which the generator
+also records when it creates the experiment. FULL reports additionally sign
+`metrics.sealed_holdout_version` and the holdout manifest digest
+(`suite_selection.holdout_manifest_digest`).
+
+Also before anything runs, and before suite-selection decisions are recorded
+or the lineage's sealed holdout is consumed, `evaluate` compares the current
+`BenchmarkStore.version` with the version the experiment was bound to at
+creation (`BenchmarkStore.require_bound_version`; `PairedEvaluator.evaluate`
+repeats the check when it has the experiment store). A mismatch aborts with
+"benchmark version changed since experiment <id> was created", naming both
+versions. Promotion would reject any evaluation recorded under another version
+("evaluation benchmark version differs from experiment manifest"), so running
+it would only waste the runs and the holdout. Create a new experiment for the
+current benchmark manifest instead.
 
 Task selection uses `suites.select_evaluation_suite` (WP-B `select_suite`). Skill
 candidates get an impact scope from their target (`brain/skills/<name>` ->

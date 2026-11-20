@@ -286,9 +286,12 @@ symlink and `main`.
   promoting; otherwise promotion is rejected with "required SMOKE evidence is
   missing". `tests/e2e/test_full_improvement_loop.py` exercises this sequence
   including promotion, rollback and the role-user variant.
-- The experiment benchmark version is the public manifest version
-  (`BenchmarkStore.version`), so candidates created by the generator, which
-  cannot read the sealed holdout, bind to the same version the evaluator
-  signs.
+- The experiment benchmark version is the evaluation manifest version
+  (`BenchmarkStore.version`: public records without SHADOW), so candidates
+  created by the generator, which cannot read the sealed holdout, bind to the
+  same version the evaluator signs, and SHADOW monitoring benchmarks added
+  after experiment creation do not invalidate it (see `benchmarking.md`,
+  "Benchmark version"). `evaluate` refuses a changed version before any run,
+  so the mismatch no longer surfaces only here at promotion.
 - OS-level separation of operator, evaluator and promoter identities is not
   enforced here; it depends on deployment provisioning.

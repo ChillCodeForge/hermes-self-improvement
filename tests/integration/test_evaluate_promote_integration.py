@@ -337,15 +337,19 @@ def test_full_is_refused_when_the_newest_screening_evidence_fails(setup):
 def test_screening_evidence_must_match_the_current_benchmark_version(setup):
     setup["evaluate"]("SMOKE")
     setup["evaluate"]("CORE")
-    # A new public task changes the benchmark manifest version: the old SMOKE/CORE
-    # runs no longer describe the suite the FULL run would use.
+    # A new public task changes the benchmark manifest version: the experiment is
+    # bound to the old version, so evaluate refuses before any run or holdout spend.
     extra = _benchmark("core-task", "REGRESSION", ["CORE"])
     extra["id"] = "core-extra"
     extra["task"] = {"title": "core-extra", "prompt": "Document the retention window for archived release notes"}
     extra["benchmark"]["cluster_id"] = "core-extra"
     (setup["public_root"] / "core-extra.json").write_text(json.dumps(extra))
-    with pytest.raises(PolicyRejected, match="no signed SMOKE evaluation for benchmark version"):
+    from hermes_improve.errors import IntegrityError
+
+    calls = len(setup["runner"].calls)
+    with pytest.raises(IntegrityError, match="benchmark version changed since experiment exp-e2e was created"):
         setup["evaluate"]("FULL")
+    assert len(setup["runner"].calls) == calls
     assert not _holdout_calls(setup) and _spent_rows(setup) == []
 
 
