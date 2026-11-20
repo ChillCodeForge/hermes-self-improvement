@@ -463,7 +463,45 @@ not name the skill showed delta 0 whatever its content, and nothing told
   target skill, how many of them never loaded it in the candidate arm, and the
   mean candidate loaded rate.
 - Evolution screening uses the rate to name never-loaded variants and passes it
-  to the optimizer (`dreaming.md`, "Evolution").
+  to the optimizer (`dreaming.md`, "Skill-loaded rate").
+
+#### `skills.auto_load` is not driven from the brain (investigated, not implemented)
+
+Hermes can pin skills into the system prompt: `skills.auto_load` in
+`HERMES_HOME/config.yaml` (`agent/skill_commands.py`
+`resolve_auto_load_skills`/`build_auto_load_prompt`, injected by
+`agent/system_prompt.py` `_auto_load_parts` into the stable prompt tier). Making
+it a manually gated brain candidate (for example a `ROUTING` file
+`brain/routing/<name>.yaml` that `HermesBatchRunner` turns into a `config.yaml`
+for both arms) was investigated against v0.22.2 and rejected for these reasons:
+
+1. **It would have no effect under the evaluation driver.** `_auto_load_parts`
+   returns nothing for agents built with `skip_context_files=True`, and
+   `hermes_driver.py` builds `AIAgent` exactly that way (batch_runner parity).
+   A `config.yaml` with `skills.auto_load` in the run's `HERMES_HOME` would be
+   ignored silently, and both arms would measure the same prompt.
+2. **Turning `skip_context_files` off changes every evaluation, not one arm.**
+   The same flag also loads `SOUL.md` as identity instead of the default identity,
+   injects project context files (`AGENTS.md` and similar) from the workspace,
+   which is the benchmark fixture, i.e. task content, and enables subdirectory
+   hints. That would alter the prompt of every baseline and candidate run, change
+   the environment digest of all evaluations, and let fixture files steer the
+   system prompt.
+3. **Re-creating auto_load inside the driver would not be Hermes' behaviour.**
+   Calling `build_auto_load_prompt` from the driver and passing the text as an
+   ephemeral system prompt would place it in a different prompt tier than in
+   production and depend on a private helper, so the evaluation would measure a
+   prompt production never builds.
+4. **No release path reaches it.** A promotion merges brain commits; nothing
+   writes the production `HERMES_HOME/config.yaml` (the Curator connector only
+   reads the Hermes home). An evaluated auto_load setting would therefore not be
+   what production runs after promotion.
+
+Until Hermes exposes auto_load for agents that skip context files (or the
+evaluation driver can build agents with the production context policy), skill
+loading is measured and reported instead (above). Operators who want a skill
+pinned in production set `skills.auto_load` in their own Hermes config; a lab
+re-test with a stronger solver model is the other open option from F30.
 
 An evaluation report is not sufficient on its own to establish operational
 safety: benchmark quality, evaluator key custody, filesystem isolation,
