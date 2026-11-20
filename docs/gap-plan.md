@@ -102,6 +102,10 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | Judge: transport errors fail closed, per-order rationales kept in the signed report, no decision rows from an aborted `evaluate` (lab F25, F26, F29) | #38 | **done** |
 | Generated skills need fenced Hermes front matter with `name` = target directory; report breaks observations down by source (lab F15, F22) | #39 | **done** |
 | Monitoring evidence scoped to the current activation; SHADOW excluded from the experiment benchmark version and `evaluate` fails fast on a version mismatch (lab F17, F18) | #40 | **done** |
+| Dreaming outcome signal: tool error text from tool turns, operator outcome labels, REM weighs labelled outcomes (lab F11) | #42 | **done** |
+| `benchmarks replay` for `hermes_agent` benchmarks through the selected runner; partial trajectory on timeout (lab F14, F16) | #43 | **done** |
+| Judge reads declared file deliverables; judged tasks out of the quality means, judge-only gains need signed approval; HARD rule for judge benchmarks (lab F24, F27, F28) | #44 | **done** |
+| Monitoring against the candidate arm per run; latency alone only warns; blocked rollbacks as release events; one-line CLI errors (lab F19, F20, F21, F23) | #45 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -164,22 +168,27 @@ Open items:
     confidence 0.98) and stored in the signed evaluation; the policy does not
     use positive verdicts.
 
-Open items found live (not yet fixed):
+All findings from these live runs (F11 to F29) are fixed: #42 gives
+Dreaming an outcome signal (tool error text from tool turns, operator outcome
+labels via `sessions label` / `sessions import-labels`, REM treats a completed
+but incorrect session as a failure). #43 replays `hermes_agent` benchmarks to
+produce `replay_evidence` and keeps a partial trajectory for timed-out runs.
+#44 lets the judge read declared file deliverables, keeps judged tasks out of
+the quality means and routes judge-only gains to signed operator approval,
+and defines when a judge benchmark is HARD. #45 compares monitoring with the
+candidate arm's per-run evaluation evidence, makes latency alone a warning
+instead of a rollback reason, records blocked rollbacks as release events and
+prints one-line errors for expected refusals.
 
-- F11, high: Dreaming needs an outcome signal: bounded, redacted tool error
-  text in session exports and operator-attached outcome labels (verifier
-  results, user corrections, monitoring observations).
-- F24, medium: the judge sees only the final chat text, never the workspace,
-  so file deliverables cannot be judged.
-- F27, medium (design): the policy ignores judge verdicts, and judged tasks
-  count as quality delta 0 in the pooled mean.
-- F19, F20, medium: monitor baselines are totals when the baseline never
-  succeeded, and production latency is compared with evaluation-time latency.
-- F14, low: `hermes_agent` benchmarks can never pass `benchmarks validate`,
-  because replay evidence exists only for command benchmarks.
-- F16, F21, F23, F28, low: no partial trajectory for timed-out runs, blocked
-  rollbacks visible only in `monitoring.sqlite3`, tracebacks for expected
-  refusals, and judge benchmarks need an unchecked `structured_result`.
+Remaining limits:
+
+- None of #42 to #45 has been re-run in the live lab. In particular, whether
+  outcome labels let REM and DEEP produce a useful candidate is unproven.
+- No component labels session outcomes automatically; an operator (or an
+  external verifier) has to attach them.
+- Release manifests written before #45 have no `monitoring_reference`; for
+  them the monitor still compares the success rate against the old baseline
+  arm.
 
 Outside what this repository can prove on its own:
 
