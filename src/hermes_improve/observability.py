@@ -423,7 +423,7 @@ def _improvement(db: sqlite3.Connection | None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "candidates_generated": NO_DATA, "candidates_rejected": NO_DATA, "candidates_promoted": NO_DATA,
         "experiments_by_decision": NO_DATA, "generations": NO_DATA, "average_quality_delta": NO_DATA,
-        "evaluations": NO_DATA, "regressions_caught": NO_DATA,
+        "evaluations": NO_DATA, "regressions_caught": NO_DATA, "skill_load": NO_DATA,
     }
     if db is None or not _has_table(db, "experiments"):
         return result
@@ -444,7 +444,11 @@ def _improvement(db: sqlite3.Connection | None) -> dict[str, Any]:
     evaluations = db.execute("SELECT passed, reasons, metrics_json FROM evaluation_runs").fetchall()
     deltas = []
     regressions = 0
+    skill_rates = []
     for passed, reasons, metrics in evaluations:
+        rate = _candidate_skill_loaded_rate(json.loads(metrics))
+        if rate is not None:
+            skill_rates.append(rate)
         value = json.loads(metrics).get("quality_delta_mean")
         if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
             deltas.append(value)
@@ -459,8 +463,24 @@ def _improvement(db: sqlite3.Connection | None) -> dict[str, Any]:
         "average_quality_delta": mean(deltas) if deltas else NO_DATA,
         "evaluations": len(evaluations) if evaluations else NO_DATA,
         "regressions_caught": regressions if evaluations else NO_DATA,
+        # Lab finding F30: a skill candidate whose skill the agent never opened shows
+        # delta 0 whatever its content; this counts such evaluations.
+        "skill_load": {
+            "evaluations_with_target_skill": len(skill_rates),
+            "candidate_skill_never_loaded": sum(rate == 0 for rate in skill_rates),
+            "candidate_target_skill_loaded_rate_mean": mean(skill_rates),
+        } if skill_rates else NO_DATA,
     })
     return result
+
+
+def _candidate_skill_loaded_rate(metrics: Any) -> float | None:
+    use = metrics.get("skill_use") if isinstance(metrics, dict) else None
+    candidate = use.get("candidate") if isinstance(use, dict) else None
+    rate = candidate.get("target_skill_loaded_rate") if isinstance(candidate, dict) else None
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate):
+        return None
+    return float(rate)
 
 
 def _benchmarks(root: Path, experiments: sqlite3.Connection | None) -> dict[str, Any]:

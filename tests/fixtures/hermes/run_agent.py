@@ -108,9 +108,18 @@ class AIAgent:
 
     def _convert_to_trajectory_format(self, messages, prompt, completed):
         answer = messages[-1]["content"]
+        skill_turns = []
+        if "skills" in self.kwargs["enabled_toolsets"]:
+            # ``skill_view``/``skills_list`` in fake_config: emit those tool calls like the real agent.
+            calls = [{"name": "skills_list", "arguments": {}}] if _CONFIG.get("skills_list") else []
+            calls += [{"name": "skill_view", "arguments": {"name": name}} for name in _CONFIG.get("skill_view", [])]
+            if calls:
+                skill_turns.append({"from": "gpt", "value": "<think>\n</think>\n" + "\n".join(
+                    "<tool_call>\n" + json.dumps(call) + "\n</tool_call>" for call in calls)})
         return [
             {"from": "system", "value": "You are a function calling AI model. <tools>[]</tools>"},
             {"from": "human", "value": prompt},
+            *skill_turns,
             {"from": "gpt", "value": "<think>\nNeed to write the file.\n</think>\n<tool_call>\n"
                                      + json.dumps({"name": "write_file", "arguments": {"path": "answer.txt"}})
                                      + "\n</tool_call>"},

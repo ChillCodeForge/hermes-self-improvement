@@ -26,6 +26,7 @@ from .models import (
 from .policy import PromotionPolicy
 from .run_policy import RunPolicy
 from .security import HoldoutGrant
+from .skill_use import skill_use_report, target_loaded_rate, target_skill_aliases, valid_skill_use
 from .statistics import paired_summary
 from .store import ExperimentStore
 from .verifier import has_deterministic_verification
@@ -250,6 +251,7 @@ class PairedEvaluator:
 
         outcomes = []
         judgments: dict[str, JudgeVerdict] = {}
+        skill_aliases = target_skill_aliases(candidate)
         for benchmark in benchmarks:
             baseline_runs = observations[(benchmark.id, "baseline")]
             candidate_runs = observations[(benchmark.id, "candidate")]
@@ -258,7 +260,11 @@ class PairedEvaluator:
             verdict = self._judge(benchmark, baseline_runs, candidate_runs)
             if verdict is not None:
                 judgments[benchmark.id] = verdict
-            outcomes.append(self._outcome(benchmark, suite, baseline_runs, candidate_runs, verdict))
+            outcomes.append(replace(
+                self._outcome(benchmark, suite, baseline_runs, candidate_runs, verdict),
+                baseline_skill_loaded_rate=target_loaded_rate(baseline_runs, skill_aliases),
+                candidate_skill_loaded_rate=target_loaded_rate(candidate_runs, skill_aliases),
+            ))
         report = self.policy.assess(candidate.candidate_id, candidate.content_hash, benchmark_version, outcomes)
         extra_reasons = []
         for task_id, verdict in sorted(judgments.items()):
@@ -289,6 +295,7 @@ class PairedEvaluator:
             },
             "paired_statistics": self._paired_statistics(benchmarks, observations),
             "efficiency": efficiency_report(pairs),
+            "skill_use": skill_use_report(candidate, pairs),
             "judge": {
                 "configured": self.judge.describe() if self.judge is not None else None,
                 "verdicts": {task_id: verdict.to_dict() for task_id, verdict in sorted(judgments.items())},
@@ -448,6 +455,8 @@ class PairedEvaluator:
             raise IntegrityError("runner returned malformed verifier results")
         if not validate_deliverables(observation.deliverables):
             raise IntegrityError("runner returned malformed deliverable files")
+        if not valid_skill_use(observation):
+            raise IntegrityError("runner returned malformed skill-use measurements")
         if observation.verifier_results and observation.deterministic_pass != all(
             item["passed"] for item in observation.verifier_results
         ):

@@ -303,6 +303,11 @@ class TaskOutcome:
     # do not state it (including rows stored before the field existed) count as
     # unmeasured and cannot pass the token-efficiency constraint silently.
     token_usage_reported: bool = False
+    # Share of this task's runs (with an observed agent trajectory) that loaded
+    # the candidate's target skill via ``skill_view`` (lab finding F30). None:
+    # not a skill candidate, or no trajectory (command runners): unknown.
+    baseline_skill_loaded_rate: float | None = None
+    candidate_skill_loaded_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -392,6 +397,13 @@ class RunObservation:
     # Files declared by subjective criteria (``verification.subjective[].files``),
     # captured from the result workspace for the judge (``deliverables.py``).
     deliverables: tuple[Mapping[str, Any], ...] = ()
+    # Skill use read from the agent trajectory (``skill_use.py``, lab finding F30):
+    # skills requested through ``skill_view`` (bounded, first-call order) and the
+    # number of ``skills_list`` calls. ``skill_use_observed`` is False when there
+    # was no trajectory to read (command runners, agent errors): unknown, not "none".
+    skills_viewed: tuple[str, ...] = ()
+    skills_list_calls: int = 0
+    skill_use_observed: bool = False
 
 
 @dataclass(frozen=True)

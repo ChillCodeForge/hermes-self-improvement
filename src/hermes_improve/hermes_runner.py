@@ -64,6 +64,7 @@ from .errors import IntegrityError
 from .ingestion import redact_text
 from .metering_proxy import MeteringProxy, UsageReport
 from .models import Benchmark, RunObservation, canonical_json
+from .skill_use import skill_loads
 from .sandbox import (
     SandboxExecutor,
     SandboxLimits,
@@ -127,6 +128,9 @@ class HermesTrajectory:
     final_output: str
     context_chars: int
     raw: bytes
+    # Lab finding F30: skills the agent requested via skill_view, and skills_list calls.
+    skills_viewed: tuple[str, ...] = ()
+    skills_list_calls: int = 0
 
 
 def parse_trajectory_record(record: Mapping[str, Any]) -> HermesTrajectory:
@@ -170,7 +174,10 @@ def parse_trajectory_record(record: Mapping[str, Any]) -> HermesTrajectory:
             raise IntegrityError("Hermes trajectory has inconsistent tool counters")
         tool_calls += values[0]
         failed += values[2]
+    skills_viewed, skills_list_calls = skill_loads(conversations)
     return HermesTrajectory(
+        skills_viewed=skills_viewed,
+        skills_list_calls=skills_list_calls,
         completed=completed,
         partial=partial,
         api_calls=api_calls,
@@ -469,6 +476,10 @@ class HermesBatchRunner:
             trajectory_digest=trajectory_digest,
             diff_digest=diff_digest,
             deliverables=deliverables,
+            skills_viewed=trajectory.skills_viewed if trajectory else (),
+            skills_list_calls=trajectory.skills_list_calls if trajectory else 0,
+            # The SIGTERM fallback row has no assistant turn: skill use is unknown there.
+            skill_use_observed=trajectory is not None and trajectory.assistant_turns > 0,
         )
 
     def _exit_state(self, trajectory: HermesTrajectory | None, timed_out: bool) -> str:
