@@ -133,7 +133,11 @@ def test_sessions_are_attributed_to_the_release_active_while_they_ran(tmp_path, 
     ]
     queue.ingest(_session("after-rollback", T3 + 600))
     report = feed.collect("brain-v1")
-    assert report.recorded == 1 and report.duplicates == 1
+    # "during-v1" ran in brain-v1's earlier activation: not evidence for the current one.
+    assert report.recorded == 1 and report.duplicates == 0
+    assert report.excluded["earlier_activation"] == 1
+    assessment = monitor.evaluate("brain-v1")
+    assert assessment.matched_observations == 1
     with pytest.raises(ValueError, match="provisional"):
         feed.collect("brain-v2")
 

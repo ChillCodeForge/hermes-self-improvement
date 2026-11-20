@@ -211,3 +211,69 @@ def test_cli_monitor_ingest_accepts_skill_attribution_and_rejects_bad_sources(tm
     path.write_text(json.dumps(row | {"observation_id": "evt-2", "source": "guess"}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="line 1: observation source"):
         main()
+
+
+def _promote_two_and_roll_back(tmp_path, *, before_rollback=()):
+    repository, baseline = _repository(tmp_path)
+    store = ExperimentStore(tmp_path / "db.sqlite3")
+    first, private, public = _add_candidate(repository, store, "exp-1", "cand-1", baseline, "version one\n")
+    promoter = GitPromoter(
+        store, repository, tmp_path / "releases", tmp_path / "brain-current", PromotionPolicy(), public,
+    )
+    promoter.promote("cand-1", release_name="brain-v1", manifest_key=KEY)
+    monitor = ReleaseMonitor(tmp_path / "monitor.sqlite3", store, MonitoringPolicy(min_observations=2))
+    for observation in before_rollback:
+        monitor.observe(observation)
+    _add_candidate(repository, store, "exp-2", "cand-2", first.commit, "version two\n", signing_keys=(private, public))
+    promoter.promote("cand-2", release_name="brain-v2", manifest_key=KEY)
+    for task in ("a", "b"):
+        monitor.observe(_healthy("brain-v2", task, success=False, tool_errors=3, skills=("demo",)))
+    assert monitor.apply("brain-v2", promoter=promoter, manifest_key=KEY, actor="operator")["action"] == "ROLLBACK"
+    assert store.get_release("brain-v1")["status"] == "PROVISIONAL"
+    return store, monitor
+
+
+def test_reactivated_release_is_assessed_only_on_its_current_activation(tmp_path):
+    critical = [_healthy("brain-v1", task, critical_regression=True) for task in ("a", "b", "c")]
+    store, monitor = _promote_two_and_roll_back(tmp_path, before_rollback=critical)
+
+    fresh = monitor.evaluate("brain-v1")
+    assert fresh.status == "PROVISIONAL"
+    assert fresh.matched_observations == 0
+    assert fresh.metrics is None
+
+    decision = monitor.observe(_healthy("brain-v1", "a", observation_id="v1-epoch2-a"))
+    assert decision.status == "PROVISIONAL"
+    assert decision.sample_count == 1
+    duplicate, count = monitor.record(_healthy("brain-v1", "b", observation_id="v1-epoch2-b"))
+    assert (duplicate, count) == (False, 2)
+    assessment = monitor.evaluate("brain-v1")
+    assert assessment.status == "STABLE"
+    assert assessment.matched_observations == 2
+    assert assessment.metrics.regression_signals == 0
+
+
+def test_observation_id_from_an_earlier_activation_is_not_reused_as_evidence(tmp_path):
+    store, monitor = _promote_two_and_roll_back(
+        tmp_path, before_rollback=[_healthy("brain-v1", "a", critical_regression=True)],
+    )
+    # Same ID and content as in the earlier activation: a duplicate, not new evidence.
+    decision = monitor.observe(_healthy("brain-v1", "a", critical_regression=True))
+    assert decision.duplicate
+    assert decision.sample_count == 0
+    assert monitor.evaluate("brain-v1").matched_observations == 0
+
+
+def test_legacy_observations_without_activation_are_scoped_by_record_time(tmp_path):
+    import sqlite3
+
+    store, monitor = _promote_two_and_roll_back(
+        tmp_path, before_rollback=[_healthy("brain-v1", task, critical_regression=True) for task in "ab"],
+    )
+    monitor.observe(_healthy("brain-v1", "c", observation_id="v1-epoch2-c"))
+    with sqlite3.connect(tmp_path / "monitor.sqlite3") as db:
+        db.execute("UPDATE production_observations SET activation_id=NULL")
+    reopened = ReleaseMonitor(tmp_path / "monitor.sqlite3", store, MonitoringPolicy(min_observations=2))
+    assessment = reopened.evaluate("brain-v1")
+    assert assessment.matched_observations == 1
+    assert assessment.status == "PROVISIONAL"

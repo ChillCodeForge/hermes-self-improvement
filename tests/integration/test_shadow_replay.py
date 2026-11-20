@@ -196,3 +196,21 @@ def test_cli_monitor_replay_shadow_benchmarks_passes_benchmark_id(tmp_path, monk
     assert main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["selected"] == 1 and report["recorded"] == 1 and report["failures"] == []
+
+
+def test_replay_after_reactivation_records_fresh_evidence_for_the_new_activation(tmp_path):
+    store, queue = _setup(tmp_path)
+    monitor = ReleaseMonitor(tmp_path / "monitor.sqlite3", store, MonitoringPolicy(min_observations=1))
+    critical = ReplayOutcome(False, 1, 80, 2, 50.0, critical_regression=True)
+    ShadowReplayer(queue, monitor, FakeRunner(critical)).replay("brain-v1")
+    assert monitor.evaluate("brain-v1").status == "ROLLBACK_RECOMMENDED"
+
+    # A rollback of a later release re-activates brain-v1: a new monitoring epoch.
+    store.record_rollback("commit-of-a-later-release", "brain-v1", {"actor": "test"})
+    assert monitor.evaluate("brain-v1").matched_observations == 0
+
+    report = ShadowReplayer(queue, monitor, FakeRunner()).replay("brain-v1")
+    assert report.recorded == 1 and report.duplicates == 0
+    assessment = monitor.evaluate("brain-v1")
+    assert assessment.matched_observations == 1
+    assert assessment.status == "STABLE"

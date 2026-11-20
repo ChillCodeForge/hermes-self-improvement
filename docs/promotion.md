@@ -233,6 +233,42 @@ events.) Post-promotion monitoring uses the `PROMOTED` and `REACTIVATED` events
 as the release activation timeline when it attributes ingested Hermes sessions
 to a release (`monitor collect`, see `operations.md`).
 
+## Monitoring epochs
+
+Post-promotion monitoring (`monitor evaluate`, `monitor collect`, `monitor
+replay`, `monitor ingest`) assesses a release only on evidence from its
+**current activation**. An activation starts with the release's latest
+`PROMOTED` or `REACTIVATED` event; a rollback that re-activates an earlier
+release therefore starts a new monitoring epoch for it. Observations recorded
+during an earlier activation describe a deployment that already ended: they
+stay in the monitoring database (and in the all-time observability counts per
+source) but do not count towards the minimum sample, the metrics, critical
+regression signals or the STABLE/ROLLBACK decision of the new epoch. Without
+this, a release that regressed before, was superseded and was later restored
+by a rollback would immediately be recommended for rollback again from its
+old evidence, and `--apply` could roll back a healthy release.
+
+- Each observation stores the ID of the activation event that was current
+  when it was recorded (`production_observations.activation_id`). The event ID
+  comes from the append-only `release_events` table, so the epoch boundary
+  does not depend on wall-clock comparisons.
+- Rows recorded before this column existed carry `NULL`; they count for the
+  current epoch only when their record time is at or after the current
+  activation event's time. Releases recorded without any activation event
+  (direct `record_release` calls) keep a single epoch covering all their rows.
+- `monitor collect` attributes sessions by their own timestamps. A session
+  that ran during an earlier activation of the requested release is excluded
+  with the reason `earlier_activation` instead of being counted for the
+  current one.
+- Shadow replay observation IDs are deterministic per release and task. In a
+  re-activated epoch they additionally include the activation event ID, so a
+  replay of the same session or SHADOW benchmark is recorded as new evidence
+  instead of colliding with the earlier epoch's record. The first activation
+  keeps the original ID format.
+- Operator-supplied observation IDs (`monitor ingest`) are global: re-sending
+  an ID from an earlier epoch is reported as a duplicate and adds no evidence
+  to the current epoch; use new IDs for new observations.
+
 ## `hermes-improve rollback <release>`
 
 Activates the given earlier release: verifies its signed manifest, requires

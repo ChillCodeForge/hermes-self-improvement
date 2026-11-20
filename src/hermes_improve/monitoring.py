@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from statistics import mean
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
@@ -27,6 +28,10 @@ _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _MAX_OBSERVATION_SKILLS = 32
 _MAX_DERIVATION_BYTES = 4096
 _MONITORING_MODEL_VERSION = "monitoring-policy-1"
+# Release audit events that make a release the deployed one and start a new
+# monitoring epoch for it.
+ACTIVATION_EVENTS = frozenset({"PROMOTED", "REACTIVATED"})
+_CURRENT_ACTIVATION = object()
 
 
 @dataclass(frozen=True)
@@ -217,6 +222,11 @@ class ReleaseMonitor:
                 db.execute(
                     "ALTER TABLE production_observations ADD COLUMN derivation_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            if "activation_id" not in columns:
+                # ID of the release audit event (PROMOTED/REACTIVATED) that started
+                # the activation the observation belongs to. NULL for rows written
+                # before this column existed, or for releases without such an event.
+                db.execute("ALTER TABLE production_observations ADD COLUMN activation_id INTEGER")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS monitoring_actions (
                     id TEXT PRIMARY KEY,
@@ -271,31 +281,41 @@ class ReleaseMonitor:
                 )
                 if tuple(existing) != supplied:
                     raise ValueError("observation_id was already recorded with different content")
-                count = db.execute(
-                    "SELECT COUNT(*) FROM production_observations WHERE release_id=?",
-                    (observation.release_id,),
-                ).fetchone()[0]
-                return True, count
+                return True, len(self._epoch_rows(db, observation.release_id, "id"))
             release = self.store.get_release(observation.release_id)
             if release["status"] != "PROVISIONAL":
                 raise ValueError("post-promotion observations are accepted only for provisional releases")
             baseline = release["manifest"].get("baseline_metrics")
             if not isinstance(baseline, dict):
                 raise ValueError("release manifest does not include comparable baseline metrics")
+            activation = self.activation(observation.release_id)
             db.execute(
                 """INSERT INTO production_observations
                 (id,release_id,task_id,success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,
-                 retries,critical_regression,created_at,skills_json,source,tokens_reported,derivation_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 retries,critical_regression,created_at,skills_json,source,tokens_reported,derivation_json,
+                 activation_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (record_id, observation.release_id, observation.task_id, int(observation.success),
                  observation.tool_errors, tokens, observation.tool_calls, observation.latency_ms,
                  observation.user_corrections, observation.retries, int(observation.critical_regression),
-                 utc_now(), skills_json, observation.source, tokens_reported, derivation_json),
+                 utc_now(), skills_json, observation.source, tokens_reported, derivation_json,
+                 None if activation is None else activation[0]),
             )
-            count = db.execute(
-                "SELECT COUNT(*) FROM production_observations WHERE release_id=?", (observation.release_id,),
-            ).fetchone()[0]
+            count = len(self._epoch_rows(db, observation.release_id, "id", activation=activation))
         return False, count
+
+    def activation(self, release_id: str) -> tuple[int, str] | None:
+        """``(event_id, created_at)`` of the release's current activation.
+
+        The current activation is the latest ``PROMOTED`` or ``REACTIVATED``
+        event in the append-only release audit. ``None`` for releases recorded
+        without such an event (then every observation of the release counts).
+        """
+        latest = None
+        for event in self.store.list_release_events(release_id):
+            if event["event"] in ACTIVATION_EVENTS:
+                latest = (int(event["id"]), str(event["created_at"]))
+        return latest
 
     def evaluate(self, release_id: str, *, record_decision: bool = True) -> MonitoringAssessment:
         """Assess a release from matched evidence without changing its status."""
@@ -441,14 +461,47 @@ class ReleaseMonitor:
             for row in rows
         ]
 
+    def _epoch_rows(
+        self, db: sqlite3.Connection, release_id: str, columns: str,
+        *, activation: Any = _CURRENT_ACTIVATION,
+    ) -> list[tuple[Any, ...]]:
+        """Rows of ``release_id`` that belong to its current activation epoch.
+
+        A release reactivated by a rollback starts a new epoch: evidence from
+        an earlier activation describes a deployment that already ended and
+        must not decide the new one. Rows carry the activation event ID they
+        were recorded under; rows from before that column existed (NULL) are
+        placed by their record time relative to the activation event.
+        """
+        if activation is _CURRENT_ACTIVATION:
+            activation = self.activation(release_id)
+        rows = db.execute(
+            f"SELECT activation_id,created_at,{columns} FROM production_observations WHERE release_id=?",
+            (release_id,),
+        ).fetchall()
+        if activation is None:
+            return [tuple(row[2:]) for row in rows]
+        event_id, started = activation
+        start = _instant(started)
+        selected = []
+        for row in rows:
+            if row[0] is not None:
+                if row[0] != event_id:
+                    continue
+            else:
+                recorded = _instant(row[1])
+                if start is None or recorded is None or recorded < start:
+                    continue
+            selected.append(tuple(row[2:]))
+        return selected
+
     def _rows(self, release_id: str) -> list[_Row]:
         with sqlite3.connect(self.path, timeout=30) as db:
-            rows = db.execute(
-                """SELECT success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,retries,
-                          critical_regression,skills_json,source,tokens_reported
-                   FROM production_observations WHERE release_id=?""",
-                (release_id,),
-            ).fetchall()
+            rows = self._epoch_rows(
+                db, release_id,
+                """success,tool_errors,tokens,tool_calls,latency_ms,user_corrections,retries,
+                   critical_regression,skills_json,source,tokens_reported""",
+            )
         return [
             _Row(row[0], row[1], row[2] if row[10] else None, *row[3:8], tuple(json.loads(row[8])), row[9])
             for row in rows
@@ -627,3 +680,14 @@ def _main_commit(repository: Path) -> str:
     if result.returncode:
         raise RuntimeError(f"cannot read the production Git ref: {result.stderr.decode(errors='replace').strip()}")
     return result.stdout.decode().strip()
+
+
+def _instant(value: Any) -> datetime | None:
+    """Aware datetime of a stored ISO-8601 UTC timestamp, ``None`` if unusable."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
