@@ -329,7 +329,7 @@ and non-empty `verification.subjective`. Evaluation only accepts
 without `--judge`, evaluation fails before running anything (the CLI refuses
 before it records any `suite_selection`/`needs_qwen` decision). Each paired run is
 presented twice (A=baseline/B=candidate, then swapped) with only the task,
-criteria and the two outputs. The answer must be strict JSON
+criteria, the two outputs and, when declared, the deliverable files (below). The answer must be strict JSON
 `{"winner": "A|B|TIE", "confidence": 0..1, "uncertainty": 0..1, "rationale"}`.
 Invalid answers or transport errors (timeouts, refused, dropped or reset
 connections, malformed HTTP responses, e.g. when Ollama restarts mid-run) are
@@ -353,6 +353,37 @@ a `needs_qwen` decision (sealed holdout tasks without their ID), and records
 the impact-aware selection as a `suite_selection` decision (see
 `laya-future.md`). `evaluate --runner hermes` defaults the solver to the `qwen_solver` role
 (`QWEN_BASE_URL`/v1) when `--model`/`--model-base-url` are omitted.
+
+### Deliverable files (`deliverables.py`)
+
+The judge sees the final chat answer of each arm. When the task's result is a
+file, the subjective criterion must declare it, otherwise the judge compares
+two "done" replies and the verdict is `unreliable` (lab finding F24):
+
+```json
+"subjective": [{"criterion": "Starts with 'INCIDENT: <service> - <impact>'.", "files": ["incident.md"]}]
+```
+
+`files` lists 1-8 normalized, workspace-relative POSIX paths (unique; at most
+8 per benchmark); `Benchmark.from_dict` rejects anything else, including
+`..`, absolute paths and backslashes. After each run the runner
+(`HermesBatchRunner`, `SandboxCommandRunner`) captures exactly these files
+from the result workspace: symlinks and paths resolving outside the workspace
+are never read (`not_a_file`), files above 32 KiB are `too_large`, non-UTF-8
+files `not_utf8`, absent ones `missing`; only `ok` rows carry content, which is
+redacted like the final output. The rows (`path`, `status`, `bytes`, `sha256`,
+`content`) are stored in `RunObservation.deliverables` and therefore signed
+with the report. The evaluator refuses an observation whose deliverable paths
+differ from the declared ones. The judge receives them as `files_A`/`files_B`
+(path, status, content) in addition to `response_A`/`response_B`; its system
+prompt frames them as untrusted data like the responses, and tells it to
+judge the file rather than the chat reply when the task asks for a file.
+
+There is no automatic detection of a file deliverable that was not declared:
+the prompt is free text. Authors of judge benchmarks whose result is a file
+must declare it; a task whose verdict is `unreliable` because both final
+answers are equivalent ("done" vs "done") is the symptom of a missing
+declaration.
 
 ## Report contents
 
@@ -380,7 +411,8 @@ the impact-aware selection as a `suite_selection` decision (see
 `RunObservation` v2 fields (all optional with defaults): `input_tokens`,
 `output_tokens`, `token_usage_reported`, `context_chars`, `turns`,
 `api_calls`, `exit_state`, `model_config_digest`, `limits_digest`,
-`verifier_results`, `filesystem_changes`, `trajectory_digest`, `diff_digest`.
+`verifier_results`, `filesystem_changes`, `trajectory_digest`, `diff_digest`,
+`deliverables`.
 `TaskOutcome` adds `run_count`, `judge_result`, `judge_confidence`,
 `judge_uncertainty` and `token_usage_reported` (true only when every paired
 run of both arms reported token usage; defaults to false). The signed top-level payload shape is unchanged, so

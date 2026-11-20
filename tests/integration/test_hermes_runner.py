@@ -436,3 +436,20 @@ def test_unreadable_partial_trajectory_is_dropped_not_an_integrity_error(tmp_pat
     assert load_partial_trajectory(tmp_path / "missing.jsonl") is None
     shutil.copy(FIXTURES / "trajectories.jsonl", truncated)
     assert load_partial_trajectory(truncated).tool_calls == 3
+
+
+def test_hermes_runner_captures_declared_deliverable_files_for_the_judge(tmp_path):
+    runner, baseline, candidate, _ = make_runner(tmp_path)
+    task = Benchmark.from_dict(benchmark_record(subjective=[
+        {"criterion": "The answer file states the answer.", "files": ["answer.txt", "notes/missing.md"]},
+    ]))
+    observation = runner.run(candidate, task, 1)
+    assert observation.final_output == "The answer is 42."
+    answer, missing = observation.deliverables
+    assert answer == {
+        "path": "answer.txt", "status": "ok", "bytes": 3,
+        "sha256": __import__("hashlib").sha256(b"42\n").hexdigest(), "content": "42\n",
+    }
+    assert missing["path"] == "notes/missing.md" and missing["status"] == "missing"
+    # Without declared files nothing is captured.
+    assert runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1).deliverables == ()

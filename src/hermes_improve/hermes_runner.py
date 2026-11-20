@@ -59,6 +59,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore
+from .deliverables import collect_deliverables, declared_deliverables
 from .errors import IntegrityError
 from .ingestion import redact_text
 from .metering_proxy import MeteringProxy, UsageReport
@@ -406,6 +407,7 @@ class HermesBatchRunner:
                 special_entries=special,
             )
             verification = run_deterministic_verification(benchmark, context, self.registry)
+            deliverables = collect_deliverables(declared_deliverables(benchmark.verification), result_dir)
             changes = compute_changes(source, result_dir, special)
             diff_digest, _ = self.artifacts.put(redact_text(unified_diff(source, result_dir, changes)).encode())
             trajectory_digest = ""
@@ -466,6 +468,7 @@ class HermesBatchRunner:
             filesystem_changes=changes.entries(),
             trajectory_digest=trajectory_digest,
             diff_digest=diff_digest,
+            deliverables=deliverables,
         )
 
     def _exit_state(self, trajectory: HermesTrajectory | None, timed_out: bool) -> str:

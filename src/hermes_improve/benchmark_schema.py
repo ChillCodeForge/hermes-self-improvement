@@ -108,9 +108,22 @@ class EligibilitySection(_Section):
     replay_evidence: ReplayEvidence | None = None
 
 
+class SubjectiveCriterion(_Section):
+    """A judge criterion; ``files`` names the workspace files it grades (the deliverable)."""
+
+    criterion: str = Field(min_length=1)
+    files: list[str] | None = Field(
+        default=None, min_length=1, max_length=8,
+        description=(
+            "Workspace-relative POSIX paths of deliverable files the judge receives next to the "
+            "final answer (bounded, UTF-8, never outside the workspace)."
+        ),
+    )
+
+
 class VerificationSection(_Section):
     deterministic: list[str | dict[str, Any]]
-    subjective: list[Any]
+    subjective: list[str | SubjectiveCriterion]
 
 
 class GroundTruthSection(_Section):

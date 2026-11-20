@@ -17,7 +17,7 @@ A benchmark record is a JSON (`.json`) or YAML (`.yaml`/`.yml`) object with
    container_image, network_policy, input_data, command, cwd,
    timeout_seconds}`, `eligibility{class, reproducibility_score,
    replay_verified, replay_evidence}`, `verification{deterministic,
-   subjective}`, `ground_truth{type, confidence, expected_exit_code,
+   subjective[]: string or {criterion, files}}`, `ground_truth{type, confidence, expected_exit_code,
    structured_result}`, `benchmark{split, suites, cluster_id, criticality,
    impact_areas}`, `security{sanitized, contains_secrets}`. Unknown top-level
    keys are rejected; sections may carry additional runner-specific keys.
@@ -108,6 +108,9 @@ judged tasks auto-promote: it needs the signed operator approval
 "ground_truth": {"type": "llm_judge", "confidence": 0.9}
 ```
 
+A subjective criterion is a string or an object `{"criterion": "...",
+"files": [...]}`; `files` names deliverable files the judge receives (see
+"Deliverable files" in `evaluation.md`).
 ## Deduplication and clustering
 
 `hermes_improve.clustering` provides five layers:

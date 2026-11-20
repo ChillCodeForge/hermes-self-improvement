@@ -14,7 +14,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 
 JUDGE_ROLE = "qwen_judge"
@@ -136,11 +136,21 @@ class PairwiseJudge:
         criteria: Sequence[str],
         baseline_output: str,
         candidate_output: str,
+        baseline_files: Sequence[Mapping[str, Any]] = (),
+        candidate_files: Sequence[Mapping[str, Any]] = (),
     ) -> JudgeVerdict:
+        """Judge one pair twice with swapped positions.
+
+        ``*_files`` are the deliverable files the benchmark's criteria declare
+        (``deliverables.collect_deliverables`` rows); they reach the judge as
+        ``files_A``/``files_B`` next to the final answers, framed as untrusted.
+        """
         if not isinstance(task_prompt, str) or not all(isinstance(item, str) for item in criteria):
             raise TypeError("judge task and criteria must be strings")
-        first, first_attempts, first_error = self._ask(task_prompt, criteria, baseline_output, candidate_output)
-        second, second_attempts, second_error = self._ask(task_prompt, criteria, candidate_output, baseline_output)
+        baseline = (baseline_output, tuple(baseline_files))
+        candidate = (candidate_output, tuple(candidate_files))
+        first, first_attempts, first_error = self._ask(task_prompt, criteria, baseline, candidate)
+        second, second_attempts, second_error = self._ask(task_prompt, criteria, candidate, baseline)
         attempts = first_attempts + second_attempts
         presentations = (
             {"order": "A=baseline,B=candidate", "judgment": asdict(first) if first else None, "error": first_error},
@@ -174,15 +184,20 @@ class PairwiseJudge:
         return JudgeVerdict(preference_first, confidence, uncertainty, (), attempts, self.prompt_sha256, presentations)
 
     def _ask(
-        self, task_prompt: str, criteria: Sequence[str], response_a: str, response_b: str
+        self, task_prompt: str, criteria: Sequence[str],
+        arm_a: tuple[str, tuple[Mapping[str, Any], ...]], arm_b: tuple[str, tuple[Mapping[str, Any], ...]],
     ) -> tuple[Judgment | None, int, str | None]:
         limit = self.config.max_response_chars
-        payload = json.dumps({
+        body: dict[str, Any] = {
             "task": task_prompt[:limit],
             "criteria": list(criteria),
-            "response_A": response_a[-limit:],
-            "response_B": response_b[-limit:],
-        }, ensure_ascii=False)
+            "response_A": arm_a[0][-limit:],
+            "response_B": arm_b[0][-limit:],
+        }
+        if arm_a[1] or arm_b[1]:
+            body["files_A"] = _render_files(arm_a[1], limit)
+            body["files_B"] = _render_files(arm_b[1], limit)
+        payload = json.dumps(body, ensure_ascii=False)
         error = None
         for attempt in range(1, self.config.max_attempts + 1):
             try:
@@ -193,6 +208,15 @@ class PairwiseJudge:
             except (ValueError, RuntimeError) as exc:
                 error = str(exc)[:500]
         return None, self.config.max_attempts, error
+
+
+def _render_files(files: Sequence[Mapping[str, Any]], limit: int) -> list[dict[str, str]]:
+    """Judge view of deliverable files: path, capture status and (bounded) content only."""
+    return [
+        {"path": str(item.get("path", "")), "status": str(item.get("status", "")),
+         "content": str(item.get("content", ""))[:limit]}
+        for item in files
+    ]
 
 
 def _aggregate_presentations(
