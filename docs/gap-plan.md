@@ -106,6 +106,8 @@ Linux test container via `scripts/docker-test.sh`, where a skipped
 | `benchmarks replay` for `hermes_agent` benchmarks through the selected runner; partial trajectory on timeout (lab F14, F16) | #43 | **done** |
 | Judge reads declared file deliverables; judged tasks out of the quality means, judge-only gains need signed approval; HARD rule for judge benchmarks (lab F24, F27, F28) | #44 | **done** |
 | Monitoring against the candidate arm per run; latency alone only warns; blocked rollbacks as release events; one-line CLI errors (lab F19, F20, F21, F23) | #45 | **done** |
+| REM hypotheses validated in code: efficiency hypotheses citing incorrect sessions rejected, kind passed to DEEP (lab F31) | #48 | **done** |
+| Skill use per run: per-arm skill-loaded rate in signed evaluations, never-loaded variants flagged in evolve, rate in optimizer feedback (lab F30, diagnostics) | #49 | **done** |
 
 A spec-versus-code audit after #23 found gaps in §16, §23, §24, §26, §29,
 §35 and §36 that the table above had marked done; #24 closes them. #24 made
@@ -194,12 +196,17 @@ Remaining limits:
   `skills_list` call, although Hermes lists the skills in its system prompt.
   The earlier promotion worked only because its task prompts named the skill.
   With qwen3:4b, a skill candidate cannot change behaviour on tasks that do
-  not mention it. Options: report a per-arm "skill loaded" rate and reject
-  never-loaded variants early, support Hermes `skills.auto_load` as a gated
-  candidate type, or re-test with a stronger solver.
-- Open, low (lab F31): REM produced an efficiency hypothesis on an incorrect
-  session despite the prompt rule, and DEEP carried it into a correctness
-  proposal; the rule should be enforced in code.
+  not mention it. #49 makes this visible: evaluations report per arm the
+  share of runs that loaded the target skill, evolve records "candidate skill
+  was never loaded by the agent" and feeds the rate to the optimizer. Hermes
+  `skills.auto_load` was deliberately not wired in: the evaluation driver
+  runs with `skip_context_files=True`, which disables it; enabling context
+  files would inject fixture files into every run; and nothing writes the
+  production Hermes config, so a promoted setting would never ship. Whether
+  the agent loads a skill stays a property of the solver model; re-testing
+  with a stronger solver is the remaining option.
+- Lab F31 (REM efficiency hypotheses on incorrect sessions) is enforced in
+  code by #48.
 - No component labels session outcomes automatically; an operator (or an
   external verifier) has to attach them.
 - Release manifests written before #45 have no `monitoring_reference`; for
