@@ -182,8 +182,24 @@ prints one-line errors for expected refusals.
 
 Remaining limits:
 
-- None of #42 to #45 has been re-run in the live lab. In particular, whether
-  outcome labels let REM and DEEP produce a useful candidate is unproven.
+- #42 was re-run live (2026-11-20, same 12 production sessions, now labelled
+  through `sessions import-labels`). The outcome signal works: LIGHT reports
+  10 labelled failures, REM names the real failure ("fails to compute values
+  in data files despite successful reads and writes") instead of calling the
+  sessions efficient, and DEEP proposes data-aggregation and validation
+  skills. The 3 generated candidates still had no effect on SMOKE, so nothing
+  was promoted. #43 to #45 were not re-run live.
+- Open, high (lab F30): the agent never loads a skill on its own. Across all
+  280 stored loop trajectories with tool calls there is no `skill_view` or
+  `skills_list` call, although Hermes lists the skills in its system prompt.
+  The earlier promotion worked only because its task prompts named the skill.
+  With qwen3:4b, a skill candidate cannot change behaviour on tasks that do
+  not mention it. Options: report a per-arm "skill loaded" rate and reject
+  never-loaded variants early, support Hermes `skills.auto_load` as a gated
+  candidate type, or re-test with a stronger solver.
+- Open, low (lab F31): REM produced an efficiency hypothesis on an incorrect
+  session despite the prompt rule, and DEEP carried it into a correctness
+  proposal; the rule should be enforced in code.
 - No component labels session outcomes automatically; an operator (or an
   external verifier) has to attach them.
 - Release manifests written before #45 have no `monitoring_reference`; for
