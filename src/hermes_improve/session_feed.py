@@ -35,12 +35,11 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from .ingestion import SessionQueue
-from .monitoring import ProductionObservation, ReleaseMonitor
+from .monitoring import ACTIVATION_EVENTS, ProductionObservation, ReleaseMonitor
 from .store import ExperimentStore
 
 
 HEURISTICS_VERSION = "session-feed-1"
-ACTIVATION_EVENTS = frozenset({"PROMOTED", "REACTIVATED"})
 DEFAULT_SWITCH_MARGIN_SECONDS = 60.0
 _MAX_SESSIONS = 10_000
 _MAX_CORRECTION_TEXT = 200
@@ -156,6 +155,7 @@ class SessionFeed:
             raise ValueError(
                 f"{release_id} has no recorded activation event; sessions cannot be attributed to it"
             )
+        current = [interval for interval in timeline if interval.release_id == release_id][-1]
         now = time.time() if self.now is None else self.now
         report = FeedReport(release_id)
         for session_id in self.sessions.session_ids(limit):
@@ -172,12 +172,18 @@ class SessionFeed:
             if isinstance(span, str):
                 report.exclude(span)
                 continue
-            owner = attribute_span(span, timeline, margin=self.switch_margin)
-            if owner.startswith("excluded:"):
+            owner = attribute_interval(span, timeline, margin=self.switch_margin)
+            if isinstance(owner, str):
                 report.exclude(owner.removeprefix("excluded:"))
                 continue
-            if owner != release_id:
+            if owner.release_id != release_id:
                 report.other_release += 1
+                continue
+            if owner.start != current.start:
+                # The release ran then, but in an activation that has since ended
+                # (it was re-activated by a rollback): that evidence describes a
+                # finished deployment and is not counted for the current one.
+                report.exclude("earlier_activation")
                 continue
             try:
                 metrics = derive_session_metrics(session)
@@ -251,10 +257,10 @@ def activation_timeline(store: ExperimentStore) -> list[ReleaseInterval]:
     ]
 
 
-def attribute_span(
+def attribute_interval(
     span: tuple[float, float], timeline: Iterable[ReleaseInterval], *, margin: float,
-) -> str:
-    """Release ID active for the whole span, or ``excluded:<reason>``."""
+) -> ReleaseInterval | str:
+    """Activation interval covering the whole span, or ``excluded:<reason>``."""
     start, end = span
     intervals = list(timeline)
     if not intervals:
@@ -267,7 +273,7 @@ def attribute_span(
             return "excluded:within_switch_margin"
     for interval in intervals:
         if interval.start <= start and (interval.end is None or end < interval.end):
-            return interval.release_id
+            return interval
     return "excluded:before_first_recorded_release"
 
 

@@ -24,7 +24,7 @@ from typing import Any, Iterable, Protocol, Sequence
 
 from .ingestion import SessionQueue
 from .models import Benchmark, Split, canonical_json
-from .monitoring import ProductionObservation, ReleaseMonitor, release_affected_skills
+from .monitoring import ACTIVATION_EVENTS, ProductionObservation, ReleaseMonitor, release_affected_skills
 
 
 _MAX_RUNNER_OUTPUT_BYTES = 1024 * 1024
@@ -154,6 +154,7 @@ class ShadowReplayer:
     def _replay_tasks(self, release_id: str, checkout: Path, tasks: list[ReplayTask]) -> ReplayReport:
         report = ReplayReport(release_id)
         report.selected = len(tasks)
+        epoch = _activation_key(self.monitor, release_id)
         for task in tasks:
             try:
                 outcome = self.runner.run(task, checkout)
@@ -166,7 +167,7 @@ class ShadowReplayer:
             key = (
                 f"{release_id}\0{task.session_id}" if task.benchmark_id is None
                 else f"{release_id}\0benchmark\0{task.benchmark_id}"
-            )
+            ) + epoch
             observation_id = "shadow_replay:" + hashlib.sha256(key.encode()).hexdigest()[:48]
             decision = self.monitor.observe(ProductionObservation(
                 release_id=release_id,
@@ -282,3 +283,20 @@ def _validate_outcome(outcome: ReplayOutcome) -> None:
     latency = outcome.latency_ms
     if isinstance(latency, bool) or not isinstance(latency, (int, float)) or not math.isfinite(latency) or latency < 0:
         raise ValueError("replay latency must be finite and non-negative")
+
+
+def _activation_key(monitor: ReleaseMonitor, release_id: str) -> str:
+    """Observation-ID suffix that separates replays of a re-activated release.
+
+    Replay observation IDs are deterministic per release and task. A release
+    re-activated by a rollback starts a new monitoring epoch, so its replays
+    are new evidence and get an epoch-specific ID; the first activation keeps
+    the original ID format so existing records stay deduplicated.
+    """
+    events = [
+        event for event in monitor.store.list_release_events(release_id)
+        if event["event"] in ACTIVATION_EVENTS
+    ]
+    if not events or events[-1]["event"] != "REACTIVATED":
+        return ""
+    return f"\0activation\0{events[-1]['id']}"

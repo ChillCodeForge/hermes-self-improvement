@@ -167,6 +167,30 @@ deterministic function:
 - `SEALED_HOLDOUT`: every sealed record supplied by the evaluator; impact is
   ignored so holdouts cannot be cherry-picked.
 
+## Benchmark version
+
+`BenchmarkStore.version` binds experiments and evaluations: an experiment
+records it at creation, every evaluation run signs it, and promotion only
+accepts runs whose version equals the experiment's (see `promotion.md`). It is
+`sha256:` over the `{id, version, digest}` entries of every public record that
+an evaluation suite can select, i.e. the TRAIN, VALIDATION and REGRESSION
+splits. Two splits are deliberately outside it, each with its own digest:
+
+- `SEALED_HOLDOUT`: `holdout_version`, signed into FULL reports. The generator
+  cannot read the holdout and must derive the same version as the evaluator.
+- `SHADOW`: `shadow_version`. SHADOW records are post-promotion monitoring
+  traffic (`monitor replay --source shadow-benchmarks`) and are never selected
+  for SMOKE, CORE or FULL, so adding or editing one does not invalidate open
+  experiments or their evaluation evidence.
+
+Experiments created before SHADOW was excluded carry the older formula (all
+public records including SHADOW). In a benchmark store without SHADOW records
+both formulas give the same value, so nothing changes. With SHADOW records,
+such an open experiment no longer matches: `evaluate` refuses before any run
+and says the experiment predates the exclusion, and the experiment must be
+recreated. Completed evaluations, promotions and releases keep the version
+they recorded; nothing re-hashes them against the current store.
+
 **SMOKE minimum (advisory).** The spec targets 20–50 SMOKE tasks.
 `suites.SMOKE_MIN = 20` is the lower bound, but it is deliberately *not
 enforced* (a documented spec deviation): a selection below it still runs, and
@@ -192,7 +216,8 @@ cluster_id, categories}], digest}`, where `digest` is `sha256:` over the
 canonical body and `benchmark_version` is `BenchmarkStore.version` (the public
 records only, so the generator, which cannot read the holdout, derives the same
 version as the evaluator; the holdout has its own `holdout_version`); holdout
-manifests omit task details. `verify_manifest` detects tampering.
+manifests omit task details. See "Benchmark version" below for what the
+version covers. `verify_manifest` detects tampering.
 `corpus_manifest(...)` describes the public corpus (counts by split,
 category, difficulty, suite, eligibility; per-record digests) and refuses
 holdout records. `benchmarks/manifests/corpus.json` is the committed corpus
