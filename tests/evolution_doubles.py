@@ -103,6 +103,9 @@ class SkillMarkerRunner:
 
     ``quality=N`` sets the task quality, ``BREAKS`` fails deterministic
     verification, and ``overfit`` scores zero on sealed holdout tasks only.
+    Skill use (lab finding F30): ``SKILL_READ`` reports a trajectory that loaded
+    the skill, ``SKILL_UNREAD`` one that never loaded it; without either marker
+    skill use is unobserved, like a command runner.
     """
 
     # Outcomes are a pure function of the committed skill text (like a command
@@ -132,6 +135,8 @@ class SkillMarkerRunner:
             deterministic_pass="BREAKS" not in content, security_pass=True, tool_calls=1,
             verifier_results=({"type": "exit-code", "passed": "BREAKS" not in content},),
             final_output=f"agent output for {benchmark.task['prompt']}",
+            skills_viewed=("sample",) if "SKILL_READ" in content else (),
+            skill_use_observed="SKILL_READ" in content or "SKILL_UNREAD" in content,
         )
 
 

@@ -38,7 +38,8 @@ from .errors import AccessDenied, IntegrityError
 from .evaluator import BenchmarkRunner, PairedEvaluator
 from .ingestion import redact_text
 from .holdout_gate import HoldoutSpendingRunner
-from .models import Candidate, CandidateType, Eligibility, EvaluationReport, Role, Split
+from .models import Candidate, CandidateType, Eligibility, EvaluationReport, Role, Split, TaskOutcome
+from .skill_use import target_loaded_rate, target_skill_aliases
 from .optimizer import (
     MAX_VARIANTS_PER_REQUEST,
     AggregateFeedback,
@@ -66,6 +67,11 @@ SCREENING_STAGES = ("SMOKE", "CORE", "FULL")
 _EVOLVABLE_TYPES = {CandidateType.SKILL_CREATE, CandidateType.SKILL_PATCH}
 _OUTPUT_EXCERPT_CHARS = 1000
 _PRIOR_ATTEMPTS = 20
+# Generator-visible scores of prior attempts: stage scores and, per stage, the share
+# of candidate runs that loaded the skill (F30). Holdout data is never among them.
+_PRIOR_ATTEMPT_SCORES = (
+    "smoke", "core", "full", "smoke_skill_loaded_rate", "core_skill_loaded_rate", "full_skill_loaded_rate",
+)
 # Holdout outcomes are stored for operators but never shown to the generator.
 _GENERATOR_VISIBLE_STATUS = {
     "holdout_passed": "full_passed",
@@ -362,6 +368,7 @@ class EvaluationGateway:
                 quality_delta=row.candidate_quality - row.baseline_quality,
                 candidate_failed_tool_calls=row.candidate_failed_tool_calls,
                 candidate_output_excerpt=redact_text(outputs[0])[:_OUTPUT_EXCERPT_CHARS] if outputs else "",
+                skill_loaded_rate=row.candidate_skill_loaded_rate,
             ))
         aggregates = []
         for split in sorted({row.split for row in rows if row.split is not Split.TRAIN}):
@@ -371,6 +378,7 @@ class EvaluationGateway:
                 task_count=len(members),
                 candidate_success_rate=sum(row.candidate_success for row in members) / len(members),
                 mean_quality_delta=mean(row.candidate_quality - row.baseline_quality for row in members),
+                candidate_skill_loaded_rate=_weighted_skill_rate(members),
             ))
         return StageFeedback(
             candidate_id=candidate.candidate_id,
@@ -380,7 +388,42 @@ class EvaluationGateway:
             gate_failures=tuple(failures),
             train=tuple(train),
             aggregates=tuple(aggregates),
+            skill_loaded_rate=target_loaded_rate(
+                [item for item in report.run_observations if item.commit == candidate.commit],
+                target_skill_aliases(candidate),
+            ),
         )
+
+
+def _weighted_skill_rate(rows: list[TaskOutcome]) -> float | None:
+    """Run-weighted candidate skill-loaded rate over tasks that observed skill use."""
+    known = [row for row in rows if row.candidate_skill_loaded_rate is not None]
+    if not known:
+        return None
+    return sum(row.candidate_skill_loaded_rate * row.run_count for row in known) / sum(row.run_count for row in known)
+
+
+#: Recorded on a skill variant whose stage runs never loaded the evolved skill (lab finding F30).
+NEVER_LOADED_REASON = "candidate skill was never loaded by the agent"
+
+
+def _skill_load_reason(feedback: StageFeedback, reason: str = "") -> str:
+    """Prefix ``reason`` with the never-loaded note when no candidate run of the stage loaded the skill.
+
+    Reporting only: the variant's status and the screening decision are unchanged.
+    """
+    if feedback.skill_loaded_rate != 0:
+        return reason
+    note = f"{NEVER_LOADED_REASON} in {feedback.stage} (0 of the candidate runs called skill_view for it)"
+    return f"{note}; {reason}" if reason else note
+
+
+def _skill_load_scores(*feedback: StageFeedback) -> dict[str, float]:
+    """``<stage>_skill_loaded_rate`` score entries for the generated-variant record."""
+    return {
+        f"{item.stage.lower()}_skill_loaded_rate": item.skill_loaded_rate
+        for item in feedback if item.skill_loaded_rate is not None
+    }
 
 
 @dataclass(frozen=True)
@@ -504,8 +547,10 @@ class ScreeningOracle:
         self._loop.store.update_generated_variant(
             state.root.target, digest,
             status="core_no_improvement" if core.gates_passed else "core_rejected",
-            reason="screened by the strategy's inner search; not selected as a proposal",
-            scores={"core": core.score},
+            reason=_skill_load_reason(
+                core.feedback, "screened by the strategy's inner search; not selected as a proposal",
+            ),
+            scores={"core": core.score, **_skill_load_scores(core.feedback)},
         )
         state.strategy_screened[digest] = (candidate, core.feedback)
         self.screened += 1
@@ -743,8 +788,10 @@ class EvolutionLoop:
         if not smoke.gates_passed or smoke.score < parent.smoke_score:
             self.store.update_generated_variant(
                 target, digest, status="smoke_rejected",
-                reason="; ".join(smoke.feedback.gate_failures) or "smoke score below parent",
-                scores={"smoke": smoke.score},
+                reason=_skill_load_reason(
+                    smoke.feedback, "; ".join(smoke.feedback.gate_failures) or "smoke score below parent",
+                ),
+                scores={"smoke": smoke.score, **_skill_load_scores(smoke.feedback)},
             )
             state.no_improvement_candidates += 1
             return
@@ -755,23 +802,30 @@ class EvolutionLoop:
             core = self.gateway.screen(candidate, "CORE", self.config.core_seeds)
             counters["core_evaluated"] += 1
         generation_feedback.append(core.feedback)
-        scores = {"smoke": smoke.score, "core": core.score}
+        scores = {
+            "smoke": smoke.score, "core": core.score, **_skill_load_scores(smoke.feedback, core.feedback),
+        }
         if not core.gates_passed:
             self.store.update_generated_variant(
                 target, digest, status="core_rejected",
-                reason="; ".join(core.feedback.gate_failures), scores=scores,
+                reason=_skill_load_reason(core.feedback, "; ".join(core.feedback.gate_failures)), scores=scores,
             )
             state.no_improvement_candidates += 1
             return
         if core.score - state.best.core_score < self.config.minimum_meaningful_delta:
             self.store.update_generated_variant(
                 target, digest, status="core_no_improvement",
-                reason="core score did not beat the best by the minimum meaningful delta", scores=scores,
+                reason=_skill_load_reason(
+                    core.feedback, "core score did not beat the best by the minimum meaningful delta",
+                ),
+                scores=scores,
             )
             state.no_improvement_candidates += 1
             return
         variant = _Variant(candidate, proposal.content, digest, smoke.score, core.score, core.feedback)
-        self.store.update_generated_variant(target, digest, status="improved", scores=scores)
+        self.store.update_generated_variant(
+            target, digest, status="improved", reason=_skill_load_reason(core.feedback), scores=scores,
+        )
         state.best = variant
         state.improved.append(variant)
         state.no_improvement_candidates = 0
@@ -837,16 +891,25 @@ class EvolutionLoop:
             full = self.gateway.screen(variant.candidate, "FULL", self.config.full_seeds)
             state.feedback.append(full.feedback)
             full_passed = full.gates_passed and full.score >= self.config.minimum_meaningful_delta
-            scores = {"smoke": variant.smoke_score, "core": variant.core_score, "full": full.score}
+            scores = {
+                "smoke": variant.smoke_score, "core": variant.core_score, "full": full.score,
+                **_skill_load_scores(full.feedback),
+            }
             holdout = "not_run"
             if not full_passed:
                 self.store.update_generated_variant(
                     target, variant.digest, status="full_rejected",
-                    reason="; ".join(full.feedback.gate_failures) or "full-suite gain below minimum", scores=scores,
+                    reason=_skill_load_reason(
+                        full.feedback, "; ".join(full.feedback.gate_failures) or "full-suite gain below minimum",
+                    ),
+                    scores=scores,
                 )
             elif not self.gateway.holdout_available:
                 holdout = "awaiting_evaluator"
-                self.store.update_generated_variant(target, variant.digest, status="full_passed", scores=scores)
+                self.store.update_generated_variant(
+                    target, variant.digest, status="full_passed", reason=_skill_load_reason(full.feedback),
+                    scores=scores,
+                )
             else:
                 try:
                     passed = self.gateway.evaluate_finalist_with_holdout(
@@ -878,7 +941,7 @@ class EvolutionLoop:
                 content_sha256=row["content_sha256"],
                 status=_GENERATOR_VISIBLE_STATUS.get(row["status"], row["status"]),
                 generation=row["generation"],
-                scores={key: row["scores"][key] for key in ("smoke", "core", "full") if key in row["scores"]},
+                scores={key: row["scores"][key] for key in _PRIOR_ATTEMPT_SCORES if key in row["scores"]},
             )
             for row in self.store.list_generated_variants(target, _PRIOR_ATTEMPTS)
         )

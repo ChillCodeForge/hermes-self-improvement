@@ -96,7 +96,10 @@ def test_generator_feedback_is_filtered_by_split_and_never_contains_holdout(tmp_
         for feedback in evidence["feedback"]:
             assert all(task["task_id"] == "train-task" for task in feedback["train"])
             for aggregate in feedback["aggregates"]:
-                assert set(aggregate) == {"split", "task_count", "candidate_success_rate", "mean_quality_delta"}
+                assert set(aggregate) == {
+                    "split", "task_count", "candidate_success_rate", "mean_quality_delta",
+                    "candidate_skill_loaded_rate",  # F30: a run-weighted share, no task identity
+                }
                 assert aggregate["split"] in {"VALIDATION", "REGRESSION"}
     second = _evidence(model.calls[1])
     train = [task for item in second["feedback"] for task in item["train"]]
