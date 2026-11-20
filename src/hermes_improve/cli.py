@@ -962,6 +962,7 @@ def run(argv: list[str] | None = None) -> int:
             "error_clusters": [cluster.to_dict() for cluster in report.error_clusters],
             "signals": [signal.__dict__ for signal in report.signals],
             "hypotheses": report.hypotheses,
+            "rejected_hypotheses": report.rejected_hypotheses,
         }, indent=2))
     elif args.command == "benchmarks":
         # Leakage-checking commands use the semantic layer (layer 5) when an

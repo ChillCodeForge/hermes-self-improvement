@@ -9,7 +9,7 @@ itself into a decision, or promotes.
 | Stage | Code | Model | What it does | What it cannot do |
 |---|---|---|---|---|
 | LIGHT | `DreamingEngine.light` | none | Groups error messages from queued, redacted session exports into deterministic lexical clusters (see below), counts tool use, counts sessions labelled `incorrect`/`partial` (see "Outcome evidence") and merges optional read-only Curator usage signals. | No semantic (embedding) clustering: paraphrased errors that share little wording stay separate. No full metric set. |
-| REM | `DreamingEngine.rem` | `qwen_dreamer` | Sends a bounded projection of each session (`session_id`, `task`, `errors`, `tool_calls`, `tool_stats`, `final_status`, `outcome`, …) and returns validated hypotheses (`summary`, `issue`, `evidence_session_ids`, at most 20). Raw `messages` are never forwarded. `tool_stats` holds only tools that were actually used: Hermes lists every registered tool, and batch ingestion validates every row but drops the all-zero ones (`count`, `success` and `failure` all 0) to keep a session's REM evidence small. | No writes; invalid JSON raises. |
+| REM | `DreamingEngine.rem` | `qwen_dreamer` | Sends a bounded projection of each session (`session_id`, `task`, `errors`, `tool_calls`, `tool_stats`, `final_status`, `outcome`, …) and returns validated hypotheses (`summary`, `issue`, `evidence_session_ids`, `kind`, at most 20) plus `rejected_hypotheses` (see "Outcome evidence"). Raw `messages` are never forwarded. `tool_stats` holds only tools that were actually used: Hermes lists every registered tool, and batch ingestion validates every row but drops the all-zero ones (`count`, `success` and `failure` all 0) to keep a session's REM evidence small. | No writes; invalid JSON raises. |
 | DEEP | `DreamingEngine.deep` | `qwen_optimizer` | Turns at most five hypotheses into at most five proposals (`summary`, `candidate_type`, `target`, `hypothesis`). Only `SKILL_*` types and unprotected `brain/skills/` targets survive. | No content, no commits. |
 | Candidate generation | `proposal_generator.generate_candidates_from_proposals`, `hermes-improve candidate generate` | `qwen_optimizer` | For up to five operator-selected DEEP proposals, the model writes the full SKILL.md text; the result is committed through `candidate_builder.create_skill_candidate` on `candidate/<experiment-id>`. | Target, type and hypothesis come only from the validated proposal, never from the model reply. No evaluation, no promotion. |
 
@@ -91,7 +91,38 @@ The REM prompt tells the model that a completed but incorrect session is a
 failure, that sessions without a label have unknown correctness, to keep
 correctness and efficiency hypotheses apart (summaries start with
 `correctness:` or `efficiency:`) and to base efficiency hypotheses only on
-sessions labelled `correct`. The JSON contract is unchanged.
+sessions labelled `correct`. The JSON contract the model sees is unchanged.
+
+The prompt rule alone does not hold: in the labelled S6 rerun (finding F31)
+qwen3:4b returned `efficiency: ... unnecessary use of terminal tool` whose only
+evidence session was labelled `incorrect`, and DEEP folded it into a
+correctness proposal that steered the agent away from computing. REM therefore
+validates every parsed hypothesis against the sessions it actually sent
+(`dreaming._validate_hypotheses`):
+
+- `kind` is taken from the summary prefix (`correctness:` / `efficiency:`,
+  case-insensitive, leading spaces allowed); anything else is kept as
+  `unknown`.
+- Evidence ids that were not among the processed sessions are removed and
+  listed in `unknown_evidence_session_ids`. A hypothesis left without
+  evidence is rejected (`unknown_evidence`, or `no_evidence` when it cited
+  none): it cannot be audited.
+- An `efficiency` hypothesis is rejected (`efficiency_on_failed_sessions`,
+  with `failed_session_ids`) if **any** of its evidence sessions is labelled
+  `incorrect` or `partial`; mixed evidence still rests partly on failures.
+  Evidence without labels cannot be checked, so an efficiency hypothesis on
+  unlabelled sessions only is kept with `outcome_verified: false`; with at
+  least one `correct` session it is `true`. Deployments that never label
+  sessions therefore keep their efficiency hypotheses, visibly unverified.
+- `correctness` and `unknown` hypotheses are kept.
+
+Rejected hypotheses appear in `dream --stage rem` output as
+`rejected_hypotheses` (the hypothesis plus `reason`) and as the count
+`clusters["rejected_hypotheses"]`, which also lands in the observability
+`dreaming_runs` record; DEEP never sees them. DEEP receives each kept
+hypothesis's `kind` inside the untrusted projection, and its prompt asks for
+one kind per proposal and forbids correctness proposals that remove or
+discourage a tool or a step.
 
 ## Running the stages
 

@@ -80,6 +80,7 @@ class DreamingReport:
     signals: tuple[ImprovementSignal, ...]
     hypotheses: tuple[dict[str, Any], ...] = ()
     error_clusters: tuple[ErrorCluster, ...] = ()
+    rejected_hypotheses: tuple[dict[str, Any], ...] = ()
 
 
 def cluster_errors(
@@ -238,9 +239,13 @@ class DreamingEngine:
             user_payload=payload,
             json_object=True,
         )
-        parsed = _parse_hypotheses(response)
+        kept, rejected = _validate_hypotheses(_parse_hypotheses(response), sessions)
+        clusters = dict(light.clusters)
+        if rejected:
+            clusters["rejected_hypotheses"] = len(rejected)
         return DreamingReport(
-            light.sessions_processed, light.clusters, light.signals, tuple(parsed), light.error_clusters,
+            light.sessions_processed, clusters, light.signals, tuple(kept), light.error_clusters,
+            tuple(rejected),
         )
 
     def deep(self, hypotheses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -296,7 +301,7 @@ def _untrusted_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     """Only pass bounded data fields; all content remains explicitly evidence."""
     allowed = {
         "session_id", "task", "errors", "tool_calls", "tool_stats", "final_status",
-        "hypothesis", "summary", "issue",
+        "hypothesis", "summary", "issue", "kind",
     }
     projected = {key: value[key] for key in allowed if key in value}
     outcome = _outcome_label(value.get("outcome"))
@@ -339,3 +344,59 @@ def _parse_hypotheses(response: str) -> list[dict[str, Any]]:
             "evidence_session_ids": ids[:20],
         })
     return result[:20]
+
+
+_HYPOTHESIS_KIND = re.compile(r"\s*(correctness|efficiency)\s*:", re.IGNORECASE)
+_FAILED_LABELS = {"incorrect", "partial"}
+
+
+def _hypothesis_kind(summary: str) -> str:
+    """``correctness``/``efficiency`` from the summary prefix, else ``unknown``."""
+    match = _HYPOTHESIS_KIND.match(summary)
+    return match.group(1).casefold() if match else "unknown"
+
+
+def _validate_hypotheses(
+    hypotheses: Sequence[Mapping[str, Any]], sessions: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Check REM hypotheses against the sessions REM actually received (F31).
+
+    Every hypothesis gets a ``kind`` from its summary prefix. Evidence ids that
+    are not among ``sessions`` are removed (and listed in
+    ``unknown_evidence_session_ids``); a hypothesis left without evidence is
+    rejected. An ``efficiency`` hypothesis is rejected as soon as one of its
+    evidence sessions is labelled ``incorrect`` or ``partial``: efficiency may
+    only rest on sessions that were right. Unlabelled evidence cannot be
+    checked, so such an efficiency hypothesis is kept with
+    ``outcome_verified: false`` (``true`` once a ``correct`` session backs it).
+    ``correctness`` and ``unknown`` hypotheses are kept.
+
+    Returns ``(kept, rejected)``; each rejected item carries a ``reason``.
+    """
+    labels: dict[str, str | None] = {}
+    for session in sessions:
+        session_id = session.get("session_id")
+        if isinstance(session_id, str):
+            outcome = _outcome_label(session.get("outcome"))
+            labels[session_id] = outcome["label"] if outcome is not None else None
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for item in hypotheses:
+        cited = list(dict.fromkeys(item["evidence_session_ids"]))
+        known = [session_id for session_id in cited if session_id in labels]
+        unknown = [session_id for session_id in cited if session_id not in labels]
+        hypothesis = {**item, "kind": _hypothesis_kind(item["summary"]), "evidence_session_ids": known}
+        if unknown:
+            hypothesis["unknown_evidence_session_ids"] = unknown
+        if not known:
+            reason = "unknown_evidence" if unknown else "no_evidence"
+            rejected.append({**hypothesis, "reason": reason})
+            continue
+        if hypothesis["kind"] == "efficiency":
+            failed = [session_id for session_id in known if labels[session_id] in _FAILED_LABELS]
+            if failed:
+                rejected.append({**hypothesis, "reason": "efficiency_on_failed_sessions", "failed_session_ids": failed})
+                continue
+            hypothesis["outcome_verified"] = any(labels[session_id] == "correct" for session_id in known)
+        kept.append(hypothesis)
+    return kept, rejected
