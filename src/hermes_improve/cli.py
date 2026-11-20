@@ -7,6 +7,7 @@ import math
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from . import __version__
@@ -34,7 +35,7 @@ from .isolation import (
     ROLES as ISOLATION_ROLES, check_isolation, enforce_isolation, load_layout, require_agent_paths, resolve_layout_path,
 )
 from .miner import corpus_similarity_index, mine_session
-from .replay import is_command_benchmark, replay_benchmark
+from .replay import is_command_benchmark, replay_benchmark, replay_kind
 from .monitoring import ProductionObservation, ReleaseMonitor, validate_observation
 from .session_feed import DEFAULT_SWITCH_MARGIN_SECONDS, SessionFeed
 from .evaluation_signing import report_payload
@@ -418,21 +419,38 @@ def add_runner_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fixtures-root", type=Path)
 
 
+#: Benchmarks each `--runner` replays, and their name in error messages.
+_REPLAY_SELECTION: dict[str, tuple[str, Callable[[Benchmark], bool]]] = {
+    "docker": ("command", is_command_benchmark),
+    "local": ("skill_procedure", lambda item: replay_kind(item) == "skill_procedure"),
+    "hermes": ("hermes_agent", lambda item: replay_kind(item) == "hermes_agent"),
+}
+
+
 def _replay_benchmarks(args: argparse.Namespace, store: BenchmarkStore, database: Path) -> int:
-    benchmarks = [item for item in store.validate() if is_command_benchmark(item)]
+    label, selected = _REPLAY_SELECTION[args.runner]
+    # `store.validate()` reads the public tree only; replay_benchmark refuses SEALED_HOLDOUT.
+    benchmarks = [item for item in store.validate() if selected(item)]
     if args.benchmark_id is not None:
         benchmarks = [item for item in benchmarks if item.id == args.benchmark_id]
         if not benchmarks:
-            raise ValueError(f"no public command benchmark with id {args.benchmark_id!r}")
+            raise ValueError(f"no public {label} benchmark with id {args.benchmark_id!r}")
         benchmarks = [max(benchmarks, key=lambda item: item.version)]
     if not benchmarks:
-        raise ValueError("no public command benchmarks to replay")
+        raise ValueError(f"no public {label} benchmarks to replay")
     artifact_store = ArtifactStore(database.parent / "artifacts")
-    runner = DockerCommandRunner(args.repository, artifact_store, benchmark_root=store.root)
+    # Same runner selection as `evaluate`, but never with the sealed holdout root.
+    args.benchmark_root = store.root
+    args.holdout_root = None
+    runner = build_runner(args, artifact_store)
+    model = getattr(getattr(runner, "model", None), "model", None)
     experiment_store = ExperimentStore(database)
     results = []
     for benchmark in sorted(benchmarks, key=lambda item: (item.id, item.version)):
-        result = replay_benchmark(runner, benchmark, commit=args.commit, runs=args.runs)
+        result = replay_benchmark(
+            runner, benchmark, commit=args.commit, runs=args.runs, runner_name=args.runner,
+            model=model if isinstance(model, str) else None,
+        )
         payload = result.to_dict()
         experiment_store.record_benchmark_replay(payload)
         results.append(payload)
@@ -555,11 +573,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark_sub.add_parser("schema", help="print the benchmark record JSON Schema")
     benchmark_sub.add_parser("manifest", help="print the public corpus manifest")
-    replay = benchmark_sub.add_parser("replay", help="re-run command benchmarks and check reproducibility")
-    replay.add_argument("--id", dest="benchmark_id", help="replay one benchmark (default: all command benchmarks)")
+    replay = benchmark_sub.add_parser(
+        "replay",
+        help="re-run public benchmarks with the selected runner and check reproducibility "
+             "(docker: command, local: skill_procedure, hermes: hermes_agent benchmarks)",
+    )
+    replay.add_argument(
+        "--id", dest="benchmark_id", help="replay one benchmark (default: all benchmarks of the runner's kind)",
+    )
     replay.add_argument("--commit", required=True, help="full Git object ID of the repository state")
     replay.add_argument("--repository", type=Path, required=True)
     replay.add_argument("--runs", type=int, default=3)
+    add_runner_arguments(replay)
     holdout = benchmark_sub.add_parser("holdout", help="operator-managed sealed holdout generations")
     holdout_sub = holdout.add_subparsers(dest="holdout_command", required=True)
     rotate = holdout_sub.add_parser("rotate", help="validate STAGING and activate it as a new generation")

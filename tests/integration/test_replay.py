@@ -100,7 +100,7 @@ def test_replay_argument_validation(kwargs, message):
 
 
 def test_non_command_and_holdout_benchmarks_are_not_replayed():
-    with pytest.raises(ValueError, match="not a command benchmark"):
+    with pytest.raises(ValueError, match="not a command, skill_procedure or hermes_agent benchmark"):
         replay_benchmark(FakeRunner(), Benchmark.from_dict(record("plain")), commit=COMMIT, runs=2)
     with pytest.raises(ValueError, match="sealed holdout"):
         replay_benchmark(
@@ -129,8 +129,11 @@ def test_cli_replay_uses_runner_reports_and_persists(tmp_path, monkeypatch, caps
     outcomes = {"cmd-a": lambda seed: (0, True), "cmd-b": lambda seed: (seed, seed == 0)}
 
     class CliRunner:
-        def __init__(self, repository, artifacts, *, benchmark_root):
+        llm_influenced = False
+
+        def __init__(self, repository, artifacts, *, benchmark_root, holdout_root, **options):
             assert benchmark_root == tmp_path / "public"  # trusted root for skill_procedure fixtures
+            assert holdout_root is None  # the replay never reads the sealed holdout
             self.repository = repository
 
         def run(self, commit, benchmark, seed):

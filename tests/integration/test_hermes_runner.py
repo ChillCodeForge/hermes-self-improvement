@@ -15,6 +15,7 @@ from hermes_improve.evaluator import PairedEvaluator
 from hermes_improve.hermes_runner import (
     HermesBatchRunner,
     HermesModelConfig,
+    load_partial_trajectory,
     load_single_trajectory,
     parse_trajectory_record,
 )
@@ -383,3 +384,55 @@ def test_toolsets_are_validated_and_part_of_the_model_digest():
     for bad in ("", "terminal;rm", "Terminal", "a," * 20):
         with pytest.raises(ValueError, match="toolsets"):
             HermesModelConfig(model="m", base_url="http://x", toolsets=bad)
+
+
+def test_timed_out_run_keeps_the_partial_trajectory_and_usage(tmp_path):
+    """F16: the driver flushes a partial row on SIGTERM; the run stays a timeout."""
+    runner, _baseline, candidate, _log = make_runner(
+        tmp_path, mode="slow", fake={"hermes_tokens": [123, 45]}, limits=SandboxLimits(timeout_seconds=1.5),
+    )
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+
+    # The workspace already holds the right answer, but a timed-out run never succeeds.
+    assert observation.filesystem_changes == ("A answer.txt",)
+    assert observation.exit_state == "timeout" and not observation.success and observation.exit_code == 1
+    assert observation.tool_calls > 0 and observation.api_calls > 0
+    trajectory = json.loads(runner.artifacts.get(observation.trajectory_digest))
+    assert trajectory["partial"] is True and trajectory["completed"] is False
+    assert trajectory["terminated"] == "SIGTERM"
+    record = json.loads(runner.artifacts.get(observation.artifact_digests[0]))
+    assert record["exit_state"] == "timeout"
+    assert record["hermes_reported_usage"]["input_tokens"] == 123
+    assert record["hermes_reported_usage"]["output_tokens"] == 45
+
+
+def test_agent_ignoring_the_interrupt_still_leaves_the_sigterm_fallback_record(tmp_path):
+    runner, _baseline, candidate, _log = make_runner(
+        tmp_path, mode="stuck", fake={"hermes_tokens": [7, 3]}, limits=SandboxLimits(timeout_seconds=1.5),
+    )
+    runner.termination_grace_seconds = 0.5
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+
+    assert observation.exit_state == "timeout" and not observation.success
+    trajectory = json.loads(runner.artifacts.get(observation.trajectory_digest))
+    assert trajectory["partial"] is True and trajectory["completed"] is False
+    assert trajectory["conversations"][0]["from"] == "human"
+    assert observation.api_calls > 0
+    record = json.loads(runner.artifacts.get(observation.artifact_digests[0]))
+    assert record["hermes_reported_usage"]["input_tokens"] == 7
+
+
+def test_timeout_without_a_grace_period_has_no_trajectory_but_is_still_a_timeout(tmp_path):
+    runner, _baseline, candidate, _log = make_runner(tmp_path, mode="stuck", limits=SandboxLimits(timeout_seconds=1))
+    runner.termination_grace_seconds = 0
+    observation = runner.run(candidate, Benchmark.from_dict(benchmark_record()), 1)
+    assert observation.exit_state == "timeout" and not observation.success
+
+
+def test_unreadable_partial_trajectory_is_dropped_not_an_integrity_error(tmp_path):
+    truncated = tmp_path / "trajectories.jsonl"
+    truncated.write_text('{"prompt_index": 0, "conversations": [')
+    assert load_partial_trajectory(truncated) is None
+    assert load_partial_trajectory(tmp_path / "missing.jsonl") is None
+    shutil.copy(FIXTURES / "trajectories.jsonl", truncated)
+    assert load_partial_trajectory(truncated).tool_calls == 3

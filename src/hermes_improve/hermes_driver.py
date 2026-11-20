@@ -27,7 +27,18 @@ Output: ``<out>/trajectories.jsonl`` with one row in batch_runner's schema
 ``api_calls``, ``toolsets_used``, ``tool_stats``, ``tool_error_counts``) and
 ``<out>/usage.json``. Exit 0 = conversation finished (row written), 3 = the
 agent failed before producing a trajectory (``<out>/error.txt``), 2 = usage
-error.
+error, 4 = terminated by SIGTERM (partial row written).
+
+Timeouts (isolated lab finding F16): ``HermesBatchRunner`` sends SIGTERM to the
+driver's process group when the evaluation timeout expires and SIGKILL after a
+short grace period. On SIGTERM the driver immediately writes a fallback row
+(``completed: false``, ``partial: true``, ``terminated: "SIGTERM"``, the prompt
+as the only turn, no tool statistics) and ``usage.json`` with Hermes' token
+counters so far, then asks the agent to stop through ``AIAgent.interrupt()``
+when the checkout provides it. If ``run_conversation`` returns within the grace
+period, the row is replaced by the interrupted trajectory with its tool
+statistics, still marked partial and not completed. Files are replaced
+atomically, so a SIGKILL never leaves a half-written row.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ import argparse
 import contextlib
 import json
 import os
+import signal
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -56,7 +68,53 @@ def _parse(argv: list[str]) -> argparse.Namespace:
 
 
 def _write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+    """Atomic replace: a reader (or a SIGKILL) never sees a half-written file."""
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _usage(agent: object) -> dict[str, int]:
+    return {
+        "input_tokens": int(getattr(agent, "session_input_tokens", 0) or 0),
+        "output_tokens": int(getattr(agent, "session_output_tokens", 0) or 0),
+        "api_calls": int(getattr(agent, "session_api_calls", 0) or 0),
+    }
+
+
+class _Termination:
+    """SIGTERM state: write a fallback row at once, then ask the agent to stop."""
+
+    def __init__(self, out: Path, prompt: str, model: str, toolsets: list[str]) -> None:
+        self.out, self.prompt, self.model, self.toolsets = out, prompt, model, toolsets
+        self.agent: object | None = None
+        self.requested = False
+        self.finishing = False  # the final row is being written; the handler must not overwrite it
+
+    def handle(self, signum: int, frame: object) -> None:
+        if self.requested:
+            return
+        self.requested = True
+        if not self.finishing:
+            usage = _usage(self.agent)
+            _write_json(self.out / "trajectories.jsonl", {
+                "prompt_index": 0,
+                "conversations": [{"from": "human", "value": self.prompt}],
+                "metadata": {"timestamp": datetime.now(timezone.utc).isoformat(), "model": self.model,
+                             "driver": "hermes_improve.hermes_driver"},
+                "completed": False,
+                "partial": True,
+                "terminated": "SIGTERM",
+                "api_calls": usage["api_calls"],
+                "toolsets_used": self.toolsets,
+                "tool_stats": {},
+                "tool_error_counts": {},
+            })
+            _write_json(self.out / "usage.json", usage)
+        interrupt = getattr(self.agent, "interrupt", None)
+        if callable(interrupt):
+            with contextlib.suppress(Exception):
+                interrupt()
 
 
 def main(argv: list[str]) -> int:
@@ -70,6 +128,8 @@ def main(argv: list[str]) -> int:
     out.mkdir(parents=True, exist_ok=True)
     row = json.loads(args.task_file.read_text(encoding="utf-8"))
     toolsets = [name for name in args.toolsets.split(",") if name]
+    termination = _Termination(out, row["prompt"], args.model, toolsets)
+    signal.signal(signal.SIGTERM, termination.handle)
 
     import batch_runner as hermes_batch  # helpers of the same checkout, imported unmodified
     from run_agent import AIAgent
@@ -94,15 +154,14 @@ def main(argv: list[str]) -> int:
             platform="batch",
             log_prefix="[eval]",
         )
+        termination.agent = agent
         try:
+            if termination.requested:  # SIGTERM before the conversation started: keep the fallback row
+                return 4
             result = agent.run_conversation(row["prompt"], task_id=task_id)
             raw_stats = hermes_batch._extract_tool_stats(result["messages"])
             trajectory = agent._convert_to_trajectory_format(result["messages"], row["prompt"], result["completed"])
-            usage = {
-                "input_tokens": int(getattr(agent, "session_input_tokens", 0) or 0),
-                "output_tokens": int(getattr(agent, "session_output_tokens", 0) or 0),
-                "api_calls": int(getattr(agent, "session_api_calls", 0) or 0),
-            }
+            usage = _usage(agent)
         finally:
             with contextlib.suppress(Exception):
                 agent.close()
@@ -123,8 +182,14 @@ def main(argv: list[str]) -> int:
         "tool_stats": hermes_batch._normalize_tool_stats(raw_stats),
         "tool_error_counts": {name: stats.get("failure", 0) for name, stats in raw_stats.items()},
     }
+    termination.finishing = True
+    if termination.requested:  # interrupted on SIGTERM: the trajectory is partial, never completed
+        record.update(completed=False, partial=True, terminated="SIGTERM")
     _write_json(out / "trajectories.jsonl", record)
     _write_json(out / "usage.json", usage)
+    if termination.requested:
+        print(f"conversation interrupted by SIGTERM: api_calls={result['api_calls']}")
+        return 4
     print(f"conversation finished: completed={result['completed']} api_calls={result['api_calls']}")
     return 0
 
