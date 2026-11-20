@@ -90,6 +90,15 @@ class ReplayEvidence(_Section):
     outcome_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     environment_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     replayed_at: str = Field(min_length=1)
+    # Optional runner identity (added for LLM-driven `hermes_agent` replays, lab finding F14).
+    runner: str | None = Field(default=None, min_length=1, description="Runner used for the replay.")
+    llm_influenced: bool | None = None
+    criterion: Literal["identical_outcome", "all_runs_pass"] | None = Field(
+        default=None,
+        description="identical_outcome: deterministic runner; all_runs_pass: every LLM run completed and passed.",
+    )
+    model: str | None = Field(default=None, min_length=1)
+    model_config_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class EligibilitySection(_Section):

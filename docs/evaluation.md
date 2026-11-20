@@ -22,6 +22,11 @@ hermes-improve evaluate <candidate-id> --repository <brain-repo> --holdout-root 
     [--judge]                          # qwen_judge role from QWEN_* environment
 ```
 
+`hermes-improve benchmarks replay` takes the same runner options (without
+`--holdout-root`) to produce `eligibility.replay_evidence` for command,
+`skill_procedure` and `hermes_agent` records; see the replay section of
+`benchmarking.md`.
+
 The command must run as `HERMES_EVALUATOR_UID` and signs with
 `HERMES_EVALUATOR_PRIVATE_KEY`. Every suite run is recorded as one signed
 evaluation. SMOKE and CORE runs are staged evidence:

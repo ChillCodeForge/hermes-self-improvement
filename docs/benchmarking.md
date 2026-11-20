@@ -230,17 +230,49 @@ manifest; `hermes-improve benchmarks manifest` prints the corpus manifest.
 ## Replay
 
 `hermes-improve benchmarks replay [--id ID] --commit SHA --repository PATH
-[--runs N]` re-runs public command benchmarks (records with
-`environment.command`) N times (2–20, seeds `0..N-1`) through the
-digest-pinned `DockerCommandRunner`. A benchmark is *reproducible* when
-every run has the identical verifier outcome (exit code, pass/fail, quality,
-security pass, environment digest); it is *replay verified* when it is also
-passing. Results are printed without command output and appended to the
+[--runs N] [runner options]` re-runs public benchmarks N times (2–20, seeds
+`0..N-1`) through the runner that `evaluate` would use. It takes the same
+runner options as `evaluate` (`--runner`, `--timeout`, `--max-turns`,
+`--hermes-agent-dir`, `--model`, … see `evaluation.md`), and the runner
+decides which records are replayed:
+
+| `--runner` | replayed records |
+|---|---|
+| `docker` (default) | command benchmarks (`environment.command`), digest-pinned `DockerCommandRunner` |
+| `local` | `environment.type: skill_procedure`, `LocalSkillProcedureRunner` |
+| `hermes` | `environment.type: hermes_agent`, the real Hermes agent through `HermesBatchRunner` |
+
+A benchmark is *reproducible* when every run has the identical verifier
+outcome (exit code, pass/fail, success, quality, security pass, environment
+digest). It is *replay verified* when it is also passing, and what passing
+means depends on whether a model is in the loop:
+
+- Deterministic runners (`criterion: identical_outcome`): every run passed the
+  deterministic verifiers, so the reference solution satisfies its own ground
+  truth.
+- LLM-driven runners (`criterion: all_runs_pass`): every one of the N runs
+  finished as a completed agent run *and* passed the deterministic verifiers.
+  A timeout, a partial trajectory or a turn/tool limit fails the replay even
+  when the workspace happens to be right. Token counts, latency, tool calls
+  and wording vary between LLM runs and are not compared; the verdict must not
+  vary. All runs must use the same model configuration, otherwise the replay
+  is an integrity error. Use enough runs (the default 3, or more) for the
+  evidence to mean something; one lucky run is not evidence.
+
+Results are printed without command output and appended to the
 `benchmark_replays` table of the experiment database; the command exits 1
 if any benchmark is not replay verified. `ReplayResult.evidence()` is the
-`eligibility.replay_evidence` block for authored records. The library entry
-point is `replay.replay_benchmark(runner, benchmark, *, commit, runs)` for
-any `BenchmarkRunner`. Sealed holdout records are never replayed here.
+`eligibility.replay_evidence` block for authored records: the required
+fields (`commit`, `runs`, `reproducible`, `passed`, `outcome_digest`,
+`environment_digest`, `replayed_at`) plus the optional runner identity
+`runner`, `llm_influenced`, `criterion` and, for Hermes, `model` and
+`model_config_digest`. Older evidence without the optional fields stays
+valid. This is how `hermes_agent` records obtain the replay evidence that
+`HARD_BENCHMARK` and `benchmarks validate` require (lab finding F14). The
+library entry point is `replay.replay_benchmark(runner, benchmark, *, commit,
+runs, runner_name=None, model=None)` for any `BenchmarkRunner`. Sealed
+holdout records are never replayed here: the replay reads only the public
+tree, configures no holdout root, and refuses `SEALED_HOLDOUT` records.
 
 Images are pulled by the operator in advance; the runner uses
 `--pull=never` and `--network=none`.
