@@ -273,6 +273,35 @@ events.) Post-promotion monitoring uses the `PROMOTED` and `REACTIVATED` events
 as the release activation timeline when it attributes ingested Hermes sessions
 to a release (`monitor collect`, see `operations.md`).
 
+## Monitoring reference
+
+The release manifest carries two metric blocks, both signed with the rest of
+the manifest:
+
+- `monitoring_reference` (since this field's version 1): what post-promotion
+  monitoring compares production with. `{"version": 1, "arm": "candidate",
+  "unit": "per_run", "metrics": {...}}` with the candidate arm's metrics over
+  the final suites (FULL and sealed holdout): `success_rate` (tasks whose
+  runs all succeeded), `tool_error_rate`, `tokens_per_run`,
+  `tool_calls_per_run`, `latency_per_run_ms`, `retry_rate`,
+  `correction_rate`. Evaluation rows already hold per-run means, so these are
+  means per run. A metric the evaluation did not report is `null`. The
+  candidate arm is the right reference because the promoted brain *is* the
+  candidate; per-run units stay meaningful when an arm never succeeded.
+- `baseline_metrics` (legacy, baseline arm, per success): kept for readers of
+  older manifests. Per-success values are `null` when the baseline arm never
+  succeeded; promoters before this change divided by `max(1, successes)` and
+  recorded totals there.
+
+The monitor uses `monitoring_reference` when present and refuses an unknown
+version, unit or arm instead of guessing. Older manifests are not rewritten
+(their signature stays valid) and are monitored through `baseline_metrics`,
+without the per-success values of a baseline that never succeeded. The
+evaluation metrics behind the reference are `candidate_success_rate`,
+`candidate_tool_error_rate`, `tokens_per_task_candidate`,
+`tool_calls_per_task_candidate`, `latency_per_task_candidate_ms`,
+`candidate_retry_rate` and `candidate_correction_rate`.
+
 ## Monitoring epochs
 
 Post-promotion monitoring (`monitor evaluate`, `monitor collect`, `monitor

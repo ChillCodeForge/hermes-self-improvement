@@ -295,15 +295,32 @@ Observations are matched to the release's affected area: the skills under
 names skills counts only if one of them changed; an observation without skill
 attribution counts for the whole release.
 
-Metrics: success rate, tool error rate, tokens/success, tool calls/success,
-latency/success, retry rate, user-correction rate, and critical regression
-signals. Tokens/success uses only observations that reported tokens
-(`tokens_reported_samples`); if none did, the metric is `null` and listed
-under `unavailable_metrics` instead of being compared. Each metric is compared
-with the manifest's `baseline_metrics` only when that baseline exists; missing
-baselines are listed under `unavailable_baselines` instead of being assumed. Any critical signal means
-immediate rollback; a success-rate or tool-error regression is `high`
-severity, any other regression is `medium`.
+Metrics: success rate, tool error rate, tokens, tool calls and latency (per
+run and per success), retry rate, user-correction rate, and critical
+regression signals. Token metrics use only observations that reported tokens
+(`tokens_reported_samples`); if none did, they are `null` and listed under
+`unavailable_metrics` instead of being compared.
+
+*Reference.* Monitoring checks whether the promoted brain behaves in
+production as it did in its own evaluation. The signed manifest's
+`monitoring_reference` (see `promotion.md`, "Monitoring reference") holds the
+**candidate arm's** final-suite metrics in **per-run** units: success rate,
+tool error rate, `tokens_per_run`, `tool_calls_per_run`,
+`latency_per_run_ms`, retry rate and correction rate. Production is compared
+with these, so a knowledge-adding skill whose baseline never succeeded is
+still held to the success rate it showed in evaluation. Manifests written
+before that field existed are compared with their legacy `baseline_metrics`
+(baseline arm, per success); when that baseline never succeeded
+(`success_rate` 0 or missing), its per-success tokens/tool calls/latency are
+totals and are excluded (`reference.excluded`, `unavailable_baselines`). The
+assessment's `reference` object names the source, version, arm and unit used.
+Each metric is compared only when its reference value exists; missing values
+are listed under `unavailable_baselines` instead of being assumed. Any
+critical signal means immediate rollback; a success-rate or tool-error
+regression is `high` severity, any other regression is `medium`. The
+efficiency thresholds (`max_tokens_per_success_increase`,
+`max_tool_calls_per_success_increase`) apply to the per-run values in the
+same way.
 
 ```bash
 hermes-improve monitor evaluate brain-v7          # assessment only, no change

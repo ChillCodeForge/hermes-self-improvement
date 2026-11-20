@@ -17,6 +17,7 @@ from typing import Any, Sequence
 from .approvals import load_public_key, public_key_fingerprint, verify_promotion_approval
 from .errors import IntegrityError, PolicyRejected
 from .evaluation_signing import verify_report_signature
+from .monitoring import build_monitoring_reference
 from .models import CandidateType, EvaluationReport, Split, TaskOutcome, canonical_json, utc_now
 from .policy import PromotionPolicy
 from .store import ExperimentStore
@@ -368,6 +369,9 @@ class GitPromoter:
                     "latency_per_success_ms": evaluation_metrics["baseline_latency_per_success_ms"],
                     "correction_rate": evaluation_metrics["baseline_correction_rate"],
                 },
+                # What post-promotion monitoring compares production with: the
+                # promoted (candidate) arm's own evaluation, in per-run units.
+                "monitoring_reference": build_monitoring_reference(evaluation_metrics),
                 "artifact_type": candidate["candidate_type"],
                 "target": target,
                 "promotion_gate": "manual" if approval is not None else "auto",
