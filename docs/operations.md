@@ -33,6 +33,7 @@ unless noted.
 | Morning check | `hermes-improve report` (or `--json`) | Six-section report (Hermes, Improvement, Benchmarks, Dreaming, Qwen, Production). Read-only; never creates state. |
 | Curator review | `hermes-improve curator status [--hermes-home PATH]` | Reads the live Hermes Curator state read-only, lists signals, records each signal in the decision history. |
 | Evidence intake | `hermes-improve ingest EXPORT.json` / `ingest-batch RUN/trajectories.jsonl` | Queues redacted, untrusted session evidence. |
+| Outcome evidence | `hermes-improve sessions label SESSION_ID --outcome correct\|incorrect\|partial --source verifier\|user\|monitor [--note TEXT]` / `sessions import-labels LABELS.jsonl` | Attaches the checked result of a queued session (latest label wins). Without labels Dreaming cannot tell a completed-but-wrong session from a correct one; see `dreaming.md`. |
 | Analysis | `hermes-improve dream --stage light [--curator-hermes-home PATH]` | LIGHT analysis; REM/DEEP need a loopback Qwen endpoint. Run summary and Qwen usage go to `observability.sqlite3`. |
 | Curator change wanted | `hermes-improve curator propose ...` / `curator convert-pending ID ...` | Turns a Curator mutation into an immutable candidate; never writes production. |
 | Candidate work | `candidate create`, `evaluate`, `promote` | Unchanged gated path (see below). |

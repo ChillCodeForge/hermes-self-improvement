@@ -8,6 +8,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from .clustering import cluster_texts, task_fingerprint
 from .curator import CuratorAdapter
+from .ingestion import OUTCOME_LABELS, OUTCOME_SOURCES
 from .models import CandidateType, ImprovementSignal
 from .prompting import load_prompt, wrap_untrusted_evidence
 from .skill_paths import validate_skill_target
@@ -116,6 +117,50 @@ def cluster_errors(
     return tuple(clusters)
 
 
+_MAX_SIGNAL_SESSION_IDS = 20
+
+
+def _labelled_failure_signal(sessions: Sequence[Mapping[str, Any]]) -> ImprovementSignal | None:
+    """One LIGHT signal for sessions an operator labelled ``incorrect``/``partial``.
+
+    ``final_status`` only says that the conversation ended; a labelled failure
+    is the only correctness evidence LIGHT has (finding F11).
+    """
+    labelled = 0
+    failures: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
+    session_ids: list[str] = []
+    for session in sessions:
+        outcome = _outcome_label(session.get("outcome"))
+        if outcome is None:
+            continue
+        labelled += 1
+        if outcome["label"] == "correct":
+            continue
+        failures[outcome["label"]] += 1
+        sources[outcome["source"]] += 1
+        session_id = session.get("session_id")
+        if isinstance(session_id, str) and len(session_ids) < _MAX_SIGNAL_SESSION_IDS:
+            session_ids.append(session_id)
+    total = sum(failures.values())
+    if not total:
+        return None
+    return ImprovementSignal(
+        source="dreaming-light",
+        summary=f"{total} of {labelled} labelled sessions were incorrect or partial",
+        issue="sessions ended (final_status) but their outcome was labelled incorrect or partial",
+        impact_score=min(1.0, total / max(1, len(sessions))),
+        evidence={
+            "kind": "labelled_outcome",
+            "incorrect": failures["incorrect"],
+            "partial": failures["partial"],
+            "labelled": labelled,
+            "sources": dict(sorted(sources.items())),
+            "session_ids": session_ids,
+        },
+    )
+
+
 class DreamingEngine:
     """LIGHT works without an LLM; model-backed stages only produce proposals."""
 
@@ -162,9 +207,14 @@ class DreamingEngine:
                         "variants": cluster.variants,
                     },
                 ))
+        outcome_signal = _labelled_failure_signal(sessions)
+        if outcome_signal is not None:
+            signals.append(outcome_signal)
         curator_signals = self.curator.signals() if self.curator is not None else []
         signals.extend(curator_signals)
         clusters = {"errors": len(error_clusters), "tools": len(tools)}
+        if outcome_signal is not None:
+            clusters["labelled_failures"] = outcome_signal.evidence["incorrect"] + outcome_signal.evidence["partial"]
         if self.curator is not None:
             clusters["curator"] = len(curator_signals)
         return DreamingReport(
@@ -249,7 +299,24 @@ def _untrusted_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "hypothesis", "summary", "issue",
     }
     projected = {key: value[key] for key in allowed if key in value}
+    outcome = _outcome_label(value.get("outcome"))
+    if outcome is not None:
+        projected["outcome"] = {
+            key: outcome[key] for key in ("label", "source", "note")
+            if isinstance(outcome.get(key), str) and (key != "note" or outcome[key])
+        }
     return {"untrusted_evidence": projected}
+
+
+def _outcome_label(value: Any) -> Mapping[str, Any] | None:
+    """The session's outcome label if it is well formed, else ``None``."""
+    if (
+        isinstance(value, Mapping)
+        and value.get("label") in OUTCOME_LABELS
+        and value.get("source") in OUTCOME_SOURCES
+    ):
+        return value
+    return None
 
 
 def _parse_hypotheses(response: str) -> list[dict[str, Any]]:
