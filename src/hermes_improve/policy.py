@@ -119,6 +119,7 @@ class PromotionPolicy:
 
     def requires_manual_approval(
         self, candidate_type: CandidateType, *, removed_skills: Iterable[str] = (),
+        judge_only_gain: bool = False,
     ) -> bool:
         """True when promotion needs a signed operator approval.
 
@@ -127,10 +128,17 @@ class PromotionPolicy:
         is never auto-promotable, whatever its type gate says: archive, delete,
         merge and split removals all go through the manual gate. The removal
         set is derived from the candidate diff, not from the declared type.
+
+        ``judge_only_gain``: the re-assessed final evidence passed the quality
+        constraint only through judge-preferred subjective tasks
+        (``metrics["quality_evidence"] == "judge"``, see ``assess``). Such a
+        gain is never auto-promoted, whatever the type gate says.
         """
         if not isinstance(candidate_type, CandidateType):
             raise ValueError("candidate type must be a CandidateType")
         if tuple(removed_skills):
+            return True
+        if judge_only_gain is True:
             return True
         return candidate_type not in self.auto_promotable_types
 
@@ -177,10 +185,10 @@ class PromotionPolicy:
 
     @staticmethod
     def _significant_gain(
-        threshold: float | None, deltas: list[float], interval: tuple[float, float],
+        threshold: float | None, deltas: list[float], interval: tuple[float, float] | None,
     ) -> bool:
         """Quality gain significant enough to justify a token or latency increase."""
-        return threshold is not None and len(deltas) >= 2 and interval[0] > threshold
+        return threshold is not None and interval is not None and len(deltas) >= 2 and interval[0] > threshold
 
     def assess(
         self,
@@ -201,8 +209,19 @@ class PromotionPolicy:
             if row.suite.upper() == "FULL" or row.split is Split.SEALED_HOLDOUT
         )
         holdout_rows = tuple(row for row in final_rows if row.split is Split.SEALED_HOLDOUT)
-        deltas = [row.candidate_quality - row.baseline_quality for row in final_rows]
-        quality_interval = paired_mean_confidence_interval(deltas) if final_rows else None
+        # Judge-routed tasks (subjective only) carry no deterministic quality:
+        # their quality is the exit-code check, identical for both arms when
+        # both finish. They are left out of every quality mean (pooled,
+        # holdout, category) so they cannot dilute it; their verdict is used
+        # separately below (quality constraint).
+        quality_rows = tuple(row for row in final_rows if not row.judge_result)
+        judged_rows = tuple(row for row in final_rows if row.judge_result)
+        judge_preferred = tuple(row for row in judged_rows if row.judge_result == "candidate")
+        judge_blocking = tuple(row for row in judged_rows if row.judge_result not in {"candidate", "tie"})
+        deltas = [row.candidate_quality - row.baseline_quality for row in quality_rows]
+        quality_interval = paired_mean_confidence_interval(deltas) if quality_rows else None
+        quality_evidence: str | None = None
+        manual_approval_reason: str | None = None
         tokens_reported = bool(final_rows) and all(row.token_usage_reported for row in final_rows)
         token_check = "not evaluated"
         token_exception_applied = False
@@ -242,9 +261,13 @@ class PromotionPolicy:
             fail("task_success", f"task success regressed on {len(regressed)} task(s): {', '.join(regressed)}")
         if final_rows:
             # 6. Generalization: the sealed holdout on its own.
+            holdout_quality_rows = tuple(row for row in holdout_rows if not row.judge_result)
             if holdout_rows:
-                holdout_delta = mean(row.candidate_quality - row.baseline_quality for row in holdout_rows)
-                if holdout_delta < self.min_holdout_quality_delta:
+                holdout_delta = (
+                    mean(row.candidate_quality - row.baseline_quality for row in holdout_quality_rows)
+                    if holdout_quality_rows else None
+                )
+                if holdout_delta is not None and holdout_delta < self.min_holdout_quality_delta:
                     fail(
                         "generalization",
                         f"sealed holdout quality delta {holdout_delta:.3f} is below the generalization "
@@ -257,7 +280,7 @@ class PromotionPolicy:
                     fail("generalization", "sealed holdout task success rate regressed")
             # 7. Category regressions (pooled Full + holdout).
             category_deltas: dict[str, list[float]] = defaultdict(list)
-            for row in final_rows:
+            for row in quality_rows:
                 for category in row.categories:
                     category_deltas[category].append(row.candidate_quality - row.baseline_quality)
             category_drops = {
@@ -267,12 +290,31 @@ class PromotionPolicy:
             }
             if category_drops:
                 fail("category_regressions", f"category quality drop exceeds policy: {category_drops}")
-            # 8. Quality (pooled Full + holdout).
-            quality_delta = mean(deltas)
-            if quality_delta < self.min_quality_delta:
-                fail("quality", f"quality delta {quality_delta:.3f} is below minimum")
-            if quality_interval[0] < 0:
-                fail("quality", f"95% quality delta interval includes regression: {quality_interval}")
+            # 8. Quality (pooled Full + holdout, deterministic rows only).
+            quality_reasons = []
+            if quality_rows:
+                quality_delta = mean(deltas)
+                if quality_delta < self.min_quality_delta:
+                    quality_reasons.append(f"quality delta {quality_delta:.3f} is below minimum")
+                if quality_interval[0] < 0:
+                    quality_reasons.append(f"95% quality delta interval includes regression: {quality_interval}")
+            else:
+                quality_reasons.append("no deterministic quality evidence in the final rows")
+            no_regression = not quality_rows or (mean(deltas) >= 0 and quality_interval[0] >= 0)
+            if not quality_reasons:
+                quality_evidence = "deterministic"
+            elif judge_preferred and not judge_blocking and no_regression:
+                # The gain rests on judge-preferred subjective tasks only: it
+                # passes the constraint but never auto-promotes (signed
+                # operator approval, ``requires_manual_approval``).
+                quality_evidence = "judge"
+                manual_approval_reason = (
+                    f"quality gain rests on {len(judge_preferred)} judge-preferred subjective task(s) only "
+                    f"({'; '.join(quality_reasons)}); promotion needs a signed operator approval"
+                )
+            else:
+                for reason in quality_reasons:
+                    fail("quality", reason)
             # 9. Token efficiency.
             if not tokens_reported:
                 if self.require_token_measurement:
@@ -321,11 +363,16 @@ class PromotionPolicy:
             reasons=tuple(reasons),
             metrics={
                 "final_tasks": len(final_rows),
+                "quality_tasks": len(quality_rows),
+                "judged_final_tasks": len(judged_rows),
+                "judge_preferred_final_tasks": len(judge_preferred),
+                "quality_evidence": quality_evidence,
+                "manual_approval_reason": manual_approval_reason,
                 "constraint_order": list(CONSTRAINT_ORDER),
                 "failed_constraints": list(dict.fromkeys(constraint for constraint, _ in failures)),
                 "primary_reason": reasons[0] if reasons else None,
-                "quality_delta_mean": mean(deltas) if final_rows else None,
-                "quality_delta_ci95": list(quality_interval) if final_rows else None,
+                "quality_delta_mean": mean(deltas) if quality_rows else None,
+                "quality_delta_ci95": list(quality_interval) if quality_rows else None,
                 "holdout_tasks": len(holdout_rows),
                 "holdout_quality_delta_mean": holdout_delta,
                 "baseline_success_rate": (

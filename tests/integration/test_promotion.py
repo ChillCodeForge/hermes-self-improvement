@@ -668,3 +668,31 @@ def test_cli_approve_and_promote_by_experiment_id(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "releases", "events"])
     assert main() == 0
     assert json.loads(capsys.readouterr().out)[0]["event"] == "PROMOTED"
+
+
+def test_skill_gain_resting_on_judged_tasks_needs_signed_operator_approval(tmp_path):
+    """F27: a judge-preferred subjective gain passes the policy but never auto-promotes."""
+    from hermes_improve.approvals import approve_promotion
+
+    repository, baseline = _repository(tmp_path)
+    store = ExperimentStore(tmp_path / "db.sqlite3")
+    candidate, private, public = _add_candidate(repository, store, "exp-j", "cand-j", baseline, "styled\n",
+                                                evaluate=False)
+    judged = {"baseline_quality": 100, "candidate_quality": 100, "judge_result": "candidate",
+              "judge_confidence": 0.95, "judge_uncertainty": 0.05}
+    report = _record_run(store, candidate, private, "eval-j", ALL_SUITES, FULL=judged, SEALED_HOLDOUT=judged)
+    assert report.passed and report.metrics["quality_evidence"] == "judge"
+    operator_private, operator_public = _key_pair()
+    promoter = _promoter(store, repository, tmp_path, public, operator_public_keys=[operator_public])
+    with pytest.raises(PolicyRejected, match="requires a signed operator approval"):
+        promoter.promote("exp-j", manifest_key=b"m" * 32)
+    assert git(repository, "rev-parse", "main") == baseline
+
+    approve_promotion(
+        store, "exp-j", operator="alice", rationale="Read both incident summaries; the style guide helps.",
+        private_key_pem=operator_private, policy=PromotionPolicy(),
+    )
+    manifest = promoter.promote("exp-j", manifest_key=b"m" * 32)
+    assert manifest["promotion_gate"] == "manual"
+    assert manifest["approval"]["candidate_type"] == "SKILL_PATCH"
+    assert git(repository, "rev-parse", "main") == candidate.commit

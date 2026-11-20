@@ -106,8 +106,10 @@ class PairedEvaluator:
     The evaluator orchestrates an injected runner; it does not itself sandbox
     candidate execution. Deterministic verifier results always take precedence:
     the judge is only consulted for benchmarks without deterministic checks
-    that declare subjective criteria, and its verdict can only add blocking
-    reasons, never make a candidate pass.
+    that declare subjective criteria. A `baseline` or `unreliable` verdict
+    adds a blocking reason here; the policy leaves judged tasks out of the
+    deterministic quality mean and lets a `candidate` verdict carry quality
+    only into the signed manual approval gate, never into auto-promotion.
     """
 
     def __init__(

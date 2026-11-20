@@ -259,3 +259,86 @@ def test_reasons_follow_section_23_order_and_expose_the_primary_reason():
     assert positions == sorted(positions)
     assert report.reasons[0] == "security verifier failed" == report.metrics["primary_reason"]
     assert report.reasons[-1] == "latency increase exceeds policy"
+
+
+# F27: judge-routed tasks and the pooled quality mean.
+
+def judged(result, **kwargs):
+    return outcome(**{"baseline_quality": 100, "candidate_quality": 100, "judge_result": result,
+                      "judge_confidence": 0.9, "judge_uncertainty": 0.1, **kwargs})
+
+
+def test_judged_tasks_no_longer_dilute_the_deterministic_quality_mean():
+    # Deterministic delta +4 (above 3.0); two judged rows with delta 0 used to pull the mean to 2.0.
+    rows = [
+        outcome(task_id="det-1", baseline_quality=90, candidate_quality=94),
+        judged("tie", task_id="essay-1"), judged("tie", task_id="essay-2"),
+        holdout(baseline_quality=90, candidate_quality=94),
+    ]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert report.passed, report.reasons
+    assert report.metrics["quality_delta_mean"] == 4
+    assert report.metrics["quality_tasks"] == 2 and report.metrics["judged_final_tasks"] == 2
+    assert report.metrics["quality_evidence"] == "deterministic"
+    assert report.metrics["manual_approval_reason"] is None
+
+
+def test_gain_resting_on_judge_preferred_tasks_passes_only_for_manual_approval():
+    rows = [
+        outcome(task_id="det-1", baseline_quality=90, candidate_quality=90),
+        judged("candidate", task_id="essay-1"),
+        holdout(baseline_quality=90, candidate_quality=90),
+    ]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert report.passed, report.reasons
+    assert report.metrics["quality_evidence"] == "judge"
+    assert "judge-preferred" in report.metrics["manual_approval_reason"]
+    assert PromotionPolicy().requires_manual_approval(CandidateType.SKILL_PATCH, judge_only_gain=True)
+    assert not PromotionPolicy().requires_manual_approval(CandidateType.SKILL_PATCH)
+
+
+def test_subjective_only_final_evidence_routes_to_manual_approval():
+    rows = [judged("candidate", task_id="essay-1"), judged("candidate", task_id="essay-holdout",
+                                                           split=Split.SEALED_HOLDOUT, suite="SEALED_HOLDOUT")]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert report.passed, report.reasons
+    assert report.metrics["quality_evidence"] == "judge"
+    assert report.metrics["quality_delta_mean"] is None and report.metrics["quality_tasks"] == 0
+
+
+@pytest.mark.parametrize("verdicts", [("tie",), ("baseline",), ("unreliable",), ("candidate", "unreliable")])
+def test_no_judge_preference_or_a_blocking_verdict_never_carries_quality(verdicts):
+    rows = [judged(result, task_id=f"essay-{index}") for index, result in enumerate(verdicts)]
+    rows += [holdout(baseline_quality=90, candidate_quality=90)]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert not report.passed
+    assert "quality" in report.metrics["failed_constraints"]
+    assert report.metrics["quality_evidence"] is None
+
+
+def test_judge_preference_cannot_offset_a_deterministic_quality_regression():
+    rows = [
+        outcome(task_id="det-1", baseline_quality=90, candidate_quality=80),
+        judged("candidate", task_id="essay-1"),
+        holdout(baseline_quality=90, candidate_quality=90),
+    ]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert not report.passed
+    assert report.metrics["quality_evidence"] is None
+    assert any("quality delta" in reason for reason in report.reasons)
+
+
+def test_judged_tasks_still_count_for_task_success_and_tokens():
+    rows = [
+        outcome(task_id="det-1", baseline_quality=90, candidate_quality=94),
+        judged("candidate", task_id="essay-1", candidate_success=False),
+        holdout(baseline_quality=90, candidate_quality=94),
+    ]
+    report = PromotionPolicy().assess("c1", "hash", "v1", rows)
+    assert any("task success regressed" in reason for reason in report.reasons)
+    unmeasured = PromotionPolicy().assess("c1", "hash", "v1", [
+        outcome(task_id="det-1", baseline_quality=90, candidate_quality=94),
+        judged("tie", task_id="essay-1", token_usage_reported=False),
+        holdout(baseline_quality=90, candidate_quality=94),
+    ])
+    assert "token_efficiency" in unmeasured.metrics["failed_constraints"]

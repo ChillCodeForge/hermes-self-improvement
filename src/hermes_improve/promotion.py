@@ -17,7 +17,7 @@ from typing import Any, Sequence
 from .approvals import load_public_key, public_key_fingerprint, verify_promotion_approval
 from .errors import IntegrityError, PolicyRejected
 from .evaluation_signing import verify_report_signature
-from .models import CandidateType, Split, TaskOutcome, canonical_json, utc_now
+from .models import CandidateType, EvaluationReport, Split, TaskOutcome, canonical_json, utc_now
 from .policy import PromotionPolicy
 from .store import ExperimentStore
 from .target_paths import (
@@ -203,7 +203,9 @@ class GitPromoter:
     def _suite_of(item: dict[str, Any]) -> str:
         return evidence_suite_of(item)
 
-    def _check_evidence(self, candidate_id: str, candidate: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, str]:
+    def _check_evidence(
+        self, candidate_id: str, candidate: dict[str, Any], runs: list[dict[str, Any]],
+    ) -> tuple[dict[str, str], EvaluationReport]:
         latest = runs[-1]
         latest_suites = {self._suite_of(item) for item in latest["task_results"]}
         if "FULL" not in latest_suites or "SEALED_HOLDOUT" not in latest_suites:
@@ -242,7 +244,7 @@ class GitPromoter:
                 "regression policy rejects the evaluated Full/holdout evidence: "
                 + "; ".join(reassessment.reasons)
             )
-        return evidence_runs
+        return evidence_runs, reassessment
 
     def _promote_locked(self, candidate_id: str, release_name: str, manifest_key: bytes) -> dict[str, Any]:
         evidence = self.store.promotion_evidence(candidate_id)
@@ -257,7 +259,7 @@ class GitPromoter:
         runs = self._verified_runs(candidate_id, candidate, evaluation["id"])
         if candidate["experiment_policy_version"] != self.policy.version:
             raise PolicyRejected("experiment policy version differs from current promotion policy")
-        evidence_runs = self._check_evidence(candidate_id, candidate, runs)
+        evidence_runs, reassessment = self._check_evidence(candidate_id, candidate, runs)
         candidate_type = CandidateType(candidate["candidate_type"])
         experiment_id = str(candidate["experiment_id"])
         evaluation_metrics = json.loads(evaluation["metrics_json"])
@@ -313,7 +315,12 @@ class GitPromoter:
         ]
         removed_skills = removed_skill_units(deleted_paths)
         approval = None
-        if self.policy.requires_manual_approval(candidate_type, removed_skills=removed_skills):
+        # A quality gain that rests on judge-preferred subjective tasks only
+        # (policy F27) is never auto-promoted either.
+        judge_only_gain = reassessment.metrics.get("quality_evidence") == "judge"
+        if self.policy.requires_manual_approval(
+            candidate_type, removed_skills=removed_skills, judge_only_gain=judge_only_gain,
+        ):
             approval = verify_promotion_approval(
                 self.store.list_promotion_approvals(experiment_id),
                 experiment_id=experiment_id,

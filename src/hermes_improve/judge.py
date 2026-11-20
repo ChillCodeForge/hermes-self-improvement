@@ -4,7 +4,9 @@ The judge is only consulted when a benchmark has no deterministic verifiers
 and declares subjective criteria. It sees each pair twice with swapped
 positions; position-dependent answers, low confidence, high uncertainty and
 invalid JSON (after a bounded number of retries) all yield ``unreliable``.
-A judge verdict can block a candidate but never promote one on its own.
+A judge verdict can block a candidate; a positive one can carry the quality
+constraint only into the signed manual approval gate (``policy.py``), never
+into auto-promotion.
 """
 
 from __future__ import annotations

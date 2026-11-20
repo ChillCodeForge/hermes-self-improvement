@@ -336,8 +336,11 @@ connections, malformed HTTP responses, e.g. when Ollama restarts mid-run) are
 retried up to `max_attempts` per
 presentation and then yield `unreliable`; contradictory positions, confidence
 below 0.5 or uncertainty above 0.5 also yield `unreliable`. Verdicts across
-seeds must agree. A `baseline` or `unreliable` verdict adds a blocking reason;
-a `candidate` verdict changes nothing, so the judge can never promote alone.
+seeds must agree. A `baseline` or `unreliable` verdict adds a blocking reason.
+Judged tasks are excluded from the deterministic quality mean; a `candidate`
+verdict can satisfy the quality constraint only when the deterministic rows
+do not, and then only through the signed operator approval, so the judge can
+never auto-promote (`promotion.md`, "Judged tasks").
 Qwen roles share the endpoint but resolve their own model from `config/models.yaml`
 (`roles.<role>.model_env`, falling back to `QWEN_MODEL`; `QWEN_JUDGE_MODEL` for the
 judge), and keep separate statistics and logs (`QWEN_LOG_DIR/<role>.jsonl`, digests

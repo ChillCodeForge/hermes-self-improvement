@@ -225,7 +225,7 @@ def test_subjective_task_uses_blind_judge_and_baseline_preference_blocks(tmp_pat
     assert not report.passed
 
 
-def test_judge_preference_never_promotes_on_its_own(tmp_path):
+def test_judge_preference_alone_passes_only_into_the_manual_approval_gate(tmp_path):
     holdout = record("essay-holdout", split="SEALED_HOLDOUT", suites=("SEALED_HOLDOUT",), deterministic=False,
                      subjective=["names the root cause"])
     # A distinct prompt: near-duplicate tasks across splits are rejected as leakage.
@@ -246,8 +246,13 @@ def test_judge_preference_never_promotes_on_its_own(tmp_path):
             holdout_grant=access.evaluator_holdout_grant(Role.EVALUATOR),
         )
     assert {outcome.judge_result for outcome in report.outcomes} == {"candidate"}
-    assert not report.passed
-    assert any("quality delta" in reason for reason in report.reasons)
+    # Judged tasks no longer count as quality delta 0; the gain rests on the
+    # judge alone, so the evaluation passes but the promoter requires a signed
+    # operator approval (policy metrics, F27).
+    assert report.passed, report.reasons
+    assert report.metrics["quality_evidence"] == "judge"
+    assert report.metrics["quality_tasks"] == 0 and report.metrics["judged_final_tasks"] == 2
+    assert "operator approval" in report.metrics["manual_approval_reason"]
 
 
 def test_unreliable_judge_blocks_and_missing_judge_fails_closed(tmp_path):
