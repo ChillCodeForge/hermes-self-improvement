@@ -126,6 +126,10 @@ def monitoring_reference(manifest: Mapping[str, Any]) -> MonitoringReference:
     return MonitoringReference("baseline_metrics", None, "baseline", "per_success", baseline, excluded)
 
 
+class RollbackBlocked(RuntimeError):
+    """A regressed release cannot be rolled back automatically; an operator must act."""
+
+
 @dataclass(frozen=True)
 class ProductionObservation:
     release_id: str
@@ -519,14 +523,14 @@ class ReleaseMonitor:
         release = self.store.get_release(release_id)
         target = self.previous_release(release_id)
         if target is None:
-            self._audit(release_id, "ROLLBACK_BLOCKED", None, None, assessment, actor)
-            raise RuntimeError(
-                f"{release_id} regressed but has no earlier active release to roll back to; operator action required"
-            )
+            reason = "no earlier active release to roll back to; operator action required"
+            self._block(release_id, None, reason, assessment, actor)
+            raise RollbackBlocked(f"{release_id} regressed but has {reason}")
         active = _main_commit(promoter.repository)
         if active != release["manifest"].get("candidate_commit"):
-            self._audit(release_id, "ROLLBACK_BLOCKED", target, None, assessment, actor)
-            raise RuntimeError(f"{release_id} is not the active production release; refusing rollback")
+            reason = "not the active production release; refusing rollback"
+            self._block(release_id, target, reason, assessment, actor)
+            raise RollbackBlocked(f"{release_id} is {reason}")
         previous_commit = promoter.rollback(target, manifest_key=manifest_key)
         status = self.store.get_release(release_id)["status"]
         if status != "ROLLED_BACK":
@@ -659,6 +663,20 @@ class ReleaseMonitor:
                 advisory = key == latency_key and policy.latency_action == "warn"
                 failures.append(_Comparison(key, reason, severity, value, advisory))
         return failures, tuple(unavailable), tuple(unmeasured)
+
+    def _block(
+        self, release_id: str, target: str | None, reason: str,
+        assessment: MonitoringAssessment, actor: str,
+    ) -> None:
+        """Audit a blocked rollback in monitoring_actions and the release audit."""
+        action_id = self._audit(release_id, "ROLLBACK_BLOCKED", target, None, assessment, actor)
+        self.store.record_monitoring_event(release_id, "ROLLBACK_BLOCKED", {
+            "actor": actor.strip(),
+            "monitoring_action_id": action_id,
+            "reason": reason,
+            "assessment_reasons": list(assessment.reasons),
+            "target_release": target,
+        })
 
     def _audit(
         self, release_id: str, action: str, target: str | None, previous_commit: str | None,

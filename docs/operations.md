@@ -15,7 +15,10 @@ hermes-improve experiments list
 deployment link given by `--deployment-link` or the provisioned layout, else the release
 ledger, with any disagreement reported as `mismatch`), the active release and its status,
 and counts of experiments by decision, candidates, evaluation runs, releases by status,
-rollbacks, spent holdouts, queued sessions and public benchmarks.
+rollbacks, blocked rollbacks, spent holdouts, queued sessions and public benchmarks.
+When the monitor could not roll back the active release during its current activation,
+`active_release.rollback_blocked` shows when, why and the assessment reasons: the release
+stays `PROVISIONAL` and needs an operator.
 
 `HERMES_IMPROVE_HOME` selects the local state root (`experiments.sqlite3`,
 `sessions.sqlite3`, `monitoring.sqlite3`, `observability.sqlite3`,
@@ -348,8 +351,13 @@ baseline, checks that the regressing release is the active `main`, and calls
 `GitPromoter.rollback` (atomic link switch, release tags kept). Every applied
 or blocked action is audited in `monitoring_actions` (release, action, target,
 previous commit, reasons, metrics, actor UID). A regression without an
-earlier restorable release is recorded as `ROLLBACK_BLOCKED` and needs an
-operator. `monitor ingest` and `monitor replay` still mark a release `STABLE`
+earlier restorable release, or a regressing release that is not the active
+`main`, is recorded as `ROLLBACK_BLOCKED` and needs an operator; `--apply`
+then exits non-zero. The block is also appended to the release audit as a
+`ROLLBACK_BLOCKED` event (status unchanged; detail: actor, reason, assessment
+reasons, target, `monitoring_action_id`), so `releases events` lists it,
+`status` shows it on the active release and `report` counts it under
+`production.post_promotion_regressions.blocked_rollbacks`. `monitor ingest` and `monitor replay` still mark a release `STABLE`
 automatically once policy passes, but never roll back by themselves;
 `monitor collect` changes nothing without `--apply`.
 

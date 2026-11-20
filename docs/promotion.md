@@ -269,7 +269,9 @@ release_id, new_status, expected_status=..., reason=...)` is a compare-and-set
 along these transitions and appends a `STATUS_CHANGED` event. The `release_events`
 table is append-only; `hermes-improve releases events [--release brain-vN]`
 lists it. (`update_release_status`, used by the monitoring API, does not write
-events.) Post-promotion monitoring uses the `PROMOTED` and `REACTIVATED` events
+events.) A monitoring rollback that cannot be executed appends a
+`ROLLBACK_BLOCKED` event without changing the status
+(`ExperimentStore.record_monitoring_event`). Post-promotion monitoring uses the `PROMOTED` and `REACTIVATED` events
 as the release activation timeline when it attributes ingested Hermes sessions
 to a release (`monitor collect`, see `operations.md`).
 

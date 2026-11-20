@@ -710,6 +710,21 @@ class ExperimentStore:
                 {"actor": actor, "reason": reason.strip()},
             )
 
+    # Audit events that record a decision about a release without changing its status.
+    MONITORING_RELEASE_EVENTS = frozenset({"ROLLBACK_BLOCKED"})
+
+    def record_monitoring_event(self, release_id: str, event: str, detail: dict[str, Any]) -> None:
+        """Append a status-preserving monitoring event (e.g. a blocked rollback)
+        to the release audit, so ``releases events`` and ``status`` show it."""
+        if event not in self.MONITORING_RELEASE_EVENTS:
+            raise ValueError(f"unsupported monitoring release event: {event!r}")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status FROM releases WHERE id=?", (release_id,)).fetchone()
+            if row is None:
+                raise KeyError(release_id)
+            self._append_release_event(db, release_id, event, row["status"], row["status"], detail)
+
     def list_release_events(self, release_id: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM release_events"
         parameters: tuple[Any, ...] = ()
