@@ -34,6 +34,8 @@ require_token_measurement: true
 # A candidate whose diff deletes a brain/skills/<name>/SKILL.md (Curator
 # archive, delete, consolidate; any merge or split that drops a skill) always
 # needs the signed operator approval, whatever its type gate says here.
+# So does a candidate whose quality gain rests on judge-preferred subjective
+# tasks only (docs/promotion.md, "Judged tasks").
 promotion_gates:
   SKILL_CREATE: auto
   SKILL_PATCH: auto

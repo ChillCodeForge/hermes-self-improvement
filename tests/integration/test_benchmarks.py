@@ -171,7 +171,7 @@ def test_benchmark_metadata_fields_are_validated(section, field, value, message)
 def test_hard_benchmark_requires_strong_ground_truth():
     invalid = data("weak-hard-benchmark", "TRAIN")
     invalid["verification"]["deterministic"] = []
-    with pytest.raises(ValueError, match="deterministic verification or structured ground truth"):
+    with pytest.raises(ValueError, match="deterministic verification or, for judge-graded tasks"):
         Benchmark.from_dict(invalid)
 
 

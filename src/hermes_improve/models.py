@@ -39,6 +39,11 @@ def candidate_digest(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+#: ``ground_truth.type`` of a judge-graded benchmark: no deterministic checks,
+#: the subjective criteria are the rubric the blind pairwise judge applies.
+JUDGE_GROUND_TRUTH_TYPE = "llm_judge"
+
+
 class Split(StrEnum):
     TRAIN = "TRAIN"
     VALIDATION = "VALIDATION"
@@ -162,6 +167,8 @@ class Benchmark:
         ):
             if not isinstance(data[section].get(key), list):
                 raise ValueError(f"benchmark {section}.{key} must be an array")
+        from .deliverables import validate_subjective_criteria
+        validate_subjective_criteria(data["verification"]["subjective"])
         difficulty = data["taxonomy"].get("difficulty")
         if not isinstance(difficulty, str) or not difficulty.strip():
             raise ValueError("benchmark taxonomy.difficulty must be a non-empty string")
@@ -195,13 +202,23 @@ class Benchmark:
                 raise ValueError("hard benchmarks require a successful replay")
             if confidence < 0.8:
                 raise ValueError("hard benchmarks require ground-truth confidence of at least 0.8")
-            structured_result = data["ground_truth"].get("structured_result")
-            if not data["verification"]["deterministic"] and not (
-                isinstance(structured_result, Mapping) and structured_result
-            ):
-                raise ValueError(
-                    "hard benchmarks require deterministic verification or structured ground truth"
-                )
+            # Without deterministic checks the only verifier is the blind
+            # pairwise judge, so the ground truth is the author's subjective
+            # rubric graded by it: ``ground_truth.type`` must say so
+            # (``llm_judge``) and the rubric must exist. ``structured_result``
+            # is descriptive metadata that no verifier reads; it no longer
+            # stands in for checks.
+            if not data["verification"]["deterministic"]:
+                if ground_truth_type != JUDGE_GROUND_TRUTH_TYPE:
+                    raise ValueError(
+                        "hard benchmarks require deterministic verification or, for judge-graded "
+                        f"tasks, ground_truth.type {JUDGE_GROUND_TRUTH_TYPE!r} with subjective criteria"
+                    )
+                if not data["verification"]["subjective"]:
+                    raise ValueError(
+                        f"hard benchmarks with {JUDGE_GROUND_TRUTH_TYPE!r} ground truth require "
+                        "subjective criteria (the judge rubric)"
+                    )
         from .ingestion import contains_secret_material
         if contains_secret_material(data):
             raise ValueError("benchmark contains unredacted credential-like material")
@@ -372,6 +389,9 @@ class RunObservation:
     filesystem_changes: tuple[str, ...] = ()
     trajectory_digest: str = ""
     diff_digest: str = ""
+    # Files declared by subjective criteria (``verification.subjective[].files``),
+    # captured from the result workspace for the judge (``deliverables.py``).
+    deliverables: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

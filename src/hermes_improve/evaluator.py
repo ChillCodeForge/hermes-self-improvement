@@ -9,6 +9,7 @@ from .artifacts import ArtifactStore
 from .benchmarks import BenchmarkStore
 from .errors import IntegrityError
 from .evaluation_signing import sign_report
+from .deliverables import declared_deliverables, validate_deliverables
 from .judge import JudgeVerdict, PairwiseJudge, aggregate_verdicts
 from .metrics import efficiency_report
 from .models import (
@@ -105,8 +106,10 @@ class PairedEvaluator:
     The evaluator orchestrates an injected runner; it does not itself sandbox
     candidate execution. Deterministic verifier results always take precedence:
     the judge is only consulted for benchmarks without deterministic checks
-    that declare subjective criteria, and its verdict can only add blocking
-    reasons, never make a candidate pass.
+    that declare subjective criteria. A `baseline` or `unreliable` verdict
+    adds a blocking reason here; the policy leaves judged tasks out of the
+    deterministic quality mean and lets a `candidate` verdict carry quality
+    only into the signed manual approval gate, never into auto-promotion.
     """
 
     def __init__(
@@ -233,6 +236,14 @@ class PairedEvaluator:
                     raise IntegrityError(
                         f"runner did not report deterministic verifier results for {benchmark.id!r}"
                     )
+                declared = declared_deliverables(benchmark.verification)
+                if any(
+                    tuple(item["path"] for item in run.deliverables) != declared
+                    for run in (baseline, candidate_run)
+                ):
+                    raise IntegrityError(
+                        f"runner did not capture the deliverable files declared by {benchmark.id!r}"
+                    )
                 observations[(benchmark.id, "baseline")].append(baseline)
                 observations[(benchmark.id, "candidate")].append(candidate_run)
                 all_observations.extend((baseline, candidate_run))
@@ -325,6 +336,8 @@ class PairedEvaluator:
                 criteria=criteria,
                 baseline_output=baseline.final_output,
                 candidate_output=candidate_run.final_output,
+                baseline_files=baseline.deliverables,
+                candidate_files=candidate_run.deliverables,
             )
             for baseline, candidate_run in zip(baseline_runs, candidate_runs)
         ]
@@ -433,6 +446,8 @@ class PairedEvaluator:
             for item in observation.verifier_results
         ):
             raise IntegrityError("runner returned malformed verifier results")
+        if not validate_deliverables(observation.deliverables):
+            raise IntegrityError("runner returned malformed deliverable files")
         if observation.verifier_results and observation.deterministic_pass != all(
             item["passed"] for item in observation.verifier_results
         ):

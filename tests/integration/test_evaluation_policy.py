@@ -28,7 +28,10 @@ def record(identifier, *, split="REGRESSION", suites=("SMOKE", "CORE", "FULL"), 
         "environment": {"type": "fixture"},
         "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0, "replay_verified": True},
         "verification": {"deterministic": ["exit_code"] if deterministic else [], "subjective": list(subjective)},
-        "ground_truth": {"type": "structured", "confidence": 1.0, "structured_result": {"incident": identifier}},
+        "ground_truth": (
+            {"type": "structured", "confidence": 1.0, "structured_result": {"incident": identifier}}
+            if deterministic else {"type": "llm_judge", "confidence": 0.9}
+        ),
         "benchmark": {"split": split, "suites": list(suites), "cluster_id": identifier, "criticality": "normal"},
         "security": {"sanitized": True, "contains_secrets": False},
     }
@@ -222,7 +225,7 @@ def test_subjective_task_uses_blind_judge_and_baseline_preference_blocks(tmp_pat
     assert not report.passed
 
 
-def test_judge_preference_never_promotes_on_its_own(tmp_path):
+def test_judge_preference_alone_passes_only_into_the_manual_approval_gate(tmp_path):
     holdout = record("essay-holdout", split="SEALED_HOLDOUT", suites=("SEALED_HOLDOUT",), deterministic=False,
                      subjective=["names the root cause"])
     # A distinct prompt: near-duplicate tasks across splits are rejected as leakage.
@@ -243,8 +246,13 @@ def test_judge_preference_never_promotes_on_its_own(tmp_path):
             holdout_grant=access.evaluator_holdout_grant(Role.EVALUATOR),
         )
     assert {outcome.judge_result for outcome in report.outcomes} == {"candidate"}
-    assert not report.passed
-    assert any("quality delta" in reason for reason in report.reasons)
+    # Judged tasks no longer count as quality delta 0; the gain rests on the
+    # judge alone, so the evaluation passes but the promoter requires a signed
+    # operator approval (policy metrics, F27).
+    assert report.passed, report.reasons
+    assert report.metrics["quality_evidence"] == "judge"
+    assert report.metrics["quality_tasks"] == 0 and report.metrics["judged_final_tasks"] == 2
+    assert "operator approval" in report.metrics["manual_approval_reason"]
 
 
 def test_unreliable_judge_blocks_and_missing_judge_fails_closed(tmp_path):
@@ -287,3 +295,63 @@ def test_cheaper_failure_ignores_unmeasured_token_counts():
         observation("c", 1, success=False, tokens=0, reported=False),
     )]
     assert efficiency_report(pairs)["cheaper_failures"] == []
+
+
+def file_task():
+    return record("incident-file", deterministic=False, subjective=[
+        {"criterion": "Starts with an INCIDENT headline.", "files": ["incident.md"]},
+    ])
+
+
+class FileRunner(Runner):
+    """Both arms reply "done"; only the deliverable file differs (lab finding F24)."""
+
+    def __init__(self, files=None, **kwargs):
+        super().__init__(outputs={"base": "done", "candidate": "done"}, **kwargs)
+        self.files = files
+
+    def run(self, commit, task, seed):
+        from dataclasses import replace
+        content = "INCIDENT: api - 503" if commit == "candidate" else "something broke"
+        files = self.files if self.files is not None else (
+            {"path": "incident.md", "status": "ok", "bytes": len(content), "sha256": "", "content": content},
+        )
+        return replace(super().run(commit, task, seed), deliverables=files)
+
+
+def judge_preferring_file(content):
+    def reply(body):
+        payload = json.loads(body["messages"][1]["content"])
+        return judge_verdict("A" if payload["files_A"][0]["content"] == content else "B")
+    return reply
+
+
+def test_judge_grades_declared_deliverable_files_not_only_the_chat_reply(tmp_path):
+    store, _ = store_with(tmp_path, [file_task()])
+    with OpenAIStub(judge_preferring_file("INCIDENT: api - 503")) as stub:
+        report = evaluate(store, FileRunner(), ids=("incident-file",), judge=judge_for(stub))
+    assert report.outcomes[0].judge_result == "candidate"
+    assert not any("unreliable" in reason for reason in report.reasons)
+    payload = json.loads(stub.requests[0]["messages"][1]["content"])
+    assert payload["response_A"] == payload["response_B"] == "done"
+    assert {payload["files_A"][0]["content"], payload["files_B"][0]["content"]} == {
+        "INCIDENT: api - 503", "something broke",
+    }
+    stored = [row.deliverables for row in report.run_observations]
+    assert all(row and row[0]["path"] == "incident.md" for row in stored)
+
+
+@pytest.mark.parametrize(
+    ("files", "message"),
+    [
+        ((), "did not capture the deliverable files"),
+        (({"path": "incident.md", "status": "ok", "bytes": 1, "sha256": "", "content": "x", "x": 1},),
+         "malformed deliverable files"),
+    ],
+)
+def test_runner_must_report_exactly_the_declared_deliverables(tmp_path, files, message):
+    store, _ = store_with(tmp_path, [file_task()])
+    with OpenAIStub(lambda body: judge_verdict("A")) as stub:
+        with pytest.raises(IntegrityError, match=message):
+            evaluate(store, FileRunner(files=files), ids=("incident-file",), judge=judge_for(stub))
+    assert stub.requests == []

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .artifacts import ArtifactStore
+from .deliverables import collect_deliverables, declared_deliverables
 from .ingestion import redact_text
 from .models import Benchmark, RunObservation, Split, canonical_json
 from .replay import fixture_tree_digest
@@ -225,6 +226,7 @@ class SandboxCommandRunner:
                 command_timeout=timeout,
             )
             verification = run_deterministic_verification(benchmark, context, self.registry)
+            deliverables = collect_deliverables(declared_deliverables(benchmark.verification), workspace)
             changes = compute_changes(source, workspace, special)
             diff = unified_diff(source, workspace, changes) if result.snapshot is not None else ""
             diff_digest, _ = self.artifacts.put(redact_text(diff).encode("utf-8"))
@@ -271,6 +273,7 @@ class SandboxCommandRunner:
             verifier_results=tuple(verification.summaries()),
             filesystem_changes=changes.entries(),
             diff_digest=diff_digest,
+            deliverables=deliverables,
         )
 
     def _check_command_benchmark_allowed(self, benchmark: Benchmark) -> None:

@@ -17,7 +17,7 @@ A benchmark record is a JSON (`.json`) or YAML (`.yaml`/`.yml`) object with
    container_image, network_policy, input_data, command, cwd,
    timeout_seconds}`, `eligibility{class, reproducibility_score,
    replay_verified, replay_evidence}`, `verification{deterministic,
-   subjective}`, `ground_truth{type, confidence, expected_exit_code,
+   subjective[]: string or {criterion, files}}`, `ground_truth{type, confidence, expected_exit_code,
    structured_result}`, `benchmark{split, suites, cluster_id, criticality,
    impact_areas}`, `security{sanitized, contains_secrets}`. Unknown top-level
    keys are rejected; sections may carry additional runner-specific keys.
@@ -79,6 +79,38 @@ similarity clustering → proposal. `benchmarks mine` clusters the session
 against the public corpus, so a session similar to an existing benchmark
 inherits its `cluster_id`. Mining never admits a benchmark.
 
+### Judge benchmarks (no deterministic checks)
+
+`Benchmark.from_dict` requires every `HARD_BENCHMARK` to have deterministic
+checks, or to be a **judge benchmark**: `ground_truth.type: llm_judge`,
+non-empty `verification.subjective` (the rubric the blind pairwise judge
+applies) and, like every hard record, `ground_truth.confidence` ≥ 0.8 (the
+author's confidence in the rubric). `ground_truth.structured_result` is
+descriptive metadata only; no verifier reads it, so it no longer stands in
+for checks (records that relied on it must switch to `llm_judge` or add
+deterministic checks). A hard record with neither checks nor `llm_judge`
+ground truth is rejected.
+
+The classifier keeps ranking LLM-judge ground truth 6 for mined sessions
+(always at most SOFT). For an authored judge benchmark, `assess_benchmark`
+makes one exception: with a successful replay, score ≥ 0.8 and rubric
+confidence ≥ 0.8 it may be `HARD_BENCHMARK` (reason "pairwise judge
+benchmark"). The evidence is a blind, position-swapped pairwise comparison,
+not an absolute grade, and the promotion policy never lets a gain resting on
+judged tasks auto-promote: it needs the signed operator approval
+(`promotion.md`). Without tests the score is at most 0.85.
+
+```json
+"verification": {"deterministic": [], "subjective": [
+  "Starts with 'INCIDENT: <service> - <impact>'.",
+  "Blameless and factual."
+]},
+"ground_truth": {"type": "llm_judge", "confidence": 0.9}
+```
+
+A subjective criterion is a string or an object `{"criterion": "...",
+"files": [...]}`; `files` names deliverable files the judge receives (see
+"Deliverable files" in `evaluation.md`).
 ## Deduplication and clustering
 
 `hermes_improve.clustering` provides five layers:

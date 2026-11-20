@@ -75,7 +75,8 @@ SEALED_HOLDOUT rows.
 7. **Category regressions**: per category, the pooled mean delta of final rows
    must not drop by more than `max_category_drop` (2.0).
 8. **Quality**: pooled final-row mean delta at least `min_quality_delta` (3.0)
-   and the 95% CI lower bound not below 0.
+   and the 95% CI lower bound not below 0, over the *deterministic* final
+   rows only (see "Judged tasks" below).
 9. **Token efficiency**: if any final row has `token_usage_reported=False`,
    the constraint cannot be evaluated. With `require_token_measurement: true`
    (default) that is a blocking reason "token efficiency not measured: runner
@@ -99,6 +100,41 @@ rows, and the pooled 95% CI lower bound of the quality delta strictly above
 (both default 3.0, i.e. the whole interval clears the minimum quality delta).
 `metrics.token_exception_applied` and `metrics.latency_exception_applied` record
 its use; `null` disables an exception.
+
+### Judged tasks (subjective only)
+
+A task routed to the pairwise judge (`TaskOutcome.judge_result` non-empty) has
+no deterministic quality: its quality is the exit-code check, the same for
+both arms when both finish. Before this rule such rows counted as delta 0 and
+diluted the pooled mean of mixed sets, and a `candidate` verdict could never
+help (lab finding F27). Now:
+
+- Judged rows are excluded from every quality mean: pooled quality (8), the
+  holdout delta (6) and category drops (7). `metrics.quality_tasks` and
+  `metrics.judged_final_tasks` count both kinds; `quality_delta_mean` is
+  `null` when no deterministic final row exists. Judged rows still count for
+  security, deterministic correctness, regressions, task success, tokens and
+  latency.
+- If the deterministic rows meet the quality constraint on their own, the
+  verdicts change nothing (`metrics.quality_evidence: "deterministic"`).
+- Otherwise the constraint is met *only for manual approval* when at least one
+  judged final row is `candidate`, no judged final row is `baseline` or
+  `unreliable`, and the deterministic rows (if any) show no regression (mean
+  delta and CI lower bound ≥ 0). The report then passes with
+  `metrics.quality_evidence: "judge"` and a `metrics.manual_approval_reason`;
+  the promoter re-assesses the evidence and requires the signed operator
+  approval whatever the type gate says
+  (`requires_manual_approval(..., judge_only_gain=True)`), and `approve`
+  accepts such an experiment.
+- A `baseline` or `unreliable` verdict keeps blocking (evaluator reason), and
+  ties alone never carry quality.
+
+`policy_version` stays `"1"`: the promoter re-assesses the stored FULL and
+holdout rows with the current code at promotion time, so the stricter gate
+(approval for judge-only gains) also applies to evaluations recorded earlier,
+and a gain that rested on deterministic rows passes at least as before.
+Operators who want such earlier evaluations re-run anyway bump
+`policy_version` in their protected config.
 
 A stored task row that predates `TaskOutcome.token_usage_reported` is read as
 unmeasured (the field defaults to `false`), so re-assessment at promotion time
@@ -137,6 +173,8 @@ Checks, in order. Any failure aborts before Git or the deployment changes:
    diff hash equals the evaluated one, no protected paths, only `brain/`
    paths, changed paths equal the declared target units, no case collisions.
 8. Type gate: auto types pass; manual types need a valid operator approval.
+   A re-assessment whose quality gain rests on judged tasks only
+   (`quality_evidence: "judge"`) needs the approval as well.
    A candidate whose verified diff deletes a `brain/skills/<name>/SKILL.md`
    (`git diff --no-renames --diff-filter=D`) removes a skill and needs the
    approval as well, whatever its type gate says (see "Skill removal").
@@ -161,8 +199,10 @@ HERMES_OPERATOR_PRIVATE_KEY=operator.pem \
   hermes-improve approve <experiment-id> --operator alice --rationale "..."
 ```
 
-Only experiments with a passing evaluation and a manually gated type, or a
-candidate that removes a skill (pass `--repository REPO`), can be approved. The Ed25519-signed payload binds `experiment_id`, `candidate_id`,
+Only experiments with a passing evaluation and a manually gated type, a
+latest evaluation whose quality gain rests on judged tasks only
+(`metrics.quality_evidence: "judge"`), or a candidate that removes a skill
+(pass `--repository REPO`), can be approved. The Ed25519-signed payload binds `experiment_id`, `candidate_id`,
 `candidate_hash`, `candidate_type`, `policy_version`, operator, rationale,
 key fingerprint and time. Approvals are stored in `promotion_approvals`, which
 rejects UPDATE and DELETE with triggers. The promoter accepts only approvals

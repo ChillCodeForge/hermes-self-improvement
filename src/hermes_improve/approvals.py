@@ -10,6 +10,7 @@ Approvals are stored append-only.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -75,14 +76,21 @@ def approve_promotion(
     if candidate["experiment_decision"] != "passed" or not evidence["evaluation"]["passed"]:
         raise PolicyRejected("only experiments with a passing completed evaluation can be approved")
     candidate_type = CandidateType(candidate["candidate_type"])
+    # The promoter re-assesses the signed evidence; the latest evaluation's
+    # policy metrics tell whether its quality gain rests on judged tasks only.
+    judge_only_gain = _judge_only_gain(evidence["evaluation"])
     removed_skills: tuple[str, ...] = ()
-    if not policy.requires_manual_approval(candidate_type) and repository is not None:
+    if not policy.requires_manual_approval(candidate_type, judge_only_gain=judge_only_gain) and (
+        repository is not None
+    ):
         from .candidate_builder import removed_skills_in_candidate
 
         removed_skills = removed_skills_in_candidate(
             repository, str(candidate["base_commit"]), str(candidate["commit_id"]),
         )
-    if not policy.requires_manual_approval(candidate_type, removed_skills=removed_skills):
+    if not policy.requires_manual_approval(
+        candidate_type, removed_skills=removed_skills, judge_only_gain=judge_only_gain,
+    ):
         hint = "" if repository is not None else (
             "; pass the candidate repository to approve a candidate that removes a skill"
         )
@@ -109,6 +117,14 @@ def approve_promotion(
     signature = key.sign(canonical_json(payload).encode("utf-8")).hex()
     approval_id = store.record_promotion_approval(payload, signature)
     return {"approval_id": approval_id, **payload, "signature": signature}
+
+
+def _judge_only_gain(evaluation: Mapping[str, Any]) -> bool:
+    try:
+        metrics = json.loads(evaluation.get("metrics_json") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(metrics, dict) and metrics.get("quality_evidence") == "judge"
 
 
 def verify_promotion_approval(
