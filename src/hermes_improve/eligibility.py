@@ -30,7 +30,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from .models import Benchmark, Eligibility
+from .models import JUDGE_GROUND_TRUTH_TYPE, Benchmark, Eligibility
 
 
 class GroundTruthSource(StrEnum):
@@ -222,6 +222,8 @@ def benchmark_factors(benchmark: Benchmark) -> tuple[ReproducibilityFactors, Gro
         signals.append(GroundTruthSource.STRUCTURED_RESULT)
     if benchmark.ground_truth.get("human_accepted") is True:
         signals.append(GroundTruthSource.HUMAN_ACCEPTED)
+    if _is_judge_benchmark(benchmark):
+        signals.append(GroundTruthSource.LLM_JUDGE)
     ground_truth = rank_ground_truth(signals)
     factors = ReproducibilityFactors(
         git_commit_present=(
@@ -246,8 +248,48 @@ def benchmark_factors(benchmark: Benchmark) -> tuple[ReproducibilityFactors, Gro
 
 
 def assess_benchmark(benchmark: Benchmark) -> EligibilityDecision:
+    """Classify an authored record.
+
+    One deliberate exception to "only ranks 1-3 back a hard benchmark": an
+    authored judge benchmark (no deterministic checks, subjective criteria as
+    rubric, ``ground_truth.type: llm_judge`` with confidence >= 0.8) may be
+    HARD. Its evidence is a blind, position-swapped pairwise comparison, not
+    an absolute grade, and the promotion policy never lets such evidence
+    auto-promote (it needs the signed operator approval). Mined sessions with
+    an LLM-judge signal stay SOFT (``assess_session``).
+    """
     factors, ground_truth = benchmark_factors(benchmark)
-    return classify(factors, ground_truth)
+    decision = classify(factors, ground_truth)
+    if (
+        ground_truth is GroundTruthSource.LLM_JUDGE
+        and decision.eligibility is Eligibility.SOFT_BENCHMARK
+        and factors.replay_successful
+        and decision.reproducibility_score >= HARD_SCORE_THRESHOLD
+        and _judge_rubric_confidence(benchmark) >= HARD_SCORE_THRESHOLD
+    ):
+        reasons = tuple(
+            reason for reason in decision.reasons if not reason.startswith("ground truth llm_judge")
+        ) + ("pairwise judge benchmark: authored subjective rubric; judge-only gains need operator approval",)
+        decision = EligibilityDecision(
+            eligibility=Eligibility.HARD_BENCHMARK,
+            reproducibility_score=decision.reproducibility_score,
+            ground_truth=ground_truth,
+            ground_truth_confidence=decision.ground_truth_confidence,
+            reasons=reasons,
+        )
+    return decision
+
+
+def _is_judge_benchmark(benchmark: Benchmark) -> bool:
+    return (
+        benchmark.ground_truth.get("type") == JUDGE_GROUND_TRUTH_TYPE
+        and _non_empty_list(benchmark.verification.get("subjective"))
+    )
+
+
+def _judge_rubric_confidence(benchmark: Benchmark) -> float:
+    value = benchmark.ground_truth.get("confidence")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _mapping(value: object) -> Mapping[str, Any]:

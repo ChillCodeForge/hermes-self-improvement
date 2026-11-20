@@ -269,7 +269,10 @@ def _benchmark(identifier, split, suites, impact_areas=None, *, subjective=False
             {"deterministic": [], "subjective": ["names the root cause"]} if subjective
             else {"deterministic": ["exit_code"], "subjective": []}
         ),
-        "ground_truth": {"type": "structured", "confidence": 1.0, "structured_result": {"task": identifier}},
+        "ground_truth": (
+            {"type": "llm_judge", "confidence": 0.9} if subjective
+            else {"type": "structured", "confidence": 1.0, "structured_result": {"task": identifier}}
+        ),
         "benchmark": {
             "split": split, "suites": suites, "cluster_id": identifier, "criticality": "normal",
             **({"impact_areas": impact_areas} if impact_areas else {}),

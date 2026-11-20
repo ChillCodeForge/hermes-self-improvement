@@ -28,7 +28,10 @@ def record(identifier, *, split="REGRESSION", suites=("SMOKE", "CORE", "FULL"), 
         "environment": {"type": "fixture"},
         "eligibility": {"class": "HARD_BENCHMARK", "reproducibility_score": 1.0, "replay_verified": True},
         "verification": {"deterministic": ["exit_code"] if deterministic else [], "subjective": list(subjective)},
-        "ground_truth": {"type": "structured", "confidence": 1.0, "structured_result": {"incident": identifier}},
+        "ground_truth": (
+            {"type": "structured", "confidence": 1.0, "structured_result": {"incident": identifier}}
+            if deterministic else {"type": "llm_judge", "confidence": 0.9}
+        ),
         "benchmark": {"split": split, "suites": list(suites), "cluster_id": identifier, "criticality": "normal"},
         "security": {"sanitized": True, "contains_secrets": False},
     }

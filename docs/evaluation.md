@@ -322,7 +322,10 @@ efficiency not measured" (see `promotion.md`).
 ## Judge (`judge.py`, `src/hermes_improve/prompts/judge/`)
 
 The `qwen_judge` role is used only for benchmarks with no deterministic checks
-and non-empty `verification.subjective`; if such a benchmark is selected
+and non-empty `verification.subjective`. Evaluation only accepts
+`HARD_BENCHMARK` tasks; a judge task is hard when its `ground_truth.type` is
+`llm_judge` with confidence ≥ 0.8 (rule and rationale in `benchmarking.md`,
+"Judge benchmarks"); `structured_result` does not qualify. If such a benchmark is selected
 without `--judge`, evaluation fails before running anything (the CLI refuses
 before it records any `suite_selection`/`needs_qwen` decision). Each paired run is
 presented twice (A=baseline/B=candidate, then swapped) with only the task,
