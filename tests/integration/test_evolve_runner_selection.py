@@ -152,7 +152,7 @@ def test_evolve_refuses_the_holdout_with_any_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.EvaluationGateway, "holdout_available", property(lambda self: True))
     _evolve(monkeypatch, fixture, "--runner", "hermes")
     with pytest.raises(AccessDenied, match="never see sealed holdout"):
-        cli.main()
+        cli.run()
     assert model.calls == []
 
 
@@ -170,7 +170,7 @@ def test_evolve_refuses_a_holdout_root_smuggled_onto_the_arguments(tmp_path, mon
     monkeypatch.setattr(cli, "build_parser", parser_with_holdout)
     _evolve(monkeypatch, fixture)
     with pytest.raises(AccessDenied, match="holdout"):
-        cli.main()
+        cli.run()
     assert built == [] and model.calls == []
 
 
@@ -181,7 +181,7 @@ def test_evolve_local_runner_requires_the_isolation_acknowledgement(tmp_path, mo
     monkeypatch.setattr(cli, "build_runner", _ORIGINAL_BUILD_RUNNER)
     _evolve(monkeypatch, fixture, "--runner", "local")
     with pytest.raises(ValueError, match="--acknowledge-no-container-isolation"):
-        cli.main()
+        cli.run()
     assert model.calls == []
 
 
@@ -195,5 +195,5 @@ def test_evolve_hermes_runner_validates_its_options_like_evaluate(tmp_path, monk
         "--model", "m", "--model-base-url", "http://127.0.0.1:1", "--network", "n", "--network-allow", "a:1",
     )
     with pytest.raises(ValueError, match="networking disabled"):
-        cli.main()
+        cli.run()
     assert model.calls == []

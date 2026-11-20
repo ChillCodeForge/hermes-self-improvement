@@ -81,7 +81,7 @@ def test_evolve_cli_rejects_unknown_settings_before_any_model_call(tmp_path, mon
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo), "--settings", str(settings),
     ])
     with pytest.raises(ValueError, match="unknown evolution settings"):
-        cli.main()
+        cli.run()
     assert model.calls == []
 
 
@@ -93,7 +93,7 @@ def test_evolve_cli_gepa_strategy_requires_pinned_package(tmp_path, monkeypatch)
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo), "--strategy", "gepa",
     ])
     with pytest.raises(RuntimeError, match="pinned"):
-        cli.main()
+        cli.run()
 
 
 def _raise_version_error(self, model):
@@ -147,7 +147,7 @@ def test_candidate_generate_cli_creates_candidates_from_selected_proposals(tmp_p
         "--proposal-file", str(proposals), *sum((["--proposal-index", "0"] for _ in range(2)), []),
     ])
     with pytest.raises(ValueError, match="distinct"):
-        cli.main()
+        cli.run()
 
 
 def test_candidate_subcommands_coexist_and_dispatch_without_foreign_attributes(tmp_path, monkeypatch, capsys):
@@ -211,7 +211,7 @@ def test_evolve_cli_fails_closed_without_an_isolation_layout(tmp_path, monkeypat
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo),
     ])
     with pytest.raises(PermissionError, match="no provisioned isolation layout"):
-        cli.main()
+        cli.run()
     assert model.calls == []
     assert git(fixture.repo, "branch", "--list", "candidate/*").split() == ["candidate/root-exp"]
 
@@ -234,18 +234,18 @@ def test_evolve_cli_runs_as_agent_and_refuses_paths_outside_the_agent_boundary(t
             "hermes-improve", "evolve", fixture.root_id, "--repository", str(repository),
         ])
         with pytest.raises(PermissionError, match="agent repository must be"):
-            cli.main()
+            cli.run()
     # Benchmarks and agent state must be the provisioned public and agent paths.
     monkeypatch.setattr(sys, "argv", [
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(root / "brain" / "candidates.git"),
     ])
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(tmp_path / "benchmarks"))
     with pytest.raises(PermissionError, match="benchmarks_public must be the provisioned path"):
-        cli.main()
+        cli.run()
     monkeypatch.setenv("HERMES_IMPROVE_BENCHMARKS", str(root / "benchmarks" / "public"))
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(root / "ledger"))
     with pytest.raises(PermissionError, match="agent_state must be the provisioned path"):
-        cli.main()
+        cli.run()
     assert set(roles) == {"agent"} and model.calls == []
 
 
@@ -274,5 +274,5 @@ def test_evolve_cli_refuses_a_gateway_that_could_reach_the_holdout(tmp_path, mon
         "hermes-improve", "evolve", fixture.root_id, "--repository", str(fixture.repo),
     ])
     with pytest.raises(AccessDenied, match="never see sealed holdout"):
-        cli.main()
+        cli.run()
     assert model.calls == []

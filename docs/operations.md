@@ -43,6 +43,18 @@ unless noted.
 | Post-promotion | `monitor collect RELEASE [--apply ...]`, `monitor ingest FILE`, `monitor replay RELEASE ...`, `monitor evaluate RELEASE [--apply ...]` | Collects evidence (ingested Hermes sessions, collector files, shadow replay) and stabilizes or rolls back a provisional release. |
 | Training data | `decisions export [--labeled-only] [--output FILE]`, `decisions backfill ID ...` | Laya decision dataset (see `laya-future.md`). |
 
+**Errors and exit codes.** Expected refusals print one line, `error: MESSAGE`,
+to stderr and exit with status 1: invalid operator input (`ValueError`, for
+example `rollback` of the release that is already active), unknown records
+(`error: not found: 'brain-v9'`), missing files, a wrong role identity or
+missing key (`PermissionError`, `RuntimeError`), integrity, access and policy
+refusals (`IntegrityError`, `AccessDenied`, `PolicyRejected`) and a blocked
+monitoring rollback (`RollbackBlocked`, also visible in `releases events` and
+`status`). Usage errors exit with status 2 (argparse). Any other exception is
+a bug and keeps its Python traceback; `HERMES_IMPROVE_DEBUG=1` shows the
+traceback for expected refusals too. Scripts calling the package in-process
+use `hermes_improve.cli.run(argv)`, which raises instead of printing.
+
 ## Hermes plugin (opt-in observers)
 
 Install this package into the same Python environment as Hermes Agent and

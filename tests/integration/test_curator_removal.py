@@ -404,7 +404,7 @@ def test_benchmarks_for_a_removed_skill_still_run_and_surface_as_regressions(bra
             "hermes-improve", "evaluate", "cand-arch", "--repository", str(brain),
             "--holdout-root", str(holdout_root), "--suite", suite,
         ])
-        return cli.main()
+        return cli.run()
 
     assert evaluate("SMOKE") == 0
     # The regressing SMOKE evidence makes the archive candidate a non-finalist: the

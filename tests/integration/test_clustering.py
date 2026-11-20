@@ -87,7 +87,7 @@ def test_train_holdout_similarity_leakage_is_rejected_by_store_validation(tmp_pa
 
 
 def test_admission_rejects_similar_task_in_another_split(tmp_path, monkeypatch):
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     (root / "train").mkdir(parents=True)
@@ -100,7 +100,7 @@ def test_admission_rejects_similar_task_in_another_split(tmp_path, monkeypatch):
         "hermes-improve", "benchmarks", "add", str(source), "--holdout-root", str(tmp_path / "holdout"),
     ])
     with pytest.raises(ValueError, match="similar benchmarks must share one split"):
-        main()
+        run()
     assert not (root / "regression").exists() or not any((root / "regression").iterdir())
 
 

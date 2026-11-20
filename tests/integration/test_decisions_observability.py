@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from hermes_improve.cli import main
+from hermes_improve.cli import main, run
 from hermes_improve.decisions import DecisionRecorder, record_decision
 from hermes_improve.ingestion import SessionQueue
 from hermes_improve.monitoring import MonitoringPolicy, ProductionObservation, ReleaseMonitor
@@ -87,7 +87,7 @@ def test_cli_decisions_backfill_and_export_jsonl(tmp_path, monkeypatch, capsys):
         "source", "ground_truth", "ground_truth_source", "correct", "model_version", "timestamp",
     }
     with pytest.raises(FileExistsError):
-        main()
+        run()
 
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "decisions", "export", "--type", "risk"])
     assert main() == 0

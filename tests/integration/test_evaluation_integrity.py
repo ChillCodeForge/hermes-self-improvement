@@ -185,7 +185,7 @@ def test_cli_evaluate_refuses_a_candidate_that_touches_protected_paths(tmp_path,
         "--holdout-root", str(tmp_path / "holdout"), "--suite", "SMOKE",
     ])
     with pytest.raises(ValueError, match="protected paths: benchmarks/fixtures/task/check.sh"):
-        cli.main()
+        cli.run()
     assert ran == []  # nothing was executed for the tampering candidate
 
 
@@ -290,7 +290,7 @@ def test_cli_evaluate_refuses_a_changed_benchmark_version_before_any_run(tmp_pat
             "--holdout-root", str(holdout), "--suite", suite,
         ])
         with pytest.raises(IntegrityError, match="benchmark version changed since experiment exp-v was created") as error:
-            cli.main()
+            cli.run()
         assert bound in str(error.value) and current in str(error.value)
     assert ran == []
     ledger = ExperimentStore(home / "experiments.sqlite3")

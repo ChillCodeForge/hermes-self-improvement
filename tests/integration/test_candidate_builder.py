@@ -203,7 +203,7 @@ def test_candidate_create_cli_materializes_commit_and_reports_hash(tmp_path, mon
     import json
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     home = tmp_path / "state"
@@ -237,7 +237,7 @@ def test_candidate_create_cli_uses_selected_deep_proposal_but_operator_content(
     import json
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     home = tmp_path / "state"
@@ -289,7 +289,7 @@ def test_candidate_create_cli_rejects_unsupported_proposal_without_git_changes(
     import json
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     base = git(repo, "rev-parse", "main")
@@ -316,7 +316,7 @@ def test_candidate_create_cli_rejects_unsupported_proposal_without_git_changes(
     ])
 
     with pytest.raises(ValueError, match="only support skill create/patch"):
-        main()
+        run()
 
     assert git(repo, "rev-parse", "main") == base
     assert "refs/heads/candidate/unsupported-proposal" not in git(repo, "show-ref")
@@ -325,7 +325,7 @@ def test_candidate_create_cli_rejects_unsupported_proposal_without_git_changes(
 def test_candidate_create_cli_bounds_dreaming_proposal_file_size(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     proposal = tmp_path / "dreaming.json"
@@ -346,13 +346,13 @@ def test_candidate_create_cli_bounds_dreaming_proposal_file_size(tmp_path, monke
     ])
 
     with pytest.raises(ValueError, match="1 MiB limit"):
-        main()
+        run()
 
 
 def test_candidate_create_cli_requires_exactly_one_metadata_source(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     proposal = tmp_path / "dreaming.json"
@@ -374,7 +374,7 @@ def test_candidate_create_cli_requires_exactly_one_metadata_source(tmp_path, mon
     ])
 
     with pytest.raises(ValueError, match="cannot be combined"):
-        main()
+        run()
 
 
 @pytest.mark.parametrize(
@@ -397,7 +397,7 @@ def test_candidate_create_cli_rejects_invalid_dreaming_proposals(
     import json
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = repository(tmp_path)
     base = git(repo, "rev-parse", "main")
@@ -420,7 +420,7 @@ def test_candidate_create_cli_rejects_invalid_dreaming_proposals(
     ])
 
     with pytest.raises(ValueError, match=message):
-        main()
+        run()
 
     assert git(repo, "rev-parse", "main") == base
     assert "refs/heads/candidate/invalid-proposal" not in git(repo, "show-ref")

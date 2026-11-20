@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from hermes_improve.batch_ingestion import load_batch_runner_export
-from hermes_improve.cli import main
+from hermes_improve.cli import main, run
 from hermes_improve.dreaming import DreamingEngine
 from hermes_improve.ingestion import SessionQueue
 from hermes_improve.miner import mine_session
@@ -105,7 +105,7 @@ def test_batch_runner_import_rejects_malformed_file_before_cli_ingest(tmp_path, 
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "ingest-batch", str(source)])
 
     with pytest.raises(ValueError, match="no conversations"):
-        main()
+        run()
 
     queue = SessionQueue(home / "sessions.sqlite3")
     assert queue.queued() == []

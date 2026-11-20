@@ -143,7 +143,7 @@ def test_monitor_observation_ids_are_idempotent_and_release_scoped(tmp_path):
 def test_cli_monitor_ingestion_is_bounded_validated_and_idempotent(tmp_path, monkeypatch, capsys):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
@@ -177,7 +177,7 @@ def test_cli_monitor_ingestion_is_bounded_validated_and_idempotent(tmp_path, mon
 def test_cli_monitor_ingestion_validates_entire_file_before_recording(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_IMPROVE_HOME", str(home))
@@ -200,5 +200,5 @@ def test_cli_monitor_ingestion_validates_entire_file_before_recording(tmp_path, 
     )
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "monitor", "ingest", str(observations)])
     with pytest.raises(ValueError, match="success must be boolean"):
-        main()
+        run()
     assert not (home / "monitoring.sqlite3").exists()

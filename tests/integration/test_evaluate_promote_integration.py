@@ -154,7 +154,7 @@ def setup(tmp_path, monkeypatch):
             "hermes-improve", "evaluate", "cand-e2e", "--repository", str(repository),
             "--holdout-root", str(holdout_root), "--suite", suite,
         ])
-        assert cli.main() == 0
+        assert cli.run() == 0
 
     def promoter():
         return GitPromoter(
