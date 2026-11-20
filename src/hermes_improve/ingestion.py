@@ -67,6 +67,29 @@ def redact(value: Any, *, key: str = "") -> Any:
 
 
 _DREAMING_STAGES = frozenset({"light", "rem"})
+OUTCOME_LABELS = frozenset({"correct", "incorrect", "partial"})
+OUTCOME_SOURCES = frozenset({"verifier", "user", "monitor"})
+MAX_OUTCOME_NOTE_CHARS = 500
+_LABEL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _validated_label(label: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    session_id = label.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 256:
+        raise ValueError("outcome label requires a session_id of at most 256 characters")
+    outcome, source = label.get("outcome"), label.get("source")
+    if outcome not in OUTCOME_LABELS:
+        raise ValueError(f"outcome must be one of {sorted(OUTCOME_LABELS)}")
+    if source not in OUTCOME_SOURCES:
+        raise ValueError(f"outcome source must be one of {sorted(OUTCOME_SOURCES)}")
+    note = label.get("note", "")
+    if note is None:
+        note = ""
+    if not isinstance(note, str) or len(note) > MAX_OUTCOME_NOTE_CHARS:
+        raise ValueError(f"outcome note must be text of at most {MAX_OUTCOME_NOTE_CHARS} characters")
+    if _LABEL_CONTROL.search(note):
+        raise ValueError("outcome note must not contain control characters")
+    return session_id, outcome, source, redact_text(note.strip())
 
 
 class SessionQueue:
@@ -95,6 +118,18 @@ class SessionQueue:
                     stage TEXT NOT NULL,
                     processed_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, stage)
+                )
+            """)
+            # Operator-attached outcome evidence (lab finding F11). Kept apart
+            # from the hashed export, so labelling never changes the stored
+            # evidence and an export can never label itself.
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS session_outcomes (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+                    outcome TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    labelled_at TEXT NOT NULL
                 )
             """)
 
@@ -151,7 +186,63 @@ class SessionQueue:
         payload = json.loads(row[0])
         if payload.get("_evidence_trust") != "untrusted":
             raise ValueError("session is missing the untrusted-evidence marker")
+        # Only an operator label counts; an ``outcome`` claimed by the export is dropped.
+        payload.pop("outcome", None)
+        label = self.outcome(session_id)
+        if label is not None:
+            payload["outcome"] = label
         return payload
+
+    def label_outcome(self, session_id: str, *, outcome: str, source: str, note: str = "") -> dict[str, str]:
+        """Attach (or replace) the outcome label of one queued session."""
+        self.label_outcomes_many([
+            {"session_id": session_id, "outcome": outcome, "source": source, "note": note},
+        ])
+        label = self.outcome(session_id)
+        assert label is not None
+        return label
+
+    def label_outcomes_many(self, labels: Iterable[Mapping[str, Any]]) -> int:
+        """Validate every label, then store them in one transaction (all or nothing).
+
+        Unknown sessions raise ``KeyError``; invalid labels raise ``ValueError``.
+        The latest label of a session replaces an earlier one.
+        """
+        prepared: list[tuple[str, str, str, str]] = []
+        for label in labels:
+            if len(prepared) >= _MAX_INGEST_BATCH_RECORDS:
+                raise ValueError("outcome label batch exceeds the 10,000-record limit")
+            if not isinstance(label, Mapping):
+                raise ValueError("outcome label must be a JSON object")
+            unknown = set(label) - {"session_id", "outcome", "source", "note"}
+            if unknown:
+                raise ValueError(f"outcome label has unknown fields: {sorted(unknown)}")
+            prepared.append(_validated_label(label))
+        if not prepared:
+            raise ValueError("outcome label batch contains no records")
+        labelled_at = utc_now()
+        with sqlite3.connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            for session_id, outcome, source, note in prepared:
+                if db.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone() is None:
+                    raise KeyError(session_id)
+                db.execute(
+                    """INSERT INTO session_outcomes (session_id,outcome,source,note,labelled_at)
+                       VALUES (?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+                       outcome=excluded.outcome, source=excluded.source, note=excluded.note,
+                       labelled_at=excluded.labelled_at""",
+                    (session_id, outcome, source, note, labelled_at),
+                )
+        return len(prepared)
+
+    def outcome(self, session_id: str) -> dict[str, str] | None:
+        with sqlite3.connect(self.path) as db:
+            row = db.execute(
+                "SELECT outcome,source,note,labelled_at FROM session_outcomes WHERE session_id=?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"label": row[0], "source": row[1], "note": row[2], "labelled_at": row[3]}
 
     def queued(self, limit: int = 100) -> list[str]:
         if not 1 <= limit <= 1000:

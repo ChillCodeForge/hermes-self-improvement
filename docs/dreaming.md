@@ -8,8 +8,8 @@ itself into a decision, or promotes.
 
 | Stage | Code | Model | What it does | What it cannot do |
 |---|---|---|---|---|
-| LIGHT | `DreamingEngine.light` | none | Groups error messages from queued, redacted session exports into deterministic lexical clusters (see below), counts tool use and merges optional read-only Curator usage signals. | No semantic (embedding) clustering: paraphrased errors that share little wording stay separate. No full metric set. |
-| REM | `DreamingEngine.rem` | `qwen_dreamer` | Sends a bounded projection of each session (`session_id`, `task`, `errors`, `tool_calls`, `tool_stats`, `final_status`, …) and returns validated hypotheses (`summary`, `issue`, `evidence_session_ids`, at most 20). Raw `messages` are never forwarded. `tool_stats` holds only tools that were actually used: Hermes lists every registered tool, and batch ingestion validates every row but drops the all-zero ones (`count`, `success` and `failure` all 0) to keep a session's REM evidence small. | No writes; invalid JSON raises. |
+| LIGHT | `DreamingEngine.light` | none | Groups error messages from queued, redacted session exports into deterministic lexical clusters (see below), counts tool use, counts sessions labelled `incorrect`/`partial` (see "Outcome evidence") and merges optional read-only Curator usage signals. | No semantic (embedding) clustering: paraphrased errors that share little wording stay separate. No full metric set. |
+| REM | `DreamingEngine.rem` | `qwen_dreamer` | Sends a bounded projection of each session (`session_id`, `task`, `errors`, `tool_calls`, `tool_stats`, `final_status`, `outcome`, …) and returns validated hypotheses (`summary`, `issue`, `evidence_session_ids`, at most 20). Raw `messages` are never forwarded. `tool_stats` holds only tools that were actually used: Hermes lists every registered tool, and batch ingestion validates every row but drops the all-zero ones (`count`, `success` and `failure` all 0) to keep a session's REM evidence small. | No writes; invalid JSON raises. |
 | DEEP | `DreamingEngine.deep` | `qwen_optimizer` | Turns at most five hypotheses into at most five proposals (`summary`, `candidate_type`, `target`, `hypothesis`). Only `SKILL_*` types and unprotected `brain/skills/` targets survive. | No content, no commits. |
 | Candidate generation | `proposal_generator.generate_candidates_from_proposals`, `hermes-improve candidate generate` | `qwen_optimizer` | For up to five operator-selected DEEP proposals, the model writes the full SKILL.md text; the result is committed through `candidate_builder.create_skill_candidate` on `candidate/<experiment-id>`. | Target, type and hypothesis come only from the validated proposal, never from the model reply. No evaluation, no promotion. |
 
@@ -33,6 +33,67 @@ clusters seen more than once become `dreaming-light` signals whose `issue` is
 the representative and whose evidence holds `occurrences`, `cluster_id` and
 `variants`. Lexical clustering can still merge two short, differently caused
 errors that share most of their wording.
+
+## Outcome evidence
+
+`final_status` only says how a conversation ended: `completed` is also what a
+session that gave a wrong answer reports. In the S6 lab run 10 of 12 sessions
+were wrong, every one was `completed` with `errors: []`, and REM read them as
+efficient successes (finding F11). Two kinds of evidence close that gap.
+
+Tool errors. Batch ingestion (`ingest-batch`) and the Hermes plugin
+(`on_session_finalize`, which loads the persisted transcript including
+`role: tool` messages) derive `errors` from tool results that report a failure
+(`session_evidence.py`): a non-empty `error` (string or `{"message": ...}`), a
+non-zero `exit_code` (with the `stderr`/`output` excerpt), `success: false` or
+a `status` of `error`/`failed`, or plain-text results that start with `Error`,
+`Exception` or `Traceback`. In the BatchRunner format (Hermes v0.22.2) each
+result is `<tool_response>{"tool_call_id", "name", "content"}</tool_response>`
+in a `tool` turn; plugin messages are matched to their tool name through
+`tool_call_id`. Each entry is `"<tool>: <text>"`; at most 20 per session, each
+secret-redacted (`ingestion.redact_text`) on the first 4,000 characters and
+then cut to 300. Malformed results are skipped, never fatal. A wrong answer
+built only from successful tool calls still has no errors, which is why
+labels exist. Re-ingesting a trajectory file that was queued before this
+change fails with "different content", because the export now carries the
+derived errors; the old queue entry stays as it was.
+
+Outcome labels. An operator attaches the checked result of a queued session:
+
+```
+hermes-improve sessions label SESSION_ID --outcome incorrect --source verifier --note "expected 98, got 65"
+hermes-improve sessions import-labels labels.jsonl   # {"session_id", "outcome", "source", "note"?} per line
+```
+
+`outcome` is `correct`, `incorrect` or `partial`; `source` is `verifier`,
+`user` or `monitor`; `note` is optional, at most 500 characters, no control
+characters, and is secret-redacted. Labels live in the `session_outcomes`
+table of `sessions.sqlite3`, apart from the hashed export, so labelling never
+changes the stored evidence; the latest label of a session replaces the
+previous one. `import-labels` validates every line first and stores all or
+nothing (unknown session ids and unknown fields are rejected). An `outcome`
+field inside the export itself is ignored: a session cannot label itself.
+`SessionQueue.get` returns the operator label as `outcome`.
+
+Nothing labels sessions automatically yet. The candidates checked were not
+clean sources: shadow replay and monitoring observations judge a re-run under
+a release, not the original session's answer; `benchmarks mine` runs no
+verifier; and `verification`/`replay_verified` fields in an export are
+self-reported untrusted evidence.
+
+How the stages use it. LIGHT adds one `dreaming-light` signal when sessions
+are labelled `incorrect` or `partial` (`evidence.kind: labelled_outcome`, with
+the counts, the sources and up to 20 session ids; `impact_score` is failures
+divided by sessions) and reports `clusters["labelled_failures"]`. REM receives
+`outcome` (`label`, `source`, `note`) and `errors` in each session projection,
+still inside the UNTRUSTED EVIDENCE envelope; malformed labels are dropped.
+The REM prompt tells the model that a completed but incorrect session is a
+failure, that sessions without a label have unknown correctness, to keep
+correctness and efficiency hypotheses apart (summaries start with
+`correctness:` or `efficiency:`) and to base efficiency hypotheses only on
+sessions labelled `correct`. The JSON contract is unchanged.
+
+## Running the stages
 
 `hermes-improve dream --stage light|rem|deep` runs the first three stages.
 Each queued session is processed once per stage. LIGHT reads sessions that

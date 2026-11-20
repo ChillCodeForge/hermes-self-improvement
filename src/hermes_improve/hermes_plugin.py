@@ -9,6 +9,7 @@ from typing import Any
 
 from .ingestion import SessionQueue, contains_secret_material
 from .models import utc_now
+from .session_evidence import tool_errors_from_messages
 
 logger = logging.getLogger("hermes_improve.hermes_plugin")
 
@@ -258,7 +259,7 @@ def _session_export(
         "task": {"prompt": task_prompt[:10000]},
         "messages": messages,
         "tool_calls": tool_calls,
-        "errors": [],
+        "errors": tool_errors_from_messages(messages),
         "final_status": {
             key: event[key]
             for key in ("completed", "failed", "interrupted", "reason", "turn_exit_reason")

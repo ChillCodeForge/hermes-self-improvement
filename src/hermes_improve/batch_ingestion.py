@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import canonical_json
+from .session_evidence import tool_errors_from_batch_turns
 
 
 _MAX_BATCH_FILE_BYTES = 10 * 1024 * 1024
@@ -124,6 +125,9 @@ def load_batch_runner_export(path: Path) -> list[dict[str, Any]]:
             "task": {"prompt": prompt, "input_available": True},
             "messages": messages,
             "tool_stats": tool_stats,
+            # Failed tool results (bounded, redacted); a wrong answer with only
+            # successful tool calls still has none, see outcome labels (F11).
+            "errors": tool_errors_from_batch_turns(trajectory),
             "final_status": "partial" if partial else "completed" if completed else "incomplete",
             "security": {"sanitized": True, "contains_secrets": False},
         })

@@ -444,6 +444,23 @@ def _replay_benchmarks(args: argparse.Namespace, store: BenchmarkStore, database
     return 0 if all(item["replay_verified"] for item in results) else 1
 
 
+def _read_label_lines(path: Path) -> list[object]:
+    """Parse an outcome-label JSONL file (bounded like a session batch)."""
+    with path.open("rb") as source:
+        raw = source.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise ValueError("outcome label file exceeds the 10 MiB limit")
+    rows = []
+    for number, line in enumerate(raw.decode("utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"outcome label line {number} is invalid JSON: {exc}") from exc
+    return rows
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-improve", description="Safety-gated Hermes improvement foundations")
     parser.add_argument("--version", action="version", version=__version__)
@@ -457,6 +474,17 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("export", type=Path)
     batch_ingest = sub.add_parser("ingest-batch")
     batch_ingest.add_argument("trajectories", type=Path)
+    sessions = sub.add_parser("sessions", help="attach outcome evidence to queued sessions")
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+    label = sessions_sub.add_parser("label", help="label one queued session's outcome")
+    label.add_argument("session_id")
+    label.add_argument("--outcome", choices=["correct", "incorrect", "partial"], required=True)
+    label.add_argument("--source", choices=["verifier", "user", "monitor"], required=True)
+    label.add_argument("--note", default="", help="short redacted note, e.g. the expected value")
+    import_labels = sessions_sub.add_parser(
+        "import-labels", help="JSONL of {session_id, outcome, source, note?}; all or nothing",
+    )
+    import_labels.add_argument("labels", type=Path)
     dream = sub.add_parser("dream")
     dream.add_argument("--stage", choices=["light", "rem", "deep"], default="light")
     dream.add_argument("--limit", type=int, default=100)
@@ -844,6 +872,15 @@ def main() -> int:
             "session_ids": [item["session_id"] for item in exports],
             "status": "queued_as_untrusted_evidence",
         }, indent=2))
+    elif args.command == "sessions":
+        queue = SessionQueue(database.parent / "sessions.sqlite3")
+        if args.sessions_command == "label":
+            outcome = queue.label_outcome(
+                args.session_id, outcome=args.outcome, source=args.source, note=args.note,
+            )
+            print(json.dumps({"session_id": args.session_id, "outcome": outcome}, indent=2))
+        else:
+            print(json.dumps({"labelled": queue.label_outcomes_many(_read_label_lines(args.labels))}))
     elif args.command == "dream":
         if args.stage == "deep":
             if args.curator_report is not None or args.curator_hermes_home is not None:
