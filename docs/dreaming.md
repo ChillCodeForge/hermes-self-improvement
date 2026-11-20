@@ -245,7 +245,8 @@ The run policy follows the runner's `llm_influenced` flag exactly as in
 docker and local runners once. Hermes token metering (metering proxy,
 `token_usage_reported`) is recorded in every screening run observation and
 paired row the same way as in `evaluate`; the generator-facing screening
-feedback itself carries only quality, success and gate results. `evolve` has
+feedback itself carries only quality, success, gate results and the skill-loaded
+rate (below). `evolve` has
 no `--holdout-root`: the runner is built without a holdout root, a holdout root
 present on the parsed arguments is refused, and a gateway that could reach the
 sealed holdout is still refused.
@@ -263,13 +264,43 @@ strategy never receives it. What the strategy sees (`StageFeedback`):
 
 | Split | Generator-visible content |
 |---|---|
-| TRAIN | task title and prompt (read through `BenchmarkStore.get(..., Role.GENERATOR)`), success flags, quality delta, failed tool calls, redacted 1000-char output excerpt |
-| VALIDATION / REGRESSION | per split only: task count, success rate, mean quality delta |
+| TRAIN | task title and prompt (read through `BenchmarkStore.get(..., Role.GENERATOR)`), success flags, quality delta, failed tool calls, redacted 1000-char output excerpt, `skill_loaded_rate` |
+| VALIDATION / REGRESSION | per split only: task count, success rate, mean quality delta, run-weighted `candidate_skill_loaded_rate` |
 | SEALED_HOLDOUT | never; a screening report containing a holdout row raises `IntegrityError` |
 
 The gateway refuses a generator benchmark view configured with the holdout root
 and refuses to share one store between generator and evaluator. Prior attempts
-shown to the strategy map holdout statuses back to `full_passed`.
+shown to the strategy map holdout statuses back to `full_passed`; their scores
+are the stage scores and the per-stage `<stage>_skill_loaded_rate`.
+
+### Skill-loaded rate (lab finding F30)
+
+In the live lab the agent (Hermes v0.22.2, qwen3:4b-instruct) never loaded a
+skill on its own: no `skill_view` call in 280 screening trajectories. A variant
+the agent never opens scores delta 0 whatever its content, which the loop could
+not tell apart from useless content. Screening now reports it (measurement:
+`evaluation.md`, "Skill use"):
+
+- `StageFeedback.skill_loaded_rate` is the share of all candidate runs of the
+  stage that called `skill_view` for the evolved skill; each TRAIN row carries
+  the rate of its task and each VALIDATION/REGRESSION aggregate the run-weighted
+  rate of its split. `null` means unknown: the runner has no agent trajectory
+  (`docker`/`local` command runners) or the run produced none.
+- When the rate of a stage is exactly 0, the variant's `generated_variants`
+  reason starts with "candidate skill was never loaded by the agent in
+  <STAGE> (0 of the candidate runs called skill_view for it)", followed by the
+  usual reason (for example "smoke score below parent"). This applies to every
+  status written after a SMOKE, CORE or FULL screen (`smoke_rejected`,
+  `core_rejected`, `core_no_improvement`, `improved`, `full_rejected`,
+  `full_passed`), including the strategy's inner-search screens. The rate is also stored in the scores
+  (`smoke_skill_loaded_rate`, `core_skill_loaded_rate`, `full_skill_loaded_rate`).
+- Reporting only: statuses, gates, scores and the promotion policy are
+  unchanged. A never-loaded variant already shows delta 0 and is rejected or
+  not improved by the existing rules.
+- The `qwen_optimizer` prompt (`optimizer/mutate_skill.md`) explains the rate:
+  at 0 the agent saw only name and description, so a variant should first make
+  the description name the tasks the skill is for. GEPA's TRAIN and aggregate
+  feedback records carry the same values.
 
 Holdout use per finalist is recorded in the registry under
 `<lineage>/finalist/<candidate>`. Only with `allow_holdout_feedback=True`, and

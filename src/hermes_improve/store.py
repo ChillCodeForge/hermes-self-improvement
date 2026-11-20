@@ -246,6 +246,15 @@ class ExperimentStore:
             result["candidates"] = [dict(item) for item in db.execute(
                 "SELECT * FROM candidates WHERE experiment_id=?", (experiment_id,)
             )]
+            result["skill_use"] = [
+                _skill_use_summary(row["id"], row["candidate_id"], row["metrics_json"])
+                for row in db.execute(
+                    """SELECT e.id, e.candidate_id, e.metrics_json FROM evaluation_runs e
+                       JOIN candidates c ON c.id = e.candidate_id
+                       WHERE c.experiment_id=? ORDER BY e.created_at, e.id""",
+                    (experiment_id,),
+                )
+            ]
             return result
 
     def record_artifact(self, digest: str, path: str, media_type: str = "application/octet-stream") -> None:
@@ -965,6 +974,30 @@ def _validated_regressions(
         seen.add(key)
         rows.append(dict(item))
     return rows
+
+
+def _skill_use_summary(evaluation_id: str, candidate_id: str, metrics_json: str | None) -> dict[str, Any]:
+    """Per-evaluation skill-use line for ``experiments show`` (lab finding F30).
+
+    Evaluations recorded before skill use was measured show ``None`` values.
+    """
+    try:
+        metrics = json.loads(metrics_json) if metrics_json else {}
+    except json.JSONDecodeError:
+        metrics = {}
+    use = metrics.get("skill_use") if isinstance(metrics, dict) else None
+    use = use if isinstance(use, dict) else {}
+    baseline = use.get("baseline") if isinstance(use.get("baseline"), dict) else {}
+    candidate = use.get("candidate") if isinstance(use.get("candidate"), dict) else {}
+    return {
+        "evaluation_id": evaluation_id,
+        "candidate_id": candidate_id,
+        "suite": metrics.get("suite") if isinstance(metrics, dict) else None,
+        "target_skill": use.get("target_skill"),
+        "baseline_target_skill_loaded_rate": baseline.get("target_skill_loaded_rate"),
+        "candidate_target_skill_loaded_rate": candidate.get("target_skill_loaded_rate"),
+        "candidate_observed_runs": candidate.get("observed_runs"),
+    }
 
 
 def _gate_result(db: sqlite3.Connection, experiment_id: str) -> dict[str, Any]:

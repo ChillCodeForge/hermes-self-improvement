@@ -376,6 +376,40 @@ def test_agent_failure_before_a_trajectory_is_agent_error_not_infrastructure(tmp
     runner, _baseline, candidate, _log = make_runner(tmp_path, mode="agent_error")
     observation = runner.run(candidate, Benchmark.from_dict(benchmark_record(checks=[{"type": "exit_code"}])), 1)
     assert observation.exit_state == "agent_error" and not observation.success
+    # No trajectory: skill use is unknown, not "nothing loaded" (F30).
+    assert observation.skill_use_observed is False and observation.skills_viewed == ()
+
+
+def test_hermes_runner_records_the_skills_the_agent_loaded(tmp_path):
+    # Lab finding F30: measure per run whether the agent opened a skill at all.
+    task = Benchmark.from_dict(benchmark_record())
+    loading, _baseline, candidate, _log = make_runner(
+        tmp_path / "a", fake={"skill_view": ["answer"], "skills_list": True},
+    )
+    loaded = loading.run(candidate, task, 1)
+    assert loaded.skill_use_observed is True
+    assert loaded.skills_viewed == ("answer",) and loaded.skills_list_calls == 1
+
+    silent, _b, commit, _l = make_runner(tmp_path / "b")
+    unread = silent.run(commit, task, 1)
+    assert unread.skill_use_observed is True
+    assert unread.skills_viewed == () and unread.skills_list_calls == 0
+
+
+def test_paired_hermes_evaluation_reports_the_target_skill_loaded_rate(tmp_path):
+    runner, baseline, candidate, _log = make_runner(tmp_path, fake={"skill_view": ["answer"]})
+    store = store_with(tmp_path, [benchmark_record()])
+    subject = Candidate("cand-h", "exp-h", CandidateType.SKILL_PATCH, "brain/skills/answer",
+                        baseline, candidate, "diff")
+    report = PairedEvaluator(store, runner, PromotionPolicy()).evaluate(
+        subject, baseline_commit=baseline, benchmark_ids=["hermes-task"], suite="SMOKE",
+        benchmark_version=store.version,
+    )
+    use = report.metrics["skill_use"]
+    assert use["target_skill"] == ["answer"]
+    assert use["candidate"]["target_skill_loaded_rate"] == 1.0
+    assert use["baseline"]["target_skill_loaded_rate"] == 1.0
+    assert report.outcomes[0].candidate_skill_loaded_rate == 1.0
 
 
 def test_toolsets_are_validated_and_part_of_the_model_digest():
@@ -418,6 +452,8 @@ def test_agent_ignoring_the_interrupt_still_leaves_the_sigterm_fallback_record(t
     assert trajectory["partial"] is True and trajectory["completed"] is False
     assert trajectory["conversations"][0]["from"] == "human"
     assert observation.api_calls > 0
+    # The fallback row holds only the prompt: skill use is unknown, not "nothing loaded".
+    assert observation.skill_use_observed is False
     record = json.loads(runner.artifacts.get(observation.artifact_digests[0]))
     assert record["hermes_reported_usage"]["input_tokens"] == 7
 

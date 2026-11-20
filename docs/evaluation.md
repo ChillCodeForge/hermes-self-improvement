@@ -405,6 +405,8 @@ declaration.
   latency per success, filesystem changes and exit states, plus
   `cheaper_failures` and efficiency deltas that are only computed when the
   candidate's success rate is not lower;
+- `skill_use` (see "Skill use" below): the candidate's `target_skill` and per
+  arm the share of runs that loaded it;
 - `judge` configuration and per-task verdicts. Each verdict keeps its
   per-seed, per-order `presentations` (`run`, `seed`, `order`, the parsed
   `judgment` or the `error`) so position bias can be audited; at most 20
@@ -415,11 +417,91 @@ declaration.
 `output_tokens`, `token_usage_reported`, `context_chars`, `turns`,
 `api_calls`, `exit_state`, `model_config_digest`, `limits_digest`,
 `verifier_results`, `filesystem_changes`, `trajectory_digest`, `diff_digest`,
-`deliverables`.
+`deliverables`, `skills_viewed`, `skills_list_calls`, `skill_use_observed`.
 `TaskOutcome` adds `run_count`, `judge_result`, `judge_confidence`,
-`judge_uncertainty` and `token_usage_reported` (true only when every paired
-run of both arms reported token usage; defaults to false). The signed top-level payload shape is unchanged, so
+`judge_uncertainty`, `token_usage_reported` (true only when every paired
+run of both arms reported token usage; defaults to false) and
+`baseline_skill_loaded_rate`/`candidate_skill_loaded_rate`. The signed top-level payload shape is unchanged, so
 reports written before version 2 still verify.
+
+### Skill use (`skill_use.py`, lab finding F30)
+
+Hermes lists the installed skills in its system prompt, but the agent must call
+`skill_view(name)` to read one. In the live lab (Hermes v0.22.2,
+qwen3:4b-instruct) 280 evaluation and evolve trajectories contained no
+`skill_view` or `skills_list` call at all: a skill candidate on a task that does
+not name the skill showed delta 0 whatever its content, and nothing told
+"useless content" apart from "never read". The evaluation now measures it.
+
+- Per run, `HermesBatchRunner` reads the assistant turns of the trajectory
+  (`<tool_call>{"name": ..., "arguments": ...}</tool_call>` blocks) and records
+  `skills_viewed` (the `name` argument of every `skill_view` call, first-call
+  order, de-duplicated, at most 32 names of at most 200 characters; string
+  arguments are decoded) and `skills_list_calls`. A call counts when it was
+  issued, whether or not Hermes found the skill. Malformed blocks are ignored and
+  never invalidate the trajectory. `skill_use_observed` is true only when a
+  trajectory with at least one assistant turn exists; agent errors, the SIGTERM
+  fallback row and command runners (`DockerCommandRunner`) report it false, which
+  means unknown, never "nothing loaded".
+- The target of a `SKILL_CREATE`/`SKILL_PATCH`/`SKILL_MERGE`/`SKILL_SPLIT`
+  candidate is every unit `brain/skills/<path>`. A run loaded it when a
+  `skill_view` name equals `<path>` or its last component (Hermes accepts both;
+  generated skills carry a front-matter `name` equal to the directory name). A
+  hand-written skill whose front-matter `name` differs from its directory is not
+  matched under that name.
+- `metrics.skill_use` holds `target_skill` (paths below `brain/skills`, `null`
+  for other candidate types) and per arm `runs`, `observed_runs`,
+  `runs_with_skill_view`, `runs_with_skills_list`, `target_skill_loaded_runs`,
+  `target_skill_loaded_rate` (loaded runs / observed runs; `null` when unknown or
+  not a skill candidate) and `skills_viewed` (runs per skill name, at most 32
+  names). Every `TaskOutcome` carries the same rate per arm for its task.
+- The values are signed with the report. They are reporting only: the promotion
+  policy does not read them (a never-loaded skill already shows delta 0).
+- `experiments show` lists, per evaluation of the experiment's candidates, the
+  suite, the target skill, both arms' loaded rate and the candidate's observed
+  runs (`skill_use`). `report` adds `improvement.skill_load`: evaluations with a
+  target skill, how many of them never loaded it in the candidate arm, and the
+  mean candidate loaded rate.
+- Evolution screening uses the rate to name never-loaded variants and passes it
+  to the optimizer (`dreaming.md`, "Skill-loaded rate").
+
+#### `skills.auto_load` is not driven from the brain (investigated, not implemented)
+
+Hermes can pin skills into the system prompt: `skills.auto_load` in
+`HERMES_HOME/config.yaml` (`agent/skill_commands.py`
+`resolve_auto_load_skills`/`build_auto_load_prompt`, injected by
+`agent/system_prompt.py` `_auto_load_parts` into the stable prompt tier). Making
+it a manually gated brain candidate (for example a `ROUTING` file
+`brain/routing/<name>.yaml` that `HermesBatchRunner` turns into a `config.yaml`
+for both arms) was investigated against v0.22.2 and rejected for these reasons:
+
+1. **It would have no effect under the evaluation driver.** `_auto_load_parts`
+   returns nothing for agents built with `skip_context_files=True`, and
+   `hermes_driver.py` builds `AIAgent` exactly that way (batch_runner parity).
+   A `config.yaml` with `skills.auto_load` in the run's `HERMES_HOME` would be
+   ignored silently, and both arms would measure the same prompt.
+2. **Turning `skip_context_files` off changes every evaluation, not one arm.**
+   The same flag also loads `SOUL.md` as identity instead of the default identity,
+   injects project context files (`AGENTS.md` and similar) from the workspace,
+   which is the benchmark fixture, i.e. task content, and enables subdirectory
+   hints. That would alter the prompt of every baseline and candidate run, change
+   the environment digest of all evaluations, and let fixture files steer the
+   system prompt.
+3. **Re-creating auto_load inside the driver would not be Hermes' behaviour.**
+   Calling `build_auto_load_prompt` from the driver and passing the text as an
+   ephemeral system prompt would place it in a different prompt tier than in
+   production and depend on a private helper, so the evaluation would measure a
+   prompt production never builds.
+4. **No release path reaches it.** A promotion merges brain commits; nothing
+   writes the production `HERMES_HOME/config.yaml` (the Curator connector only
+   reads the Hermes home). An evaluated auto_load setting would therefore not be
+   what production runs after promotion.
+
+Until Hermes exposes auto_load for agents that skip context files (or the
+evaluation driver can build agents with the production context policy), skill
+loading is measured and reported instead (above). Operators who want a skill
+pinned in production set `skills.auto_load` in their own Hermes config; a lab
+re-test with a stronger solver model is the other open option from F30.
 
 An evaluation report is not sufficient on its own to establish operational
 safety: benchmark quality, evaluator key custody, filesystem isolation,

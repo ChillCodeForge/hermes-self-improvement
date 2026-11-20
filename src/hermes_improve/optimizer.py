@@ -26,6 +26,9 @@ class TrainTaskFeedback:
     quality_delta: float
     candidate_failed_tool_calls: int
     candidate_output_excerpt: str
+    # Share of the candidate's runs on this task that loaded the evolved skill
+    # (lab finding F30); None when the runner has no agent trajectory.
+    skill_loaded_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,7 @@ class AggregateFeedback:
     task_count: int
     candidate_success_rate: float
     mean_quality_delta: float
+    candidate_skill_loaded_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,9 @@ class StageFeedback:
     gate_failures: tuple[str, ...]
     train: tuple[TrainTaskFeedback, ...]
     aggregates: tuple[AggregateFeedback, ...]
+    # Share of all candidate runs of the stage that loaded the evolved skill; 0.0
+    # means the agent never opened it, so the content could not have mattered.
+    skill_loaded_rate: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -327,6 +327,8 @@ def _train_record(stage: str, task: TrainTaskFeedback, gate_failures: tuple[str,
             "candidate_success": task.candidate_success,
             "quality_delta": task.quality_delta,
             "failed_tool_calls": task.candidate_failed_tool_calls,
+            # 0.0: the agent never opened the skill on this task (F30); null: unknown.
+            "skill_loaded_rate": task.skill_loaded_rate,
             "gate_failures": list(gate_failures),
         }),
     }
@@ -341,6 +343,7 @@ def _aggregate_record(stage: str, aggregates: tuple[AggregateFeedback, ...]) -> 
                 "split": item.split, "task_count": item.task_count,
                 "candidate_success_rate": item.candidate_success_rate,
                 "mean_quality_delta": item.mean_quality_delta,
+                "candidate_skill_loaded_rate": item.candidate_skill_loaded_rate,
             }
             for item in aggregates
         ]),
