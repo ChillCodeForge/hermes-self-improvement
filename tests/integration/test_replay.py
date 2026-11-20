@@ -167,7 +167,7 @@ def test_cli_replay_uses_runner_reports_and_persists(tmp_path, monkeypatch, caps
         "--repository", str(tmp_path),
     ])
     with pytest.raises(ValueError, match="no public command benchmark"):
-        cli.main()
+        cli.run()
 
 
 def test_fixture_tree_digest_tracks_content_and_rejects_symlinks(tmp_path):

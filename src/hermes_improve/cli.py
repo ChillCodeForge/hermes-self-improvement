@@ -23,7 +23,7 @@ from .clustering import NOT_CONFIGURED, SemanticReport
 from .config import config_from_environment
 from .embeddings import semantic_layer_from_environment
 from .approvals import approve_promotion
-from .errors import AccessDenied
+from .errors import AccessDenied, ImprovementError
 from .docker_runner import DockerCommandRunner, LocalSkillProcedureRunner
 from .hermes_plugin import HookSignalStore
 from .observability import ObservabilityLog, build_report, build_status, render_text
@@ -864,8 +864,9 @@ def _apply_monitoring(args: argparse.Namespace, database: Path, monitor: Release
     )
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def run(argv: list[str] | None = None) -> int:
+    """Execute one CLI command; refusals propagate as exceptions (see :func:`main`)."""
+    args = build_parser().parse_args(argv)
     database, benchmark_root = _paths()
     if args.command == "status":
         deployment_link = args.deployment_link
@@ -1689,6 +1690,32 @@ def main() -> int:
             )}
         print(json.dumps(result, indent=2))
     return 0
+
+
+# Refusals an operator can act on: wrong input, missing identity or
+# configuration, failed integrity or policy checks, blocked rollbacks. They end
+# with a one-line error; anything else (a bug) keeps its traceback.
+EXPECTED_ERRORS = (
+    ImprovementError, ValueError, PermissionError, KeyError, FileNotFoundError, FileExistsError, RuntimeError,
+)
+# RuntimeError subclasses that signal a bug rather than a refusal.
+_UNEXPECTED_RUNTIME_ERRORS = (RecursionError, NotImplementedError)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Console entry point: :func:`run` with one-line errors for expected refusals.
+
+    Expected refusals print `error: MESSAGE` to stderr and return 1. Set
+    `HERMES_IMPROVE_DEBUG=1` to get the full traceback instead.
+    """
+    try:
+        return run(argv)
+    except EXPECTED_ERRORS as exc:
+        if isinstance(exc, _UNEXPECTED_RUNTIME_ERRORS) or os.environ.get("HERMES_IMPROVE_DEBUG", "") not in {"", "0"}:
+            raise
+        message = f"not found: {exc}" if type(exc) is KeyError else str(exc) or type(exc).__name__
+        print(f"error: {message}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

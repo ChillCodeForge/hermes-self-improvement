@@ -200,10 +200,10 @@ def test_cli_replay_selects_benchmarks_matching_the_runner(tmp_path, monkeypatch
     docker_argv = [item for item in argv if item not in {"--runner", "hermes"}]
     monkeypatch.setattr(sys, "argv", docker_argv)
     with pytest.raises(ValueError, match="no public command benchmarks"):
-        cli.main()
+        cli.run()
     monkeypatch.setattr(sys, "argv", [*argv[:3], "--id", "unknown-task", *argv[3:]])
     with pytest.raises(ValueError, match="no public hermes_agent benchmark"):
-        cli.main()
+        cli.run()
     monkeypatch.setattr(sys, "argv", argv)
     assert cli.main() == 0
     # The replay never configures the sealed holdout root.

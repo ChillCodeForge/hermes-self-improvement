@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from hermes_curator_fixture import build_hermes_home, usage_record, write_pending
-from hermes_improve.cli import main
+from hermes_improve.cli import main, run
 from hermes_improve.curator_connector import CuratorConnector
 from hermes_improve.decisions import DecisionRecorder
 
@@ -162,4 +162,4 @@ def test_dream_rejects_two_curator_sources(tmp_path, monkeypatch):
         "hermes-improve", "dream", "--curator-report", str(report), "--curator-hermes-home", str(home),
     ])
     with pytest.raises(ValueError, match="not both"):
-        main()
+        run()

@@ -375,7 +375,7 @@ def test_cli_evaluate_records_suite_selection_needs_qwen_and_judge_metrics(tmp_p
         "--holdout-root", str(holdout_root), "--suite", "FULL",
     ])
     with pytest.raises(ValueError, match="requires a configured judge"):
-        cli.main()
+        cli.run()
     assert len(list(DecisionRecorder(home / "experiments.sqlite3").iter_records())) == rows_before
 
     def verdict(body):

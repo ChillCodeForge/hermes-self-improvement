@@ -227,7 +227,7 @@ def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
 ):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     source = tmp_path / "authored.json"
     source.write_text(json.dumps(data("authored-task", "TRAIN")), encoding="utf-8")
@@ -265,7 +265,7 @@ def test_cli_admits_authored_public_benchmark_and_reports_new_manifest(
 def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     source = tmp_path / "holdout.json"
     source.write_text(
@@ -279,7 +279,7 @@ def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypa
     ])
 
     with pytest.raises(ValueError, match="sealed holdout"):
-        main()
+        run()
 
     assert not root.exists()
 
@@ -287,7 +287,7 @@ def test_cli_rejects_sealed_holdout_benchmark_without_writing(tmp_path, monkeypa
 def test_cli_rejects_corpus_leakage_without_admitting_record(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     root.mkdir()
@@ -311,7 +311,7 @@ def test_cli_rejects_corpus_leakage_without_admitting_record(tmp_path, monkeypat
     ])
 
     with pytest.raises(ValueError, match="same split and cluster_id"):
-        main()
+        run()
 
     assert sorted(path.name for path in root.rglob("*.json")) == ["existing.json"]
 
@@ -321,7 +321,7 @@ def test_cli_rejects_duplicate_id_version_without_overwriting_existing_record(
 ):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     existing_path = root / "train" / "same-task-v1.json"
@@ -339,7 +339,7 @@ def test_cli_rejects_duplicate_id_version_without_overwriting_existing_record(
     ])
 
     with pytest.raises(ValueError, match="duplicate benchmark id/version"):
-        main()
+        run()
 
     assert json.loads(existing_path.read_text(encoding="utf-8")) == original
     assert sorted(path.name for path in root.rglob("*.json")) == ["same-task-v1.json"]
@@ -350,7 +350,7 @@ def test_cli_does_not_overwrite_existing_destination_with_different_record(
 ):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     existing_path = root / "train" / "authored-task-v1.json"
@@ -367,7 +367,7 @@ def test_cli_does_not_overwrite_existing_destination_with_different_record(
     ])
 
     with pytest.raises(ValueError, match="destination already exists"):
-        main()
+        run()
 
     assert json.loads(existing_path.read_text(encoding="utf-8")) == original
     assert list(existing_path.parent.iterdir()) == [existing_path]
@@ -376,7 +376,7 @@ def test_cli_does_not_overwrite_existing_destination_with_different_record(
 def test_cli_rejects_public_split_symlink_outside_root(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     root.mkdir()
@@ -392,7 +392,7 @@ def test_cli_rejects_public_split_symlink_outside_root(tmp_path, monkeypatch):
     ])
 
     with pytest.raises(ValueError, match="inside its configured root"):
-        main()
+        run()
 
     assert list(holdout.iterdir()) == []
 
@@ -400,7 +400,7 @@ def test_cli_rejects_public_split_symlink_outside_root(tmp_path, monkeypatch):
 def test_cli_rejects_near_duplicate_of_sealed_holdout(tmp_path, monkeypatch):
     import sys
 
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     public = tmp_path / "public"
     holdout = tmp_path / "holdout"
@@ -425,7 +425,7 @@ def test_cli_rejects_near_duplicate_of_sealed_holdout(tmp_path, monkeypatch):
     ])
 
     with pytest.raises(ValueError, match="near-duplicate benchmarks"):
-        main()
+        run()
 
     assert not list(public.rglob("*.json"))
 

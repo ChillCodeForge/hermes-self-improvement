@@ -609,16 +609,21 @@ def _production(experiments: sqlite3.Connection | None, monitoring: sqlite3.Conn
             f"SELECT {_source_column(monitoring)}, COALESCE(SUM(critical_regression=1), 0) "
             "FROM production_observations GROUP BY 1 ORDER BY 1"
         ).fetchall())
-        actions = 0
+        actions = blocked = 0
         if _has_table(monitoring, "monitoring_actions"):
             actions = monitoring.execute(
                 "SELECT COUNT(DISTINCT release_id) FROM monitoring_actions WHERE action LIKE 'ROLLBACK%'"
+            ).fetchone()[0]
+            blocked = monitoring.execute(
+                "SELECT COUNT(*) FROM monitoring_actions WHERE action='ROLLBACK_BLOCKED'"
             ).fetchone()[0]
         result["post_promotion_regressions"] = {
             # All sources; the per-source split matches hermes.observations_by_source.
             "critical_observations": sum(critical_by_source.values()),
             "critical_observations_by_source": critical_by_source or NO_DATA,
             "releases_with_rollback_decision": actions,
+            # Regressions the monitor could not roll back; each needs an operator.
+            "blocked_rollbacks": blocked,
         }
     return result
 
@@ -644,6 +649,37 @@ def _require_counter(value: Any) -> None:
         raise ValueError("observability counters must be non-negative integers")
 
 
+# Release audit events that start a release's monitoring epoch (as in monitoring.py).
+_ACTIVATION_EVENTS = ("PROMOTED", "REACTIVATED")
+
+
+def _current_rollback_block(experiments: sqlite3.Connection, release_id: str) -> dict[str, Any] | None:
+    """Latest ROLLBACK_BLOCKED event of the release's current activation, if any.
+
+    A block recorded during an earlier activation of the release concerned a
+    deployment that has ended and is not reported as current.
+    """
+    if not _has_table(experiments, "release_events"):
+        return None
+    latest = None
+    for event, detail_json, created_at in experiments.execute(
+        "SELECT event, detail_json, created_at FROM release_events WHERE release_id=? ORDER BY id",
+        (release_id,),
+    ):
+        if event in _ACTIVATION_EVENTS:
+            latest = None
+        elif event == "ROLLBACK_BLOCKED":
+            detail = json.loads(detail_json)
+            latest = {
+                "at": created_at,
+                "reason": detail.get("reason"),
+                "assessment_reasons": detail.get("assessment_reasons", []),
+                "target_release": detail.get("target_release"),
+                "action": "operator action required",
+            }
+    return latest
+
+
 def build_status(
     home: Path, benchmark_root: Path, *, deployment_link: Path | None = None,
 ) -> dict[str, Any]:
@@ -662,7 +698,7 @@ def build_status(
         "counts": {
             "experiments_by_decision": NO_DATA, "candidates": NO_DATA, "evaluation_runs": NO_DATA,
             "releases_by_status": NO_DATA, "rollbacks": NO_DATA, "spent_holdouts": NO_DATA,
-            "sessions_by_status": NO_DATA, "public_benchmarks": NO_DATA,
+            "sessions_by_status": NO_DATA, "public_benchmarks": NO_DATA, "blocked_rollbacks": NO_DATA,
         },
     }
     counts = result["counts"]
@@ -691,9 +727,16 @@ def build_status(
                 statuses = Counter(row[1] for row in releases)
                 counts["releases_by_status"] = dict(sorted(statuses.items()))
                 counts["rollbacks"] = statuses.get("ROLLED_BACK", 0)
+                if _has_table(experiments, "release_events"):
+                    counts["blocked_rollbacks"] = experiments.execute(
+                        "SELECT COUNT(*) FROM release_events WHERE event='ROLLBACK_BLOCKED'"
+                    ).fetchone()[0]
                 active = next((row for row in releases if row[1] in {"PROVISIONAL", "STABLE"}), None)
                 if active is not None:
                     ledger_release = {"id": active[0], "status": active[1], "created_at": active[2]}
+                    blocked = _current_rollback_block(experiments, active[0])
+                    if blocked is not None:
+                        ledger_release["rollback_blocked"] = blocked
                     result["active_release"] = ledger_release
         except sqlite3.Error:
             counts["experiments_by_decision"] = UNAVAILABLE

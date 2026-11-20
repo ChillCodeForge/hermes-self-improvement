@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from hermes_improve.cli import main
+from hermes_improve.cli import main, run
 
 
 def test_dream_light_accepts_bounded_curator_json_report(tmp_path, monkeypatch, capsys):
@@ -45,7 +45,7 @@ def test_dream_light_rejects_invalid_curator_reports(tmp_path, monkeypatch, payl
     ])
 
     with pytest.raises(ValueError, match="Curator usage report"):
-        main()
+        run()
 
 
 def test_dream_deep_rejects_curator_usage_report(tmp_path, monkeypatch):
@@ -58,4 +58,4 @@ def test_dream_deep_rejects_curator_usage_report(tmp_path, monkeypatch):
     ])
 
     with pytest.raises(ValueError, match="only by LIGHT and REM"):
-        main()
+        run()

@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from test_promotion import _add_candidate, _repository, git
-from hermes_improve.cli import main
+from hermes_improve.cli import main, run
 from hermes_improve.decisions import DecisionRecorder
 from hermes_improve.monitoring import MonitoringPolicy, ProductionObservation, ReleaseMonitor
 from hermes_improve.policy import PromotionPolicy
@@ -186,11 +186,11 @@ def test_cli_monitor_evaluate_reports_and_apply_requires_promoter_identity(tmp_p
     monkeypatch.delenv("HERMES_PROMOTER_UID", raising=False)
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "monitor", "evaluate", "brain-v1", "--apply"])
     with pytest.raises(RuntimeError, match="HERMES_PROMOTER_UID"):
-        main()
+        run()
     monkeypatch.setenv("HERMES_PROMOTER_UID", str(os.geteuid()))
     monkeypatch.setenv("HERMES_IMPROVE_MANIFEST_KEY", "k" * 32)
     with pytest.raises(ValueError, match="--repository"):
-        main()
+        run()
     assert store.get_release("brain-v1")["status"] == "PROVISIONAL"
 
 
@@ -210,7 +210,7 @@ def test_cli_monitor_ingest_accepts_skill_attribution_and_rejects_bad_sources(tm
     assert json.loads(capsys.readouterr().out)["observations"][0]["sample_count"] == 1
     path.write_text(json.dumps(row | {"observation_id": "evt-2", "source": "guess"}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="line 1: observation source"):
-        main()
+        run()
 
 
 def _promote_two_and_roll_back(tmp_path, *, before_rollback=()):

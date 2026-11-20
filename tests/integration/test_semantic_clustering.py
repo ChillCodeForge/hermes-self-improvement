@@ -303,7 +303,7 @@ def _cli(monkeypatch, *argv: str) -> int:
     # Factory records are not curated-corpus quality; the lint is not under test here.
     monkeypatch.setattr(cli, "lint_public_corpus", lambda rows: None)
     monkeypatch.setattr(sys, "argv", ["hermes-improve", *argv])
-    return cli.main()
+    return cli.run()
 
 
 def test_cli_validate_reports_semantic_layer_not_applied(tmp_path, monkeypatch, capsys):

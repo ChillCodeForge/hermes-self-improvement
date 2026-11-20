@@ -229,7 +229,7 @@ def test_persistent_worktree_lineage_and_immutable_branch(tmp_path):
 
 
 def test_cli_creates_any_type_from_file_arguments(tmp_path, monkeypatch, capsys):
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     repo = brain_repository(tmp_path)
     workflow = tmp_path / "release.yaml"
@@ -282,4 +282,4 @@ def test_cli_creates_any_type_from_file_arguments(tmp_path, monkeypatch, capsys)
         "--hypothesis", "Mixed inputs",
     ])
     with pytest.raises(ValueError, match="cannot be combined"):
-        main()
+        run()

@@ -130,7 +130,7 @@ def test_corpus_manifest_refuses_holdout_records():
 
 
 def test_cli_lists_impact_aware_suite_manifest(tmp_path, monkeypatch, capsys):
-    from hermes_improve.cli import main
+    from hermes_improve.cli import main, run
 
     root = tmp_path / "public"
     for item in corpus():
@@ -159,7 +159,7 @@ def test_cli_lists_impact_aware_suite_manifest(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["hermes-improve", "benchmarks", "list", "--impact", "category:git"])
     with pytest.raises(ValueError, match="requires --suite"):
-        main()
+        run()
 
 
 def test_impact_scope_for_candidate_narrows_skills_only():

@@ -15,7 +15,10 @@ hermes-improve experiments list
 deployment link given by `--deployment-link` or the provisioned layout, else the release
 ledger, with any disagreement reported as `mismatch`), the active release and its status,
 and counts of experiments by decision, candidates, evaluation runs, releases by status,
-rollbacks, spent holdouts, queued sessions and public benchmarks.
+rollbacks, blocked rollbacks, spent holdouts, queued sessions and public benchmarks.
+When the monitor could not roll back the active release during its current activation,
+`active_release.rollback_blocked` shows when, why and the assessment reasons: the release
+stays `PROVISIONAL` and needs an operator.
 
 `HERMES_IMPROVE_HOME` selects the local state root (`experiments.sqlite3`,
 `sessions.sqlite3`, `monitoring.sqlite3`, `observability.sqlite3`,
@@ -39,6 +42,18 @@ unless noted.
 | Candidate work | `candidate create`, `evaluate`, `promote` | Unchanged gated path (see below). |
 | Post-promotion | `monitor collect RELEASE [--apply ...]`, `monitor ingest FILE`, `monitor replay RELEASE ...`, `monitor evaluate RELEASE [--apply ...]` | Collects evidence (ingested Hermes sessions, collector files, shadow replay) and stabilizes or rolls back a provisional release. |
 | Training data | `decisions export [--labeled-only] [--output FILE]`, `decisions backfill ID ...` | Laya decision dataset (see `laya-future.md`). |
+
+**Errors and exit codes.** Expected refusals print one line, `error: MESSAGE`,
+to stderr and exit with status 1: invalid operator input (`ValueError`, for
+example `rollback` of the release that is already active), unknown records
+(`error: not found: 'brain-v9'`), missing files, a wrong role identity or
+missing key (`PermissionError`, `RuntimeError`), integrity, access and policy
+refusals (`IntegrityError`, `AccessDenied`, `PolicyRejected`) and a blocked
+monitoring rollback (`RollbackBlocked`, also visible in `releases events` and
+`status`). Usage errors exit with status 2 (argparse). Any other exception is
+a bug and keeps its Python traceback; `HERMES_IMPROVE_DEBUG=1` shows the
+traceback for expected refusals too. Scripts calling the package in-process
+use `hermes_improve.cli.run(argv)`, which raises instead of printing.
 
 ## Hermes plugin (opt-in observers)
 
@@ -295,15 +310,45 @@ Observations are matched to the release's affected area: the skills under
 names skills counts only if one of them changed; an observation without skill
 attribution counts for the whole release.
 
-Metrics: success rate, tool error rate, tokens/success, tool calls/success,
-latency/success, retry rate, user-correction rate, and critical regression
-signals. Tokens/success uses only observations that reported tokens
-(`tokens_reported_samples`); if none did, the metric is `null` and listed
-under `unavailable_metrics` instead of being compared. Each metric is compared
-with the manifest's `baseline_metrics` only when that baseline exists; missing
-baselines are listed under `unavailable_baselines` instead of being assumed. Any critical signal means
-immediate rollback; a success-rate or tool-error regression is `high`
-severity, any other regression is `medium`.
+Metrics: success rate, tool error rate, tokens, tool calls and latency (per
+run and per success), retry rate, user-correction rate, and critical
+regression signals. Token metrics use only observations that reported tokens
+(`tokens_reported_samples`); if none did, they are `null` and listed under
+`unavailable_metrics` instead of being compared.
+
+*Reference.* Monitoring checks whether the promoted brain behaves in
+production as it did in its own evaluation. The signed manifest's
+`monitoring_reference` (see `promotion.md`, "Monitoring reference") holds the
+**candidate arm's** final-suite metrics in **per-run** units: success rate,
+tool error rate, `tokens_per_run`, `tool_calls_per_run`,
+`latency_per_run_ms`, retry rate and correction rate. Production is compared
+with these, so a knowledge-adding skill whose baseline never succeeded is
+still held to the success rate it showed in evaluation. Manifests written
+before that field existed are compared with their legacy `baseline_metrics`
+(baseline arm, per success); when that baseline never succeeded
+(`success_rate` 0 or missing), its per-success tokens/tool calls/latency are
+totals and are excluded (`reference.excluded`, `unavailable_baselines`). The
+assessment's `reference` object names the source, version, arm and unit used.
+Each metric is compared only when its reference value exists; missing values
+are listed under `unavailable_baselines` instead of being assumed. Any
+critical signal means immediate rollback; a success-rate or tool-error
+regression is `high` severity, any other regression is `medium`. The
+efficiency thresholds (`max_tokens_per_success_increase`,
+`max_tool_calls_per_success_increase`) apply to the per-run values in the
+same way.
+
+*Latency is advisory.* The reference latency was measured in the evaluation
+environment; production hosts and replay runners under load (a shared GPU,
+other jobs) are slower without the brain being worse. In the live lab healthy
+replays took 2.3x the evaluation latency. A latency regression beyond
+`max_latency_increase` (default +15 %) is therefore reported under the
+assessment's `warnings` and does not change the outcome: a release that is
+otherwise healthy still becomes `STABLE`, and a release with a correctness
+or efficiency regression is rolled back for that reason, with the latency
+warning alongside. `MonitoringPolicy(latency_action="rollback",
+max_latency_increase=...)` makes latency a `medium` rollback reason again; set
+the tolerance to the speed difference you expect between the evaluation host
+and production. Critical regression signals always decide first.
 
 ```bash
 hermes-improve monitor evaluate brain-v7          # assessment only, no change
@@ -318,8 +363,13 @@ baseline, checks that the regressing release is the active `main`, and calls
 `GitPromoter.rollback` (atomic link switch, release tags kept). Every applied
 or blocked action is audited in `monitoring_actions` (release, action, target,
 previous commit, reasons, metrics, actor UID). A regression without an
-earlier restorable release is recorded as `ROLLBACK_BLOCKED` and needs an
-operator. `monitor ingest` and `monitor replay` still mark a release `STABLE`
+earlier restorable release, or a regressing release that is not the active
+`main`, is recorded as `ROLLBACK_BLOCKED` and needs an operator; `--apply`
+then exits non-zero. The block is also appended to the release audit as a
+`ROLLBACK_BLOCKED` event (status unchanged; detail: actor, reason, assessment
+reasons, target, `monitoring_action_id`), so `releases events` lists it,
+`status` shows it on the active release and `report` counts it under
+`production.post_promotion_regressions.blocked_rollbacks`. `monitor ingest` and `monitor replay` still mark a release `STABLE`
 automatically once policy passes, but never roll back by themselves;
 `monitor collect` changes nothing without `--apply`.
 

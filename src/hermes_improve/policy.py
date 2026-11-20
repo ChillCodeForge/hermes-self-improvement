@@ -414,25 +414,38 @@ class PromotionPolicy:
                     sum(bool(row.candidate_user_corrections) for row in final_rows) / len(final_rows)
                     if final_rows else None
                 ),
+                # Per-run monitoring reference values (rows hold per-run means).
+                "tool_calls_per_task_baseline": per_task(sum(row.baseline_tool_calls for row in final_rows)),
+                "tool_calls_per_task_candidate": per_task(sum(row.candidate_tool_calls for row in final_rows)),
+                "baseline_retry_rate": (
+                    sum(bool(row.baseline_retries) for row in final_rows) / len(final_rows)
+                    if final_rows else None
+                ),
+                "candidate_retry_rate": (
+                    sum(bool(row.candidate_retries) for row in final_rows) / len(final_rows)
+                    if final_rows else None
+                ),
+                # Per-success values exist only when the arm succeeded at least
+                # once; dividing by max(1, 0) would report totals as "per success".
                 "baseline_tokens_per_success": (
                     sum(row.baseline_tokens for row in final_rows)
-                    / max(1, sum(row.baseline_success for row in final_rows))
-                    if tokens_reported else None
+                    / sum(row.baseline_success for row in final_rows)
+                    if tokens_reported and any(row.baseline_success for row in final_rows) else None
                 ),
                 "candidate_tokens_per_success": (
                     sum(row.candidate_tokens for row in final_rows)
-                    / max(1, sum(row.candidate_success for row in final_rows))
-                    if tokens_reported else None
+                    / sum(row.candidate_success for row in final_rows)
+                    if tokens_reported and any(row.candidate_success for row in final_rows) else None
                 ),
                 "baseline_latency_per_success_ms": (
                     sum(row.baseline_latency_ms for row in final_rows)
-                    / max(1, sum(row.baseline_success for row in final_rows))
-                    if final_rows else None
+                    / sum(row.baseline_success for row in final_rows)
+                    if any(row.baseline_success for row in final_rows) else None
                 ),
                 "candidate_latency_per_success_ms": (
                     sum(row.candidate_latency_ms for row in final_rows)
-                    / max(1, sum(row.candidate_success for row in final_rows))
-                    if final_rows else None
+                    / sum(row.candidate_success for row in final_rows)
+                    if any(row.candidate_success for row in final_rows) else None
                 ),
             },
         )

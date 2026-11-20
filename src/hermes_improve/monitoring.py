@@ -7,7 +7,7 @@ import re
 import sqlite3
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from statistics import mean
@@ -32,6 +32,102 @@ _MONITORING_MODEL_VERSION = "monitoring-policy-1"
 # monitoring epoch for it.
 ACTIVATION_EVENTS = frozenset({"PROMOTED", "REACTIVATED"})
 _CURRENT_ACTIVATION = object()
+LATENCY_ACTIONS = ("warn", "rollback")
+# Version of the signed ``monitoring_reference`` manifest field. Manifests
+# written before it existed carry only ``baseline_metrics`` (per success, of
+# the baseline arm) and are still monitored through that legacy field.
+MONITORING_REFERENCE_VERSION = 1
+# monitoring_reference metric -> evaluation metric of the promoted (candidate)
+# arm over the final suites (FULL and sealed holdout); rows hold per-run means.
+_REFERENCE_FROM_EVALUATION = (
+    ("success_rate", "candidate_success_rate"),
+    ("tool_error_rate", "candidate_tool_error_rate"),
+    ("tokens_per_run", "tokens_per_task_candidate"),
+    ("tool_calls_per_run", "tool_calls_per_task_candidate"),
+    ("latency_per_run_ms", "latency_per_task_candidate_ms"),
+    ("retry_rate", "candidate_retry_rate"),
+    ("correction_rate", "candidate_correction_rate"),
+)
+# Legacy ``baseline_metrics`` values that only mean "per success" when the
+# baseline arm succeeded at least once: older promoters divided by
+# ``max(1, successes)``, so a never-successful baseline recorded totals.
+_PER_SUCCESS_KEYS = ("tokens_per_success", "tool_calls_per_success", "latency_per_success_ms")
+
+
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def build_monitoring_reference(evaluation_metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """The signed manifest's ``monitoring_reference`` from evaluation metrics.
+
+    Monitoring checks whether the promoted brain behaves in production as it
+    did in its own evaluation, so the reference is the candidate arm, in
+    per-run units that stay meaningful when an arm never succeeded. Metrics
+    the evaluation did not report are ``None`` (unavailable, never 0).
+    """
+    return {
+        "version": MONITORING_REFERENCE_VERSION,
+        "arm": "candidate",
+        "unit": "per_run",
+        "metrics": {
+            key: float(evaluation_metrics[source]) if _finite_number(evaluation_metrics.get(source)) else None
+            for key, source in _REFERENCE_FROM_EVALUATION
+        },
+    }
+
+
+@dataclass(frozen=True)
+class MonitoringReference:
+    """Expected behaviour a release is compared with, and where it came from."""
+
+    source: str  # "monitoring_reference" or the legacy "baseline_metrics"
+    version: int | None
+    arm: str  # "candidate" or "baseline"
+    unit: str  # "per_run" or "per_success"
+    metrics: Mapping[str, Any]
+    # Reference values present in the manifest but not comparable (legacy
+    # per-success totals of a baseline that never succeeded).
+    excluded: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source, "version": self.version, "arm": self.arm,
+            "unit": self.unit, "excluded": list(self.excluded),
+        }
+
+
+def monitoring_reference(manifest: Mapping[str, Any]) -> MonitoringReference:
+    """Resolve the comparison reference of a release manifest.
+
+    Prefers the versioned ``monitoring_reference``; an unknown version or
+    unit is refused rather than guessed. Older manifests fall back to
+    ``baseline_metrics`` without the per-success values that are totals.
+    """
+    reference = manifest.get("monitoring_reference")
+    if reference is not None:
+        if not isinstance(reference, Mapping):
+            raise ValueError("release manifest monitoring_reference must be an object")
+        if reference.get("version") != MONITORING_REFERENCE_VERSION:
+            raise ValueError(f"unsupported monitoring_reference version: {reference.get('version')!r}")
+        if reference.get("unit") != "per_run" or reference.get("arm") != "candidate":
+            raise ValueError("unsupported monitoring_reference unit or arm")
+        metrics = reference.get("metrics")
+        if not isinstance(metrics, Mapping):
+            raise ValueError("release manifest monitoring_reference metrics must be an object")
+        return MonitoringReference("monitoring_reference", MONITORING_REFERENCE_VERSION, "candidate", "per_run", metrics)
+    baseline = manifest.get("baseline_metrics")
+    if not isinstance(baseline, Mapping):
+        raise ValueError("release manifest does not include comparable baseline metrics")
+    success_rate = baseline.get("success_rate")
+    excluded: tuple[str, ...] = ()
+    if not (_finite_number(success_rate) and success_rate > 0):
+        excluded = tuple(key for key in _PER_SUCCESS_KEYS if _finite_number(baseline.get(key)))
+    return MonitoringReference("baseline_metrics", None, "baseline", "per_success", baseline, excluded)
+
+
+class RollbackBlocked(RuntimeError):
+    """A regressed release cannot be rolled back automatically; an operator must act."""
 
 
 @dataclass(frozen=True)
@@ -73,6 +169,11 @@ class MonitoringPolicy:
     max_correction_rate_increase: float = 0.05
     max_tool_calls_per_success_increase: float = 0.15
     max_retry_rate_increase: float = 0.05
+    # Latency reference values come from the evaluation environment; production
+    # and replay hosts under load are slower without the brain being worse.
+    # "warn" (default) reports a latency regression as a warning only;
+    # "rollback" makes it a rollback reason beyond max_latency_increase.
+    latency_action: str = "warn"
 
     def __post_init__(self) -> None:
         if isinstance(self.min_observations, bool) or self.min_observations < 1:
@@ -88,6 +189,8 @@ class MonitoringPolicy:
         )
         if any(not math.isfinite(value) or value < 0 for value in thresholds):
             raise ValueError("monitoring thresholds must be finite and non-negative")
+        if self.latency_action not in LATENCY_ACTIONS:
+            raise ValueError(f"latency_action must be one of: {', '.join(LATENCY_ACTIONS)}")
 
 
 @dataclass(frozen=True)
@@ -102,6 +205,11 @@ class ReleaseMetrics:
     correction_rate: float
     regression_signals: int
     tokens_reported_samples: int = 0
+    # Per-run means, compared with a per-run monitoring_reference. They stay
+    # meaningful when no run succeeded (per-success values are then infinite).
+    tokens_per_run: float = float("nan")
+    tool_calls_per_run: float = float("nan")
+    latency_per_run_ms: float = float("nan")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +234,9 @@ class MonitoringAssessment:
     unavailable_baselines: tuple[str, ...] = ()
     decision_id: str | None = None
     unavailable_metrics: tuple[str, ...] = ()
+    # Advisory findings that do not decide STABLE or ROLLBACK (e.g. latency).
+    warnings: tuple[str, ...] = ()
+    reference: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,7 +253,9 @@ class MonitoringAssessment:
             "sources": dict(self.sources),
             "unavailable_baselines": list(self.unavailable_baselines),
             "unavailable_metrics": list(self.unavailable_metrics),
+            "warnings": list(self.warnings),
             "decision_id": self.decision_id,
+            "reference": dict(self.reference),
         }
 
 
@@ -166,6 +279,7 @@ class _Comparison:
     reason: str
     severity: str
     value: float
+    advisory: bool = False
 
 
 class ReleaseMonitor:
@@ -285,9 +399,7 @@ class ReleaseMonitor:
             release = self.store.get_release(observation.release_id)
             if release["status"] != "PROVISIONAL":
                 raise ValueError("post-promotion observations are accepted only for provisional releases")
-            baseline = release["manifest"].get("baseline_metrics")
-            if not isinstance(baseline, dict):
-                raise ValueError("release manifest does not include comparable baseline metrics")
+            monitoring_reference(release["manifest"])  # refuses evidence nothing can be compared with
             activation = self.activation(observation.release_id)
             db.execute(
                 """INSERT INTO production_observations
@@ -321,9 +433,8 @@ class ReleaseMonitor:
         """Assess a release from matched evidence without changing its status."""
         release = self.store.get_release(release_id)
         manifest = release["manifest"]
-        baseline = manifest.get("baseline_metrics")
-        if not isinstance(baseline, dict):
-            raise ValueError("release manifest does not include comparable baseline metrics")
+        reference = monitoring_reference(manifest)
+        baseline = reference.metrics
         affected = release_affected_skills(manifest)
         rows = self._rows(release_id)
         matched = [row for row in rows if _matches(row.skills, affected)]
@@ -335,6 +446,7 @@ class ReleaseMonitor:
             release_id=release_id,
             release_status=release["status"],
             baseline=baseline,
+            reference=reference.to_dict(),
             affected_skills=tuple(sorted(affected)),
             matched_observations=len(matched),
             unmatched_observations=len(rows) - len(matched),
@@ -352,17 +464,20 @@ class ReleaseMonitor:
                 reasons=("minimum observation sample not reached",), **base,
             )
         else:
-            comparisons, unavailable, unmeasured = self._compare(metrics, baseline)
+            findings, unavailable, unmeasured = self._compare(metrics, reference)
+            comparisons = [item for item in findings if not item.advisory]
+            warnings = tuple(item.reason for item in findings if item.advisory)
             if comparisons:
                 severity = "high" if any(item.severity == "high" for item in comparisons) else "medium"
                 assessment = MonitoringAssessment(
                     status="ROLLBACK_RECOMMENDED", severity=severity,
-                    reasons=tuple(item.reason for item in comparisons),
+                    reasons=tuple(item.reason for item in comparisons), warnings=warnings,
                     unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
             else:
+                # Advisory findings alone (latency) never trigger a rollback.
                 assessment = MonitoringAssessment(
-                    status="STABLE", severity="none", reasons=(),
+                    status="STABLE", severity="none", reasons=(), warnings=warnings,
                     unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
         if record_decision and self.decisions is not None:
@@ -408,14 +523,14 @@ class ReleaseMonitor:
         release = self.store.get_release(release_id)
         target = self.previous_release(release_id)
         if target is None:
-            self._audit(release_id, "ROLLBACK_BLOCKED", None, None, assessment, actor)
-            raise RuntimeError(
-                f"{release_id} regressed but has no earlier active release to roll back to; operator action required"
-            )
+            reason = "no earlier active release to roll back to; operator action required"
+            self._block(release_id, None, reason, assessment, actor)
+            raise RollbackBlocked(f"{release_id} regressed but has {reason}")
         active = _main_commit(promoter.repository)
         if active != release["manifest"].get("candidate_commit"):
-            self._audit(release_id, "ROLLBACK_BLOCKED", target, None, assessment, actor)
-            raise RuntimeError(f"{release_id} is not the active production release; refusing rollback")
+            reason = "not the active production release; refusing rollback"
+            self._block(release_id, target, reason, assessment, actor)
+            raise RollbackBlocked(f"{release_id} is {reason}")
         previous_commit = promoter.rollback(target, manifest_key=manifest_key)
         status = self.store.get_release(release_id)["status"]
         if status != "ROLLED_BACK":
@@ -508,39 +623,60 @@ class ReleaseMonitor:
         ]
 
     def _compare(
-        self, metrics: ReleaseMetrics, baseline: Mapping[str, Any],
+        self, metrics: ReleaseMetrics, reference: MonitoringReference,
     ) -> tuple[list[_Comparison], tuple[str, ...], tuple[str, ...]]:
         policy = self.policy
+        # Efficiency metrics in the reference's unit: per run for a
+        # monitoring_reference, per success for legacy baseline_metrics.
+        unit, label = ("run", "per_run") if reference.unit == "per_run" else ("success", "per_success")
+        tokens_key, calls_key = f"tokens_{label}", f"tool_calls_{label}"
+        latency_key = f"latency_{label}_ms"
         checks = (
             ("success_rate", "success rate regression", "high",
-             lambda base: metrics.success_rate < base - policy.max_success_rate_drop),
+             lambda value, base: value < base - policy.max_success_rate_drop),
             ("tool_error_rate", "tool error rate regression", "high",
-             lambda base: metrics.tool_error_rate > base + policy.max_tool_error_rate_increase),
-            ("tokens_per_success", "tokens per success regression", "medium",
-             lambda base: metrics.tokens_per_success > base * (1 + policy.max_tokens_per_success_increase)),
-            ("tool_calls_per_success", "tool calls per success regression", "medium",
-             lambda base: metrics.tool_calls_per_success > base * (1 + policy.max_tool_calls_per_success_increase)),
-            ("latency_per_success_ms", "latency regression", "medium",
-             lambda base: metrics.latency_per_success_ms > base * (1 + policy.max_latency_increase)),
+             lambda value, base: value > base + policy.max_tool_error_rate_increase),
+            (tokens_key, f"tokens per {unit} regression", "medium",
+             lambda value, base: value > base * (1 + policy.max_tokens_per_success_increase)),
+            (calls_key, f"tool calls per {unit} regression", "medium",
+             lambda value, base: value > base * (1 + policy.max_tool_calls_per_success_increase)),
+            (latency_key, "latency regression", "medium",
+             lambda value, base: value > base * (1 + policy.max_latency_increase)),
             ("retry_rate", "retry rate regression", "medium",
-             lambda base: metrics.retry_rate > base + policy.max_retry_rate_increase),
+             lambda value, base: value > base + policy.max_retry_rate_increase),
             ("correction_rate", "user correction rate regression", "medium",
-             lambda base: metrics.correction_rate > base + policy.max_correction_rate_increase),
+             lambda value, base: value > base + policy.max_correction_rate_increase),
         )
         failures, unavailable, unmeasured = [], [], []
         for key, reason, severity, regressed in checks:
-            if math.isnan(getattr(metrics, key)):
+            value = getattr(metrics, key)
+            if math.isnan(value):
                 # The evidence did not report this metric (e.g. no observation had
                 # token counts); it is reported as unmeasured, never compared as 0.
                 unmeasured.append(key)
                 continue
-            base = baseline.get(key)
-            if isinstance(base, bool) or not isinstance(base, (int, float)) or not math.isfinite(base):
+            base = reference.metrics.get(key)
+            if key in reference.excluded or not _finite_number(base):
                 unavailable.append(key)
                 continue
-            if regressed(float(base)):
-                failures.append(_Comparison(key, reason, severity, getattr(metrics, key)))
+            if regressed(value, float(base)):
+                advisory = key == latency_key and policy.latency_action == "warn"
+                failures.append(_Comparison(key, reason, severity, value, advisory))
         return failures, tuple(unavailable), tuple(unmeasured)
+
+    def _block(
+        self, release_id: str, target: str | None, reason: str,
+        assessment: MonitoringAssessment, actor: str,
+    ) -> None:
+        """Audit a blocked rollback in monitoring_actions and the release audit."""
+        action_id = self._audit(release_id, "ROLLBACK_BLOCKED", target, None, assessment, actor)
+        self.store.record_monitoring_event(release_id, "ROLLBACK_BLOCKED", {
+            "actor": actor.strip(),
+            "monitoring_action_id": action_id,
+            "reason": reason,
+            "assessment_reasons": list(assessment.reasons),
+            "target_release": target,
+        })
 
     def _audit(
         self, release_id: str, action: str, target: str | None, previous_commit: str | None,
@@ -590,6 +726,11 @@ def compute_metrics(rows: Iterable[_Row]) -> ReleaseMetrics:
         correction_rate=mean(bool(row.user_corrections) for row in rows),
         regression_signals=sum(bool(row.critical_regression) for row in rows),
         tokens_reported_samples=len(token_rows),
+        tokens_per_run=(
+            sum(row.tokens for row in token_rows) / len(token_rows) if token_rows else float("nan")
+        ),
+        tool_calls_per_run=mean(row.tool_calls for row in rows),
+        latency_per_run_ms=mean(row.latency_ms for row in rows),
     )
 
 
