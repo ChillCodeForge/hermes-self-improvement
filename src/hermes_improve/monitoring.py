@@ -32,6 +32,7 @@ _MONITORING_MODEL_VERSION = "monitoring-policy-1"
 # monitoring epoch for it.
 ACTIVATION_EVENTS = frozenset({"PROMOTED", "REACTIVATED"})
 _CURRENT_ACTIVATION = object()
+LATENCY_ACTIONS = ("warn", "rollback")
 # Version of the signed ``monitoring_reference`` manifest field. Manifests
 # written before it existed carry only ``baseline_metrics`` (per success, of
 # the baseline arm) and are still monitored through that legacy field.
@@ -164,6 +165,11 @@ class MonitoringPolicy:
     max_correction_rate_increase: float = 0.05
     max_tool_calls_per_success_increase: float = 0.15
     max_retry_rate_increase: float = 0.05
+    # Latency reference values come from the evaluation environment; production
+    # and replay hosts under load are slower without the brain being worse.
+    # "warn" (default) reports a latency regression as a warning only;
+    # "rollback" makes it a rollback reason beyond max_latency_increase.
+    latency_action: str = "warn"
 
     def __post_init__(self) -> None:
         if isinstance(self.min_observations, bool) or self.min_observations < 1:
@@ -179,6 +185,8 @@ class MonitoringPolicy:
         )
         if any(not math.isfinite(value) or value < 0 for value in thresholds):
             raise ValueError("monitoring thresholds must be finite and non-negative")
+        if self.latency_action not in LATENCY_ACTIONS:
+            raise ValueError(f"latency_action must be one of: {', '.join(LATENCY_ACTIONS)}")
 
 
 @dataclass(frozen=True)
@@ -222,6 +230,8 @@ class MonitoringAssessment:
     unavailable_baselines: tuple[str, ...] = ()
     decision_id: str | None = None
     unavailable_metrics: tuple[str, ...] = ()
+    # Advisory findings that do not decide STABLE or ROLLBACK (e.g. latency).
+    warnings: tuple[str, ...] = ()
     reference: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -239,6 +249,7 @@ class MonitoringAssessment:
             "sources": dict(self.sources),
             "unavailable_baselines": list(self.unavailable_baselines),
             "unavailable_metrics": list(self.unavailable_metrics),
+            "warnings": list(self.warnings),
             "decision_id": self.decision_id,
             "reference": dict(self.reference),
         }
@@ -264,6 +275,7 @@ class _Comparison:
     reason: str
     severity: str
     value: float
+    advisory: bool = False
 
 
 class ReleaseMonitor:
@@ -448,17 +460,20 @@ class ReleaseMonitor:
                 reasons=("minimum observation sample not reached",), **base,
             )
         else:
-            comparisons, unavailable, unmeasured = self._compare(metrics, reference)
+            findings, unavailable, unmeasured = self._compare(metrics, reference)
+            comparisons = [item for item in findings if not item.advisory]
+            warnings = tuple(item.reason for item in findings if item.advisory)
             if comparisons:
                 severity = "high" if any(item.severity == "high" for item in comparisons) else "medium"
                 assessment = MonitoringAssessment(
                     status="ROLLBACK_RECOMMENDED", severity=severity,
-                    reasons=tuple(item.reason for item in comparisons),
+                    reasons=tuple(item.reason for item in comparisons), warnings=warnings,
                     unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
             else:
+                # Advisory findings alone (latency) never trigger a rollback.
                 assessment = MonitoringAssessment(
-                    status="STABLE", severity="none", reasons=(),
+                    status="STABLE", severity="none", reasons=(), warnings=warnings,
                     unavailable_baselines=unavailable, unavailable_metrics=unmeasured, **base,
                 )
         if record_decision and self.decisions is not None:
@@ -641,7 +656,8 @@ class ReleaseMonitor:
                 unavailable.append(key)
                 continue
             if regressed(value, float(base)):
-                failures.append(_Comparison(key, reason, severity, value))
+                advisory = key == latency_key and policy.latency_action == "warn"
+                failures.append(_Comparison(key, reason, severity, value, advisory))
         return failures, tuple(unavailable), tuple(unmeasured)
 
     def _audit(

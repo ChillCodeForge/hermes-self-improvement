@@ -322,6 +322,19 @@ efficiency thresholds (`max_tokens_per_success_increase`,
 `max_tool_calls_per_success_increase`) apply to the per-run values in the
 same way.
 
+*Latency is advisory.* The reference latency was measured in the evaluation
+environment; production hosts and replay runners under load (a shared GPU,
+other jobs) are slower without the brain being worse. In the live lab healthy
+replays took 2.3x the evaluation latency. A latency regression beyond
+`max_latency_increase` (default +15 %) is therefore reported under the
+assessment's `warnings` and does not change the outcome: a release that is
+otherwise healthy still becomes `STABLE`, and a release with a correctness
+or efficiency regression is rolled back for that reason, with the latency
+warning alongside. `MonitoringPolicy(latency_action="rollback",
+max_latency_increase=...)` makes latency a `medium` rollback reason again; set
+the tolerance to the speed difference you expect between the evaluation host
+and production. Critical regression signals always decide first.
+
 ```bash
 hermes-improve monitor evaluate brain-v7          # assessment only, no change
 HERMES_PROMOTER_UID=... HERMES_IMPROVE_MANIFEST_KEY=... \

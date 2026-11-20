@@ -302,6 +302,11 @@ evaluation metrics behind the reference are `candidate_success_rate`,
 `tool_calls_per_task_candidate`, `latency_per_task_candidate_ms`,
 `candidate_retry_rate` and `candidate_correction_rate`.
 
+`latency_per_run_ms` describes the evaluation host. Monitoring treats a
+latency regression against it as a warning, not a rollback reason, unless the
+monitoring policy sets `latency_action="rollback"` with an explicit tolerance
+(see `operations.md`, "Post-promotion monitoring").
+
 ## Monitoring epochs
 
 Post-promotion monitoring (`monitor evaluate`, `monitor collect`, `monitor
